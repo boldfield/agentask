@@ -321,3 +321,290 @@ func TestCreateProjectEmptyName(t *testing.T) {
 		t.Errorf("expected error code 'EMPTY_NAME', got %q", code)
 	}
 }
+
+// TestCreateDocumentFeatureSpec verifies that registering a feature_spec and listing returns it.
+func TestCreateDocumentFeatureSpec(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Create a project first
+	projectPayload := map[string]string{
+		"name": "test-project",
+		"repo": "https://github.com/example/test-repo",
+	}
+	projectBody, _ := json.Marshal(projectPayload)
+	projectReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(projectBody))
+	projectReq.Header.Set("Authorization", authHeader)
+	projectReq.Header.Set("Content-Type", "application/json")
+	projectW := httptest.NewRecorder()
+	server.mux.ServeHTTP(projectW, projectReq)
+
+	var project store.Project
+	json.NewDecoder(projectW.Body).Decode(&project)
+
+	// Create a feature_spec document
+	docPayload := map[string]interface{}{
+		"kind":   "feature_spec",
+		"title":  "Test Feature",
+		"ref":    "docs/features/test.md",
+		"commit": "abc123",
+	}
+	docBody, _ := json.Marshal(docPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+project.ID+"/documents", bytes.NewReader(docBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	if createW.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d", createW.Code)
+	}
+
+	var createdDoc store.Document
+	if err := json.NewDecoder(createW.Body).Decode(&createdDoc); err != nil {
+		t.Fatalf("failed to decode created document: %v", err)
+	}
+
+	if createdDoc.ID == "" {
+		t.Error("created document missing id")
+	}
+	if createdDoc.Kind != "feature_spec" {
+		t.Errorf("expected kind 'feature_spec', got %q", createdDoc.Kind)
+	}
+	if createdDoc.Title != "Test Feature" {
+		t.Errorf("expected title 'Test Feature', got %q", createdDoc.Title)
+	}
+
+	// List documents
+	listReq := httptest.NewRequest("GET", "/projects/"+project.ID+"/documents", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var docs []store.Document
+	if err := json.NewDecoder(listW.Body).Decode(&docs); err != nil {
+		t.Fatalf("failed to decode documents list: %v", err)
+	}
+
+	if len(docs) != 1 {
+		t.Errorf("expected 1 document, got %d", len(docs))
+	}
+	if docs[0].ID != createdDoc.ID {
+		t.Errorf("expected document id %q, got %q", createdDoc.ID, docs[0].ID)
+	}
+}
+
+// TestSecondDesignConflict verifies that a second design for the same project returns 409.
+func TestSecondDesignConflict(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Create a project
+	projectPayload := map[string]string{
+		"name": "test-project",
+		"repo": "https://github.com/example/test-repo",
+	}
+	projectBody, _ := json.Marshal(projectPayload)
+	projectReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(projectBody))
+	projectReq.Header.Set("Authorization", authHeader)
+	projectReq.Header.Set("Content-Type", "application/json")
+	projectW := httptest.NewRecorder()
+	server.mux.ServeHTTP(projectW, projectReq)
+
+	var project store.Project
+	json.NewDecoder(projectW.Body).Decode(&project)
+
+	// Create first design document
+	firstDocPayload := map[string]interface{}{
+		"kind":  "design",
+		"title": "Design Doc 1",
+		"ref":   "DESIGN.md",
+	}
+	firstDocBody, _ := json.Marshal(firstDocPayload)
+	firstReq := httptest.NewRequest("POST", "/projects/"+project.ID+"/documents", bytes.NewReader(firstDocBody))
+	firstReq.Header.Set("Authorization", authHeader)
+	firstReq.Header.Set("Content-Type", "application/json")
+	firstW := httptest.NewRecorder()
+	server.mux.ServeHTTP(firstW, firstReq)
+
+	if firstW.Code != http.StatusCreated {
+		t.Errorf("expected first design to succeed with 201, got %d", firstW.Code)
+	}
+
+	// Try to create second design document
+	secondDocPayload := map[string]interface{}{
+		"kind":  "design",
+		"title": "Design Doc 2",
+		"ref":   "DESIGN2.md",
+	}
+	secondDocBody, _ := json.Marshal(secondDocPayload)
+	secondReq := httptest.NewRequest("POST", "/projects/"+project.ID+"/documents", bytes.NewReader(secondDocBody))
+	secondReq.Header.Set("Authorization", authHeader)
+	secondReq.Header.Set("Content-Type", "application/json")
+	secondW := httptest.NewRecorder()
+	server.mux.ServeHTTP(secondW, secondReq)
+
+	if secondW.Code != http.StatusConflict {
+		t.Errorf("expected second design to return 409, got %d", secondW.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(secondW.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "CONFLICT" {
+		t.Errorf("expected error code 'CONFLICT', got %q", code)
+	}
+}
+
+// TestInvalidDocumentKind verifies that an invalid kind returns 400.
+func TestInvalidDocumentKind(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Create a project
+	projectPayload := map[string]string{
+		"name": "test-project",
+		"repo": "https://github.com/example/test-repo",
+	}
+	projectBody, _ := json.Marshal(projectPayload)
+	projectReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(projectBody))
+	projectReq.Header.Set("Authorization", authHeader)
+	projectReq.Header.Set("Content-Type", "application/json")
+	projectW := httptest.NewRecorder()
+	server.mux.ServeHTTP(projectW, projectReq)
+
+	var project store.Project
+	json.NewDecoder(projectW.Body).Decode(&project)
+
+	// Try to create document with invalid kind
+	docPayload := map[string]interface{}{
+		"kind":  "invalid_kind",
+		"title": "Test",
+		"ref":   "test.md",
+	}
+	docBody, _ := json.Marshal(docPayload)
+	docReq := httptest.NewRequest("POST", "/projects/"+project.ID+"/documents", bytes.NewReader(docBody))
+	docReq.Header.Set("Authorization", authHeader)
+	docReq.Header.Set("Content-Type", "application/json")
+	docW := httptest.NewRecorder()
+	server.mux.ServeHTTP(docW, docReq)
+
+	if docW.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", docW.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(docW.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "INVALID_KIND" {
+		t.Errorf("expected error code 'INVALID_KIND', got %q", code)
+	}
+}
+
+// TestListDocumentsWithKindFilter verifies that the kind filter works.
+func TestListDocumentsWithKindFilter(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Create a project
+	projectPayload := map[string]string{
+		"name": "test-project",
+		"repo": "https://github.com/example/test-repo",
+	}
+	projectBody, _ := json.Marshal(projectPayload)
+	projectReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(projectBody))
+	projectReq.Header.Set("Authorization", authHeader)
+	projectReq.Header.Set("Content-Type", "application/json")
+	projectW := httptest.NewRecorder()
+	server.mux.ServeHTTP(projectW, projectReq)
+
+	var project store.Project
+	json.NewDecoder(projectW.Body).Decode(&project)
+
+	// Create a design document
+	designPayload := map[string]interface{}{
+		"kind":  "design",
+		"title": "Design",
+		"ref":   "DESIGN.md",
+	}
+	designBody, _ := json.Marshal(designPayload)
+	designReq := httptest.NewRequest("POST", "/projects/"+project.ID+"/documents", bytes.NewReader(designBody))
+	designReq.Header.Set("Authorization", authHeader)
+	designReq.Header.Set("Content-Type", "application/json")
+	designW := httptest.NewRecorder()
+	server.mux.ServeHTTP(designW, designReq)
+
+	// Create feature_spec documents
+	for i := 1; i <= 2; i++ {
+		featurePayload := map[string]interface{}{
+			"kind":  "feature_spec",
+			"title": "Feature " + string(rune(48+i)),
+			"ref":   "docs/features/f" + string(rune(48+i)) + ".md",
+		}
+		featureBody, _ := json.Marshal(featurePayload)
+		featureReq := httptest.NewRequest("POST", "/projects/"+project.ID+"/documents", bytes.NewReader(featureBody))
+		featureReq.Header.Set("Authorization", authHeader)
+		featureReq.Header.Set("Content-Type", "application/json")
+		featureW := httptest.NewRecorder()
+		server.mux.ServeHTTP(featureW, featureReq)
+	}
+
+	// List all documents
+	allReq := httptest.NewRequest("GET", "/projects/"+project.ID+"/documents", nil)
+	allReq.Header.Set("Authorization", authHeader)
+	allW := httptest.NewRecorder()
+	server.mux.ServeHTTP(allW, allReq)
+
+	var allDocs []store.Document
+	json.NewDecoder(allW.Body).Decode(&allDocs)
+	if len(allDocs) != 3 {
+		t.Errorf("expected 3 total documents, got %d", len(allDocs))
+	}
+
+	// List only feature_spec documents
+	filterReq := httptest.NewRequest("GET", "/projects/"+project.ID+"/documents?kind=feature_spec", nil)
+	filterReq.Header.Set("Authorization", authHeader)
+	filterW := httptest.NewRecorder()
+	server.mux.ServeHTTP(filterW, filterReq)
+
+	var filteredDocs []store.Document
+	json.NewDecoder(filterW.Body).Decode(&filteredDocs)
+	if len(filteredDocs) != 2 {
+		t.Errorf("expected 2 feature_spec documents, got %d", len(filteredDocs))
+	}
+	for _, doc := range filteredDocs {
+		if doc.Kind != "feature_spec" {
+			t.Errorf("expected kind 'feature_spec', got %q", doc.Kind)
+		}
+	}
+
+	// List only design documents
+	designFilterReq := httptest.NewRequest("GET", "/projects/"+project.ID+"/documents?kind=design", nil)
+	designFilterReq.Header.Set("Authorization", authHeader)
+	designFilterW := httptest.NewRecorder()
+	server.mux.ServeHTTP(designFilterW, designFilterReq)
+
+	var designDocs []store.Document
+	json.NewDecoder(designFilterW.Body).Decode(&designDocs)
+	if len(designDocs) != 1 {
+		t.Errorf("expected 1 design document, got %d", len(designDocs))
+	}
+}
