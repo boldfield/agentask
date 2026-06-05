@@ -26,32 +26,42 @@ kind load docker-image ghcr.io/boldfield/agentask:latest
 
 ## Configuration
 
-Before deploying, update the secret in `secret.yaml`:
+Create the `agentask-secret` **out-of-band** with a freshly generated token. It is
+deliberately not part of the kustomization (and `secret.yaml.example` is named so
+`kubectl` skips it), so a real token never lives in git and `apply` can never
+clobber it with a placeholder:
 
 ```bash
-# Replace the placeholder token with a real one
-kubectl create secret generic agentask-secret \
-  --from-literal=token="your-secure-token-here" \
-  --dry-run=client -o yaml > secret.yaml
+kubectl -n agentask create secret generic agentask-secret \
+  --from-literal=token="$(openssl rand -hex 32)" \
+  --dry-run=client -o yaml | kubectl apply -f -
 ```
+
+The deployment reads it via `secretKeyRef` (name `agentask-secret`, key `token`).
 
 ## Deployment
 
-Apply the manifests in order:
+Create the namespace and secret first, then apply the manifests (the secret is
+NOT in the kustomization — create it out-of-band per Configuration above):
 
 ```bash
-# Option 1: Using kubectl directly
-kubectl apply -f deploy/k8s/pvc.yaml
-kubectl apply -f deploy/k8s/secret.yaml
-kubectl apply -f deploy/k8s/deployment.yaml
-kubectl apply -f deploy/k8s/service.yaml
+# 1. Namespace
+kubectl create namespace agentask
 
-# Option 2: Using kustomize
-kubectl apply -k deploy/k8s/
+# 2. Secret (out-of-band — see Configuration)
+kubectl -n agentask create secret generic agentask-secret \
+  --from-literal=token="$(openssl rand -hex 32)" \
+  --dry-run=client -o yaml | kubectl apply -f -
 
-# Option 3: All at once (order is handled by kubectl)
-kubectl apply -f deploy/k8s/
+# 3. Manifests (pvc + deployment + service)
+kubectl -n agentask apply -k deploy/k8s/
+# ...or individually:
+#   kubectl -n agentask apply -f deploy/k8s/pvc.yaml -f deploy/k8s/deployment.yaml -f deploy/k8s/service.yaml
 ```
+
+The deployment sets a `restricted`-compliant `securityContext` (non-root uid 65532,
+dropped capabilities, seccomp RuntimeDefault), so it runs in PodSecurity-enforcing
+namespaces.
 
 ## Verification
 

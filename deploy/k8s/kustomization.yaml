@@ -1,13 +1,16 @@
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 
+# NOTE: secret.yaml is intentionally NOT a resource here. The agentask-secret is
+# created out-of-band (see secret.yaml.example) so a real token never lives in git
+# and `kubectl apply -k .` can never overwrite it with a placeholder. Create the
+# secret before applying this kustomization.
 resources:
   - pvc.yaml
-  - secret.yaml
   - deployment.yaml
   - service.yaml
 
 labels:
   - pairs:
       app: agentask
-      version: "1.0"
+      version: "0.1.0"
