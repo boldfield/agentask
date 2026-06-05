@@ -1,7 +1,7 @@
 ---
 id: T02
 title: SQLite schema + migrations
-state: ready
+state: review
 document: DESIGN.md
 depends_on: [T01]
 ---
@@ -23,3 +23,8 @@ Define the schema in `migrations/0001_init.sql` per DESIGN.md §2:
 - Applying migrations to a fresh DB creates all tables/indexes.
 - Re-applying is a no-op (idempotent).
 - A unit test opens an in-memory/temp DB, migrates, and asserts the tables exist.
+
+## Result
+- **PR URL:** https://github.com/boldfield/agentask/pull/2
+- **Branch:** agentask/T02-schema-migrations
+- **Head commit SHA:** c1e4042
