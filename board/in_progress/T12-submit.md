@@ -1,7 +1,7 @@
 ---
 id: T12
 title: Submit endpoint — in_progress → review + typed links
-state: ready
+state: in_progress
 document: DESIGN.md
 depends_on: [T09, T04]
 ---
