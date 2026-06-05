@@ -1,7 +1,7 @@
 ---
 id: T06
 title: Project endpoints — create / get
-state: review
+state: done
 document: DESIGN.md
 depends_on: [T03, T05]
 ---
