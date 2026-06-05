@@ -1,7 +1,7 @@
 ---
 id: T13
 title: Review verdict + transition (done/blocked/failed), human gate
-state: ready
+state: review
 document: DESIGN.md
 depends_on: [T12, T04]
 ---
@@ -25,3 +25,9 @@ Per DESIGN.md §5 — human gate for the MVP.
 - `transition {to: done}` with no approve event → 409.
 - `transition {to: ready}` from review returns the task to the claimable pool.
 - Review on a non-`review` task → 409.
+
+## Result
+
+PR: https://github.com/boldfield/agentask/pull/16
+Branch: agentask/T13-review-transition
+Commit: 17bf15b (head SHA)

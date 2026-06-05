@@ -38,6 +38,8 @@ type Store interface {
 	HeartbeatTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 	PromoteTask(ctx context.Context, taskID string) (Task, error)
 	SubmitTask(ctx context.Context, taskID, agentID, result string, links []LinkInput) (TaskWithDepsAndLinks, error)
+	AddReview(ctx context.Context, taskID, actor, verdict string, note *string) (Event, error)
+	TransitionTask(ctx context.Context, taskID, to string, note *string) (Task, error)
 }
 
 // sqliteStore wraps a SQLite database connection and provides migration functionality.
@@ -1225,4 +1227,169 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 	// Task exists but not submittable (not in_progress or wrong assignee) -> ErrConflict
 	tx.Rollback()
 	return TaskWithDepsAndLinks{}, ErrConflict
+}
+
+// AddReview records a review verdict event for a task.
+// The task must be in 'review' state. Verdict must be 'approve' or 'reject'.
+// Returns the created Event on success.
+// Returns ErrNotFound if the task doesn't exist.
+// Returns ErrConflict if the task is not in 'review' state.
+// Returns ValidationError if verdict is invalid.
+func (s *sqliteStore) AddReview(ctx context.Context, taskID, actor, verdict string, note *string) (Event, error) {
+	// Validate verdict
+	if verdict != "approve" && verdict != "reject" {
+		return Event{}, invalid("INVALID_VERDICT", "verdict must be 'approve' or 'reject'")
+	}
+
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Event{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Load the task's current state
+	var taskState string
+	err = tx.QueryRowContext(ctx, "SELECT state FROM task WHERE id = ?", taskID).Scan(&taskState)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Event{}, ErrNotFound
+		}
+		return Event{}, fmt.Errorf("failed to load task state: %w", err)
+	}
+
+	// Task must be in 'review' state
+	if taskState != "review" {
+		return Event{}, ErrConflict
+	}
+
+	// Append the review event
+	verdictPtr := &verdict
+	event, err := s.AppendEvent(ctx, tx, taskID, actor, "review", verdictPtr, note)
+	if err != nil {
+		return Event{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Event{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return event, nil
+}
+
+// TransitionTask moves a task to a new state according to the transition rules.
+// Valid transitions:
+//   - to='done': allowed ONLY from 'review', AND only if at least one approve review event exists
+//   - to='ready': allowed ONLY from 'review'
+//   - to='blocked' or 'failed': allowed from any ACTIVE state (backlog, ready, in_progress, review)
+//   - anything else: ErrConflict
+//
+// Returns the updated Task on success.
+// Returns ErrNotFound if the task doesn't exist.
+// Returns ErrConflict if the transition is not allowed.
+// Returns ValidationError if 'to' state is invalid.
+func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, note *string) (Task, error) {
+	// Validate 'to' state
+	validTargets := map[string]bool{"done": true, "ready": true, "blocked": true, "failed": true}
+	if !validTargets[to] {
+		return Task{}, invalid("INVALID_TARGET_STATE", "target state must be one of: done, ready, blocked, failed")
+	}
+
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Load current state
+	var taskState string
+	err = tx.QueryRowContext(ctx, "SELECT state FROM task WHERE id = ?", taskID).Scan(&taskState)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			return Task{}, ErrNotFound
+		}
+		return Task{}, fmt.Errorf("failed to load task state: %w", err)
+	}
+
+	// Apply transition rules
+	canTransition := false
+
+	switch to {
+	case "done":
+		// Allowed ONLY from 'review' AND at least one approve event exists
+		if taskState == "review" {
+			// Count approve review events
+			var approveCount int
+			err := tx.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM event
+				WHERE task_id = ? AND kind = 'review' AND verdict = 'approve'
+			`, taskID).Scan(&approveCount)
+			if err != nil {
+				return Task{}, fmt.Errorf("failed to count approve events: %w", err)
+			}
+			if approveCount > 0 {
+				canTransition = true
+			}
+		}
+
+	case "ready":
+		// Allowed ONLY from 'review'
+		if taskState == "review" {
+			canTransition = true
+		}
+
+	case "blocked", "failed":
+		// Allowed from any active state (backlog, ready, in_progress, review)
+		// Terminal states are done, blocked, failed
+		activeStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true}
+		if activeStates[taskState] {
+			canTransition = true
+		}
+	}
+
+	if !canTransition {
+		return Task{}, ErrConflict
+	}
+
+	// Perform the conditional UPDATE
+	now := nowTimestamp()
+	result, err := tx.ExecContext(ctx, `
+		UPDATE task
+		SET state=?, updated_at=?
+		WHERE id=? AND state=?
+	`, to, now, taskID, taskState)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to transition task: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected != 1 {
+		// This shouldn't happen given our checks above, but be safe
+		return Task{}, ErrConflict
+	}
+
+	// Append transition event (actor="system", verdict=nil)
+	_, err = s.AppendEvent(ctx, tx, taskID, "system", "transition", nil, note)
+	if err != nil {
+		return Task{}, err
+	}
+
+	// SELECT the updated task
+	var t Task
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, created_at, updated_at
+		FROM task WHERE id = ?
+	`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to fetch transitioned task: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return t, nil
 }
