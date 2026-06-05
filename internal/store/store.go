@@ -5,6 +5,7 @@ import (
 	"embed"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -16,34 +17,72 @@ import (
 //go:embed migrations
 var migrationsFS embed.FS
 
-// DB wraps a database connection and provides migration functionality.
-type DB struct {
+// Store is the interface for database operations.
+// Concrete implementations (sqliteStore) satisfy this interface.
+type Store interface {
+	Close() error
+	Conn() *sql.DB
+}
+
+// sqliteStore wraps a SQLite database connection and provides migration functionality.
+type sqliteStore struct {
 	conn *sql.DB
 }
 
 // Open opens a database connection and applies all pending migrations.
 // The dbPath should be a file path (e.g., "agentask.db") or "file::memory:?cache=shared"
 // for an in-memory database.
-func Open(dbPath string) (*DB, error) {
-	conn, err := sql.Open("sqlite", dbPath)
+// It configures WAL mode, foreign keys, and busy timeout via DSN pragmas.
+func Open(dbPath string) (Store, error) {
+	// Build the DSN with pragmas for WAL, foreign_keys, and busy_timeout.
+	// This ensures every connection from the pool has these pragmas applied.
+	dsn := buildDSN(dbPath)
+
+	conn, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("failed to open database: %w", err)
 	}
 
-	db := &DB{conn: conn}
+	// Set MaxOpenConns to 1 for single-writer SQLite (as per DESIGN.md §7)
+	conn.SetMaxOpenConns(1)
+
+	store := &sqliteStore{conn: conn}
 
 	// Apply migrations in a transaction
-	if err := db.migrate(); err != nil {
+	if err := store.migrate(); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)
 	}
 
-	return db, nil
+	return store, nil
+}
+
+// buildDSN constructs a SQLite DSN with pragmas.
+func buildDSN(dbPath string) string {
+	// If the path is already a DSN (contains scheme), use it directly but append pragmas.
+	if strings.Contains(dbPath, "://") || strings.Contains(dbPath, ":memory:") {
+		return dsn_addPragmas(dbPath)
+	}
+
+	// Otherwise, treat it as a file path.
+	// Escape the path and add pragmas.
+	escaped := url.QueryEscape(dbPath)
+	dsn := "file:" + escaped
+	return dsn_addPragmas(dsn)
+}
+
+// dsn_addPragmas appends pragma query parameters to a DSN.
+func dsn_addPragmas(dsn string) string {
+	separator := "?"
+	if strings.Contains(dsn, "?") {
+		separator = "&"
+	}
+	return dsn + separator + "_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
 }
 
 // migrate applies all pending migrations from the embedded migrations directory.
-func (db *DB) migrate() error {
-	tx, err := db.conn.Begin()
+func (s *sqliteStore) migrate() error {
+	tx, err := s.conn.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
 	}
@@ -141,13 +180,13 @@ func listMigrations() ([]migration, error) {
 }
 
 // Close closes the database connection.
-func (db *DB) Close() error {
-	return db.conn.Close()
+func (s *sqliteStore) Close() error {
+	return s.conn.Close()
 }
 
 // Conn returns the underlying database connection for direct access.
-func (db *DB) Conn() *sql.DB {
-	return db.conn
+func (s *sqliteStore) Conn() *sql.DB {
+	return s.conn
 }
 
 // splitStatements splits SQL statements by semicolon, handling comments.
@@ -186,4 +225,60 @@ func splitStatements(sql string) []string {
 	}
 
 	return statements
+}
+
+// Domain structs mirroring the schema (DESIGN.md §2)
+
+// Project represents a code project.
+type Project struct {
+	ID        string `db:"id"`
+	Name      string `db:"name"`
+	Repo      string `db:"repo"`
+	CreatedAt string `db:"created_at"`
+}
+
+// Document represents a design or feature spec document.
+type Document struct {
+	ID        string `db:"id"`
+	ProjectID string `db:"project_id"`
+	Kind      string `db:"kind"` // 'design' or 'feature_spec'
+	Title     string `db:"title"`
+	Ref       string `db:"ref"`
+	Commit    *string `db:"commit"` // nullable
+	CreatedAt string `db:"created_at"`
+	UpdatedAt string `db:"updated_at"`
+}
+
+// Task represents a task on the board.
+type Task struct {
+	ID            string `db:"id"`
+	ProjectID     string `db:"project_id"`
+	DocumentID    string `db:"document_id"`
+	Title         string `db:"title"`
+	Spec          string `db:"spec"`
+	State         string `db:"state"`
+	Assignee      *string `db:"assignee"` // nullable
+	LeaseExpiresAt *string `db:"lease_expires_at"` // nullable
+	Result        *string `db:"result"` // nullable
+	CreatedAt     string `db:"created_at"`
+	UpdatedAt     string `db:"updated_at"`
+}
+
+// TaskLink represents a link from a task to external resources (PR, branch, commit, CI).
+type TaskLink struct {
+	ID     string `db:"id"`
+	TaskID string `db:"task_id"`
+	Kind   string `db:"kind"` // 'pr', 'branch', 'commit', or 'ci'
+	Value  string `db:"value"`
+}
+
+// Event represents an audit/event log entry.
+type Event struct {
+	ID        string `db:"id"`
+	TaskID    string `db:"task_id"`
+	Actor     string `db:"actor"`
+	Kind      string `db:"kind"`
+	Verdict   *string `db:"verdict"` // nullable
+	Note      *string `db:"note"` // nullable
+	CreatedAt string `db:"created_at"`
 }

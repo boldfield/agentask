@@ -1,7 +1,7 @@
 ---
 id: T03
 title: Storage layer — open DB, WAL, Store interface
-state: backlog
+state: review
 document: DESIGN.md
 depends_on: [T02]
 ---
@@ -20,3 +20,8 @@ In `internal/store`:
 - `store.Open(path)` returns a ready `Store` with WAL enabled (assert via `PRAGMA journal_mode`).
 - Foreign keys enforced (insert with bad FK fails in a test).
 - Opening the same path twice (sequentially) works.
+
+## Result
+- PR: https://github.com/boldfield/agentask/pull/3
+- Branch: agentask/T03-storage-layer
+- Head commit: 9ac3135
