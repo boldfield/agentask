@@ -101,6 +101,15 @@ The PVC is configured with `ReadWriteOnce` access, ensuring only one pod can mou
 
 When the pod is killed and rescheduled on the same or different node, the PVC will be remounted and data will be preserved (assuming the PV remains bound to a node with the data).
 
+## External access
+
+The `Service` is `ClusterIP` (in-cluster only). To reach Agentask from outside the
+cluster, either `kubectl port-forward svc/agentask 8080:8080`, or expose it via an
+ingress. `ingress.yaml.example` is a Traefik sample (built-in `letsencrypt` cert
+resolver) — adapt the host/class/TLS to your environment, create a DNS record for
+the host, and apply it. Agentask's only auth is a single bearer token, so prefer a
+private network / tailnet over public exposure.
+
 ## Cleanup
 
 To remove the deployment and free resources:
