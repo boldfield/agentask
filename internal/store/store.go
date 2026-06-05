@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"embed"
+	"errors"
 	"fmt"
 	"io/fs"
 	"net/url"
@@ -26,6 +27,8 @@ type Store interface {
 	Conn() *sql.DB
 	AppendEvent(ctx context.Context, tx *sql.Tx, taskID, actor, kind string, verdict, note *string) (Event, error)
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
+	CreateProject(ctx context.Context, name, repo string) (Project, error)
+	GetProject(ctx context.Context, id string) (Project, error)
 }
 
 // sqliteStore wraps a SQLite database connection and provides migration functionality.
@@ -368,4 +371,47 @@ type Event struct {
 	Verdict   *string `db:"verdict"` // nullable
 	Note      *string `db:"note"` // nullable
 	CreatedAt string `db:"created_at"`
+}
+
+// ErrNotFound is returned when a resource is not found.
+var ErrNotFound = errors.New("not found")
+
+// CreateProject creates a new project with the given name and repo.
+// It generates the id and sets created_at automatically.
+func (s *sqliteStore) CreateProject(ctx context.Context, name, repo string) (Project, error) {
+	id := GenerateID()
+	createdAt := nowTimestamp()
+
+	_, err := s.conn.ExecContext(ctx, `
+		INSERT INTO project (id, name, repo, created_at)
+		VALUES (?, ?, ?, ?)
+	`, id, name, repo, createdAt)
+	if err != nil {
+		return Project{}, fmt.Errorf("failed to create project: %w", err)
+	}
+
+	return Project{
+		ID:        id,
+		Name:      name,
+		Repo:      repo,
+		CreatedAt: createdAt,
+	}, nil
+}
+
+// GetProject retrieves a project by id.
+// Returns ErrNotFound if the project does not exist.
+func (s *sqliteStore) GetProject(ctx context.Context, id string) (Project, error) {
+	var p Project
+	err := s.conn.QueryRowContext(ctx, `
+		SELECT id, name, repo, created_at FROM project WHERE id = ?
+	`, id).Scan(&p.ID, &p.Name, &p.Repo, &p.CreatedAt)
+
+	if err == sql.ErrNoRows {
+		return Project{}, ErrNotFound
+	}
+	if err != nil {
+		return Project{}, fmt.Errorf("failed to get project: %w", err)
+	}
+
+	return p, nil
 }

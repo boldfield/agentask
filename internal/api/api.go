@@ -31,8 +31,9 @@ func New(s store.Store, authToken string) *Server {
 	// GET /healthz is exempted from auth
 	mux.HandleFunc("GET /healthz", server.handleHealthz)
 
-	// Other handlers will be added by future tasks; they will use authMiddleware
-	// to wrap them if needed. For now, we just have healthz for testing the basic structure.
+	// Project endpoints (protected)
+	mux.HandleFunc("POST /projects", server.authMiddleware(server.handleCreateProject))
+	mux.HandleFunc("GET /projects/{id}", server.authMiddleware(server.handleGetProject))
 
 	return server
 }
@@ -119,4 +120,48 @@ func (s *Server) errorResponse(w http.ResponseWriter, statusCode int, code, mess
 // Mux returns the underlying http.ServeMux for testing or direct access.
 func (s *Server) Mux() *http.ServeMux {
 	return s.mux
+}
+
+// handleCreateProject handles POST /projects to create a new project.
+func (s *Server) handleCreateProject(w http.ResponseWriter, r *http.Request) {
+	var payload struct {
+		Name string `json:"name"`
+		Repo string `json:"repo"`
+	}
+
+	if err := s.decodeJSON(w, r, &payload); err != nil {
+		return // decodeJSON already wrote error response
+	}
+
+	// Validate name is non-empty
+	if payload.Name == "" {
+		s.errorResponse(w, http.StatusBadRequest, "EMPTY_NAME", "Project name cannot be empty")
+		return
+	}
+
+	// Create the project (repo may be empty string)
+	project, err := s.store.CreateProject(r.Context(), payload.Name, payload.Repo)
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "CREATE_ERROR", "Failed to create project")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusCreated, project)
+}
+
+// handleGetProject handles GET /projects/{id} to retrieve a project.
+func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	project, err := s.store.GetProject(r.Context(), id)
+	if err == store.ErrNotFound {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Project not found")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "GET_ERROR", "Failed to get project")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, project)
 }
