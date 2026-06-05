@@ -1,7 +1,7 @@
 ---
 id: T05
 title: HTTP server skeleton — router, auth, health, JSON helpers
-state: backlog
+state: ready
 document: DESIGN.md
 depends_on: [T01]
 ---
