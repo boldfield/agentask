@@ -1,7 +1,7 @@
 ---
 id: T08
 title: Task create (bulk) / get / list with filters
-state: review
+state: done
 document: DESIGN.md
 depends_on: [T03, T05]
 ---
