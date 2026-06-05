@@ -1,7 +1,7 @@
 ---
 id: T01
 title: Go module + project layout + Makefile
-state: in_progress
+state: review
 document: DESIGN.md
 depends_on: []
 ---
@@ -22,3 +22,11 @@ Initialize the Go project skeleton.
 - `make build` produces `bin/agentask`.
 - `make run` prints a version line and exits cleanly.
 - `go vet ./...` and `go test ./...` pass (no tests yet is fine).
+
+## Result
+
+**PR:** https://github.com/boldfield/agentask/pull/1
+**Branch:** agentask/T01-project-layout
+**Head commit:** ffd1e7a (T01: Initialize Go module and project layout)
+
+All acceptance criteria met and verified.
