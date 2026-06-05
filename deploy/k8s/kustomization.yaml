@@ -7,6 +7,7 @@ resources:
   - deployment.yaml
   - service.yaml
 
-commonLabels:
-  app: agentask
-  version: "1.0"
+labels:
+  - pairs:
+      app: agentask
+      version: "1.0"
