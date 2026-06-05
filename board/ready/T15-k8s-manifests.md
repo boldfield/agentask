@@ -1,7 +1,7 @@
 ---
 id: T15
 title: k8s manifests — single-replica Deployment + local-path PVC + Service
-state: backlog
+state: ready
 document: DESIGN.md
 depends_on: [T14]
 ---
