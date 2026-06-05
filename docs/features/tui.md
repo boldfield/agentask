@@ -22,8 +22,15 @@ the API-only design: humans and agents drive the same single source of truth.
   from a single `GET /projects/{id}/tasks` call, bucketed by state client-side.
 - Show enough per card to be useful: title; and for `in_progress`, the `assignee` and a
   lease countdown (so you can watch agents work).
-- Keyboard navigation across columns and cards.
-- **Promote** a selected `backlog` task to `ready`.
+- Keyboard navigation across columns and cards; a task **detail** view (`enter`) showing the
+  spec, links, deps, result, and timestamps.
+- **Act on the board:**
+  - **Promote** a selected `backlog` task to `ready` (`p`).
+  - **Work the human gate** from the `review` column: approve (`a`) = review-approve +
+    transition-done; reject (`x`) = transition back to `ready`. The review column surfaces
+    each task's PR link. The API already supports this end to end
+    (`POST /tasks/{id}/review`, `POST /tasks/{id}/transition`, both shipped) — no backend
+    work needed, which is exactly why it belongs in v1.
 - Refresh: poll on a short interval, plus a manual refresh key.
 
 ## Non-goals (v1)
@@ -49,18 +56,22 @@ the API-only design: humans and agents drive the same single source of truth.
 ## Keybindings (target)
 
 - `↑/↓` move within a column, `←/→` move between columns, `enter` open task detail.
-- `p` promote (backlog → ready), `a` approve, `x` reject (these last two land with reviews).
+- `p` promote (backlog → ready); `a` approve, `x` reject (the v1 review actions, TUI-4).
 - `r` refresh, `q` quit. A help line shows the active bindings.
 
-## Future (post-v1, several gated on API work)
+## Future (post-v1)
 
-- **Review/approve from the TUI** — the highest-value addition: the `review` column shows
-  PR links; `a` approves (`POST /tasks/{id}/review` approve + `POST /tasks/{id}/transition`
-  done), `x` rejects (`transition` → ready). Makes the human gate a keystroke.
-- Task **detail pane** — spec, links, deps, result, timestamps.
-- Event **timeline** — requires a new `GET /tasks/{id}/events` API endpoint first.
+These are genuinely beyond v1 — either gated on backend work or lower value than the
+five-task chain:
+
+- Event **timeline** per task — requires a new `GET /tasks/{id}/events` endpoint that does
+  not exist yet (the event spine isn't API-exposed). The one item that truly needs backend
+  work first.
 - **Live** updates via an SSE/stream endpoint instead of polling.
-- Block/fail from the TUI (the `transition` endpoint already supports it).
+- Create/edit tasks from the TUI (composing a multi-line spec is fiddly — shell out to
+  `$EDITOR`).
+- Block/fail a task from the TUI (the `transition` endpoint already supports it; just not in
+  the initial chain).
 
 ## Task breakdown
 
@@ -84,6 +95,6 @@ builds on the previous, one claimable at a time:
 ## Acceptance (feature-level)
 
 - `agentask-tui` builds, connects to a live Agentask via `AGENTASK_URL`/`AGENTASK_TOKEN`,
-  shows the board for a chosen project, and can promote a backlog task — verified against
-  the deployed instance.
+  shows the board for a chosen project, can promote a backlog task, and can approve/reject a
+  task in `review` (approve → done) — all verified against the deployed instance.
 - It uses only the public HTTP API (no DB access, no `internal/store` import).
