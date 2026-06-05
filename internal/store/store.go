@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"embed"
 	"fmt"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 )
 
@@ -22,6 +24,8 @@ var migrationsFS embed.FS
 type Store interface {
 	Close() error
 	Conn() *sql.DB
+	AppendEvent(ctx context.Context, tx *sql.Tx, taskID, actor, kind string, verdict, note *string) (Event, error)
+	ListEvents(ctx context.Context, taskID string) ([]Event, error)
 }
 
 // sqliteStore wraps a SQLite database connection and provides migration functionality.
@@ -189,6 +193,70 @@ func (s *sqliteStore) Conn() *sql.DB {
 	return s.conn
 }
 
+// AppendEvent inserts a new event into the event table within an existing transaction.
+// It must be called within a transaction so that a state change and its event can be
+// committed atomically.
+func (s *sqliteStore) AppendEvent(ctx context.Context, tx *sql.Tx, taskID, actor, kind string, verdict, note *string) (Event, error) {
+	eventID := GenerateID()
+	now := time.Now().UTC().Format(time.RFC3339)
+
+	result, err := tx.ExecContext(ctx, `
+		INSERT INTO event (id, task_id, actor, kind, verdict, note, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, eventID, taskID, actor, kind, verdict, note, now)
+	if err != nil {
+		return Event{}, fmt.Errorf("failed to append event: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Event{}, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+	if rowsAffected != 1 {
+		return Event{}, fmt.Errorf("expected 1 row affected, got %d", rowsAffected)
+	}
+
+	return Event{
+		ID:        eventID,
+		TaskID:    taskID,
+		Actor:     actor,
+		Kind:      kind,
+		Verdict:   verdict,
+		Note:      note,
+		CreatedAt: now,
+	}, nil
+}
+
+// ListEvents retrieves all events for a given task, ordered by created_at and id.
+func (s *sqliteStore) ListEvents(ctx context.Context, taskID string) ([]Event, error) {
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT id, task_id, actor, kind, verdict, note, created_at
+		FROM event
+		WHERE task_id = ?
+		ORDER BY created_at, id
+	`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query events: %w", err)
+	}
+	defer rows.Close()
+
+	var events []Event
+	for rows.Next() {
+		var e Event
+		err := rows.Scan(&e.ID, &e.TaskID, &e.Actor, &e.Kind, &e.Verdict, &e.Note, &e.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan event: %w", err)
+		}
+		events = append(events, e)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating events: %w", err)
+	}
+
+	return events, nil
+}
+
 // splitStatements splits SQL statements by semicolon, handling comments.
 func splitStatements(sql string) []string {
 	var statements []string
@@ -225,6 +293,12 @@ func splitStatements(sql string) []string {
 	}
 
 	return statements
+}
+
+// GenerateID generates a new unique ID using UUID v4.
+// This is the reusable ID pattern that all tasks (T06+) will use.
+func GenerateID() string {
+	return uuid.NewString()
 }
 
 // Domain structs mirroring the schema (DESIGN.md §2)
