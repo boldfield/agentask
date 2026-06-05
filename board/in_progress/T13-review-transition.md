@@ -1,7 +1,7 @@
 ---
 id: T13
 title: Review verdict + transition (done/blocked/failed), human gate
-state: ready
+state: in_progress
 document: DESIGN.md
 depends_on: [T12, T04]
 ---
