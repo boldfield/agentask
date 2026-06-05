@@ -1,7 +1,7 @@
 ---
 id: T10
 title: Promote endpoint — backlog → ready
-state: ready
+state: in_progress
 document: DESIGN.md
 depends_on: [T08]
 ---
