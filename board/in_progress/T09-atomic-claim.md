@@ -1,7 +1,7 @@
 ---
 id: T09
 title: Atomic claim endpoint + query + concurrency test
-state: ready
+state: in_progress
 document: DESIGN.md
 depends_on: [T08, T04]
 ---
