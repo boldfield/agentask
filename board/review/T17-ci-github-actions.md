@@ -1,7 +1,7 @@
 ---
 id: T17
 title: CI — GitHub Actions build/vet/test on PRs
-state: ready
+state: review
 document: DESIGN.md
 depends_on: [T01]
 ---
@@ -23,3 +23,8 @@ foundation for the CI-green review verdict in DESIGN.md §5.
 - The workflow runs automatically on the PR that introduces it and the `test` job passes.
 - The job fails if `go test` or `go vet` fails (verify the wiring is real, not a no-op).
 - The status check appears on the PR with the stable job/context name.
+
+## Result
+- PR: https://github.com/boldfield/agentask/pull/4
+- Branch: agentask/T17-ci-github-actions
+- Head SHA: 1efa55a0790af4993fcc8dc17c860776c99352d2
