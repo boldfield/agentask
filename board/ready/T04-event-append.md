@@ -1,7 +1,7 @@
 ---
 id: T04
 title: Event append helper
-state: backlog
+state: ready
 document: DESIGN.md
 depends_on: [T03]
 ---
