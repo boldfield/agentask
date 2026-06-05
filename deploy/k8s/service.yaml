@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentask
+spec:
+  type: ClusterIP
+  selector:
+    app: agentask
+  ports:
+  - name: http
+    port: 8080
+    targetPort: http
+    protocol: TCP

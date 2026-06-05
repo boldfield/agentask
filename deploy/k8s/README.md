@@ -1,0 +1,105 @@
+# Agentask Kubernetes Manifests
+
+## Overview
+
+This directory contains Kubernetes manifests to deploy Agentask as a single-replica Deployment with persistent storage.
+
+## Prerequisites
+
+1. A Kubernetes cluster with the `local-path-storage` StorageClass available (or another local storage provisioner)
+2. The Agentask image built and available in the cluster's image registry or preloaded
+
+## Image preparation
+
+Before applying the manifests, build and push (or load) the Agentask image:
+
+```bash
+# Build the image
+docker build -t ghcr.io/boldfield/agentask:latest .
+
+# Push to registry
+docker push ghcr.io/boldfield/agentask:latest
+
+# Or, for local testing with kind/minikube:
+kind load docker-image ghcr.io/boldfield/agentask:latest
+```
+
+## Configuration
+
+Before deploying, update the secret in `secret.yaml`:
+
+```bash
+# Replace the placeholder token with a real one
+kubectl create secret generic agentask-secret \
+  --from-literal=token="your-secure-token-here" \
+  --dry-run=client -o yaml > secret.yaml
+```
+
+## Deployment
+
+Apply the manifests in order:
+
+```bash
+# Option 1: Using kubectl directly
+kubectl apply -f deploy/k8s/pvc.yaml
+kubectl apply -f deploy/k8s/secret.yaml
+kubectl apply -f deploy/k8s/deployment.yaml
+kubectl apply -f deploy/k8s/service.yaml
+
+# Option 2: Using kustomize
+kubectl apply -k deploy/k8s/
+
+# Option 3: All at once (order is handled by kubectl)
+kubectl apply -f deploy/k8s/
+```
+
+## Verification
+
+Check that the deployment is running:
+
+```bash
+# Watch the pod come up
+kubectl get pods -l app=agentask -w
+
+# Check the pod logs
+kubectl logs -f deployment/agentask
+
+# Verify the PVC is bound
+kubectl get pvc agentask-data
+
+# Test the healthz endpoint
+kubectl port-forward svc/agentask 8080:8080
+curl localhost:8080/healthz
+```
+
+## Important: Single-Replica Constraint
+
+**DO NOT SCALE THIS DEPLOYMENT BEYOND 1 REPLICA.**
+
+The Agentask application uses SQLite as its database, which is a single-writer system. The PersistentVolume is provisioned with `local-path` storage, which means it is node-local and cannot be shared across nodes.
+
+Running multiple replicas will result in:
+- Database corruption due to concurrent writes
+- Data inconsistency across replicas
+- Pod evictions and cascading failures
+
+To scale horizontally, the storage layer must be replaced with a distributed database (PostgreSQL, CockroachDB, etc.) and the implementation updated to support multi-replica deployments. This is explicitly out of scope for the MVP.
+
+## Data persistence
+
+The PVC is configured with `ReadWriteOnce` access, ensuring only one pod can mount it at a time. Data is stored at `/data/agentask.db` inside the container.
+
+When the pod is killed and rescheduled on the same or different node, the PVC will be remounted and data will be preserved (assuming the PV remains bound to a node with the data).
+
+## Cleanup
+
+To remove the deployment and free resources:
+
+```bash
+kubectl delete deployment agentask
+kubectl delete service agentask
+kubectl delete secret agentask-secret
+kubectl delete pvc agentask-data
+```
+
+Note: Deleting the PVC will delete the data if the underlying PV is also deleted.
