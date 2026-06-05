@@ -1,7 +1,7 @@
 ---
 id: T07
 title: Document endpoints — register / list
-state: review
+state: done
 document: DESIGN.md
 depends_on: [T06]
 ---
