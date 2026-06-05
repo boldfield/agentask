@@ -1,7 +1,7 @@
 ---
 id: T08
 title: Task create (bulk) / get / list with filters
-state: in_progress
+state: review
 document: DESIGN.md
 depends_on: [T03, T05]
 ---
@@ -21,3 +21,8 @@ depends_on: [T03, T05]
 - Bulk create with a valid `depends_on` edge persists both tasks and the edge.
 - `?state=backlog` returns only backlog tasks.
 - A task with an unfinished dep is excluded from `claimable=true`.
+
+## Result
+PR: https://github.com/boldfield/agentask/pull/10
+Branch: agentask/T08-task-crud
+Head SHA: 274124eba6a5576bf40ead6c7e0c77a8edac63f0
