@@ -1,0 +1,19 @@
+# Binaries
+/bin/
+/dist/
+*.exe
+
+# Go
+*.test
+*.out
+vendor/
+
+# SQLite
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+
+# Env / local
+.env
+.DS_Store
