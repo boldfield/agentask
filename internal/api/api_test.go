@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/boldfield/agentask/internal/store"
 )
@@ -17,7 +18,7 @@ func setupTestServer(t *testing.T, authToken string) *Server {
 	if err != nil {
 		t.Fatalf("failed to open test store: %v", err)
 	}
-	return New(s, authToken)
+	return New(s, authToken, 5*time.Minute)
 }
 
 // TestHealthzWithoutAuth verifies GET /healthz returns 200 without auth.

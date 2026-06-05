@@ -34,6 +34,7 @@ type Store interface {
 	CreateTasks(ctx context.Context, projectID string, tasks []TaskInput) ([]Task, error)
 	GetTask(ctx context.Context, id string) (TaskWithDepsAndLinks, error)
 	ListTasks(ctx context.Context, projectID string, filter TaskListFilter) ([]Task, error)
+	ClaimTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 }
 
 // sqliteStore wraps a SQLite database connection and provides migration functionality.
@@ -320,6 +321,13 @@ const timestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
 // nowTimestamp returns the current UTC time formatted with timestampLayout.
 func nowTimestamp() string {
 	return time.Now().UTC().Format(timestampLayout)
+}
+
+// leaseExpiryTimestamp returns the time at the given future time (now + ttl) formatted with timestampLayout.
+// This ensures the lease expires_at timestamp is in the same fixed-width format so string comparison
+// in claimableSQL works correctly.
+func leaseExpiryTimestamp(ttl time.Duration) string {
+	return time.Now().UTC().Add(ttl).Format(timestampLayout)
 }
 
 // Domain structs mirroring the schema (DESIGN.md §2)
@@ -839,4 +847,77 @@ func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter Ta
 	}
 
 	return tasks, nil
+}
+
+// ClaimTask atomically claims a task as in_progress by a given agent.
+// It reuses the claimableSQL predicate to ensure the task is ready, has no unfinished deps,
+// and has no live lease. The claim is a single conditional UPDATE.
+// Returns the claimed Task on success (rowsAffected == 1).
+// Returns ErrNotFound if the task doesn't exist.
+// Returns ErrConflict if the task is not claimable (already claimed, not ready, unfinished deps, etc).
+func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error) {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := nowTimestamp()
+	leaseExpiry := leaseExpiryTimestamp(leaseTTL)
+
+	// Single conditional UPDATE reusing claimableSQL
+	result, err := tx.ExecContext(ctx, `
+		UPDATE task
+		SET state='in_progress', assignee=?, lease_expires_at=?, updated_at=?
+		WHERE id=? AND `+claimableSQL,
+		agentID, leaseExpiry, now, taskID, now)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to claim task: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 1 {
+		// Claim succeeded. Append event in the same transaction.
+		_, err := s.AppendEvent(ctx, tx, taskID, agentID, "claim", nil, nil)
+		if err != nil {
+			return Task{}, fmt.Errorf("failed to append claim event: %w", err)
+		}
+
+		// SELECT the claimed task within the same transaction
+		var t Task
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, created_at, updated_at
+			FROM task WHERE id = ?
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.CreatedAt, &t.UpdatedAt)
+		if err != nil {
+			return Task{}, fmt.Errorf("failed to fetch claimed task: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
+		}
+
+		return t, nil
+	}
+
+	// rowsAffected == 0: task was not claimable. Determine the cause for the right error.
+	var taskExists bool
+	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) > 0 FROM task WHERE id = ?", taskID).Scan(&taskExists)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to check task existence: %w", err)
+	}
+
+	if !taskExists {
+		// Task does not exist -> ErrNotFound
+		tx.Rollback()
+		return Task{}, ErrNotFound
+	}
+
+	// Task exists but not claimable (not ready, unfinished deps, or live lease) -> ErrConflict
+	tx.Rollback()
+	return Task{}, ErrConflict
 }

@@ -2,8 +2,10 @@ package store
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -456,6 +458,338 @@ func TestListEventsRapidOrdering(t *testing.T) {
 			t.Fatalf("event at position %d out of order: got kind %q, want %q "+
 				"(events scrambled — timestamp ordering regression)", i, e.Kind, want)
 		}
+	}
+}
+
+// TestClaimTaskSuccessful tests that claiming a ready task succeeds and
+// sets state, assignee, and lease_expires_at correctly.
+func TestClaimTaskSuccessful(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project, document, and ready task
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Test spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote to ready
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", taskID)
+	if err != nil {
+		t.Fatalf("failed to set task to ready: %v", err)
+	}
+
+	// Claim the task
+	agentID := "test-agent"
+	leaseTTL := 5 * time.Minute
+	claimedTask, err := store.ClaimTask(ctx, taskID, agentID, leaseTTL)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Verify claimed task state
+	if claimedTask.State != "in_progress" {
+		t.Errorf("expected state='in_progress', got '%s'", claimedTask.State)
+	}
+	if claimedTask.Assignee == nil || *claimedTask.Assignee != agentID {
+		t.Errorf("expected assignee='%s', got %v", agentID, claimedTask.Assignee)
+	}
+	if claimedTask.LeaseExpiresAt == nil {
+		t.Error("expected lease_expires_at to be set")
+	}
+
+	// Verify that a claim event was recorded
+	events, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("expected 1 event, got %d", len(events))
+	}
+	if events[0].Kind != "claim" {
+		t.Errorf("expected event kind='claim', got '%s'", events[0].Kind)
+	}
+	if events[0].Actor != agentID {
+		t.Errorf("expected event actor='%s', got '%s'", agentID, events[0].Actor)
+	}
+}
+
+// TestClaimTaskAlreadyClaimed tests that claiming an already-claimed task returns ErrConflict.
+func TestClaimTaskAlreadyClaimed(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project, document, and ready task
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Test spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote to ready
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", taskID)
+	if err != nil {
+		t.Fatalf("failed to set task to ready: %v", err)
+	}
+
+	// Claim the task once
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("first claim failed: %v", err)
+	}
+
+	// Try to claim it again
+	_, err = store.ClaimTask(ctx, taskID, "agent-2", 5*time.Minute)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected ErrConflict on second claim, got %v", err)
+	}
+}
+
+// TestClaimTaskWithUnfinishedDependency tests that claiming a task with an unfinished dependency returns ErrConflict.
+func TestClaimTaskWithUnfinishedDependency(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create two tasks: one to depend on, one that depends
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Key: "dep-task", Title: "Dependency Task", Spec: "spec", DocumentID: doc.ID},
+		{Title: "Dependent Task", Spec: "spec", DocumentID: doc.ID, DependsOn: []string{"dep-task"}},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	depTaskID := tasks[0].ID
+	dependentTaskID := tasks[1].ID
+
+	// Promote both to ready
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id IN (?, ?)", "ready", depTaskID, dependentTaskID)
+	if err != nil {
+		t.Fatalf("failed to set tasks to ready: %v", err)
+	}
+
+	// Try to claim dependent task (should fail because dependency is not done)
+	_, err = store.ClaimTask(ctx, dependentTaskID, "agent-1", 5*time.Minute)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected ErrConflict when dependency is not done, got %v", err)
+	}
+
+	// Mark the dependency as done
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "done", depTaskID)
+	if err != nil {
+		t.Fatalf("failed to set dependency to done: %v", err)
+	}
+
+	// Now claiming should succeed
+	_, err = store.ClaimTask(ctx, dependentTaskID, "agent-1", 5*time.Minute)
+	if err != nil {
+		t.Errorf("claim should succeed after dependency is done, got error: %v", err)
+	}
+}
+
+// TestClaimTaskNotFound tests that claiming a non-existent task returns ErrNotFound.
+func TestClaimTaskNotFound(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Try to claim a non-existent task
+	_, err = store.ClaimTask(ctx, "non-existent-task", "agent-1", 5*time.Minute)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestClaimTaskConcurrency is the critical concurrency test: N goroutines attempt to claim
+// the same ready task concurrently. Exactly one should succeed (ErrConflict=nil), and the
+// other N-1 should get ErrConflict. This proves the atomic UPDATE design works.
+func TestClaimTaskConcurrency(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project, document, and ready task
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Test spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote to ready
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", taskID)
+	if err != nil {
+		t.Fatalf("failed to set task to ready: %v", err)
+	}
+
+	// Launch N goroutines that try to claim the task concurrently
+	const numGoroutines = 20
+	var wg sync.WaitGroup
+	results := make([]error, numGoroutines)
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			agentID := fmt.Sprintf("agent-%d", index)
+			_, err := store.ClaimTask(ctx, taskID, agentID, 5*time.Minute)
+			results[index] = err
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Count successes and conflicts
+	successCount := 0
+	conflictCount := 0
+
+	for _, err := range results {
+		if err == nil {
+			successCount++
+		} else if errors.Is(err, ErrConflict) {
+			conflictCount++
+		} else {
+			t.Errorf("unexpected error: %v", err)
+		}
+	}
+
+	// Exactly one should succeed, rest should get ErrConflict
+	if successCount != 1 {
+		t.Errorf("expected exactly 1 success, got %d", successCount)
+	}
+	if conflictCount != numGoroutines-1 {
+		t.Errorf("expected %d conflicts, got %d", numGoroutines-1, conflictCount)
+	}
+
+	// Verify that exactly one claim event was recorded
+	events, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+	if len(events) != 1 {
+		t.Errorf("expected 1 claim event, got %d", len(events))
+	}
+}
+
+// TestClaimTaskExpiredLease tests that a task with an expired lease can be re-claimed.
+func TestClaimTaskExpiredLease(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := nowTimestamp()
+
+	// Create a project, document, and task
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Test spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Manually set the task to ready with an expired lease (in the past)
+	pastTime := time.Now().UTC().Add(-1 * time.Hour).Format(timestampLayout)
+	_, err = store.Conn().ExecContext(ctx, `
+		UPDATE task SET state = ?, assignee = ?, lease_expires_at = ?, updated_at = ?
+		WHERE id = ?
+	`, "ready", "dead-agent", pastTime, now, taskID)
+	if err != nil {
+		t.Fatalf("failed to set task with expired lease: %v", err)
+	}
+
+	// Try to claim the task (should succeed because lease is expired)
+	claimedTask, err := store.ClaimTask(ctx, taskID, "new-agent", 5*time.Minute)
+	if err != nil {
+		t.Errorf("expected to claim task with expired lease, got error: %v", err)
+	}
+
+	// Verify the new agent is now the assignee
+	if claimedTask.Assignee == nil || *claimedTask.Assignee != "new-agent" {
+		t.Errorf("expected assignee='new-agent', got %v", claimedTask.Assignee)
 	}
 }
 

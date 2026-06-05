@@ -7,24 +7,27 @@ import (
 	"io"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/boldfield/agentask/internal/store"
 )
 
-// Server wraps the HTTP server with its dependencies: store and auth token.
+// Server wraps the HTTP server with its dependencies: store, auth token, and lease TTL.
 type Server struct {
 	mux       *http.ServeMux
 	store     store.Store
 	authToken string
+	leaseTTL  time.Duration
 }
 
-// New creates a new API server with the given store and auth token.
-func New(s store.Store, authToken string) *Server {
+// New creates a new API server with the given store, auth token, and lease TTL.
+func New(s store.Store, authToken string, leaseTTL time.Duration) *Server {
 	mux := http.NewServeMux()
 	server := &Server{
 		mux:       mux,
 		store:     s,
 		authToken: authToken,
+		leaseTTL:  leaseTTL,
 	}
 
 	// Register handlers
@@ -43,6 +46,7 @@ func New(s store.Store, authToken string) *Server {
 	mux.HandleFunc("POST /projects/{id}/tasks", server.authMiddleware(server.handleCreateTasks))
 	mux.HandleFunc("GET /projects/{id}/tasks", server.authMiddleware(server.handleListTasks))
 	mux.HandleFunc("GET /tasks/{id}", server.authMiddleware(server.handleGetTask))
+	mux.HandleFunc("POST /tasks/{id}/claim", server.authMiddleware(server.handleClaimTask))
 
 	return server
 }
@@ -310,4 +314,40 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.encodeJSON(w, http.StatusOK, tasks)
+}
+
+// handleClaimTask handles POST /tasks/{id}/claim to claim a task as in_progress.
+func (s *Server) handleClaimTask(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	var payload struct {
+		AgentID string `json:"agent_id"`
+	}
+
+	if err := s.decodeJSON(w, r, &payload); err != nil {
+		return // decodeJSON already wrote error response
+	}
+
+	// Validate agent_id is non-empty
+	if payload.AgentID == "" {
+		s.errorResponse(w, http.StatusBadRequest, "EMPTY_AGENT_ID", "agent_id cannot be empty")
+		return
+	}
+
+	// Claim the task
+	task, err := s.store.ClaimTask(r.Context(), taskID, payload.AgentID, s.leaseTTL)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		s.errorResponse(w, http.StatusConflict, "CONFLICT", "Task is not claimable")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "CLAIM_ERROR", "Failed to claim task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
 }
