@@ -187,3 +187,137 @@ func TestMalformedJSONResponse(t *testing.T) {
 		t.Errorf("expected error code 'JSON_DECODE_ERROR', got %q", code)
 	}
 }
+
+// TestCreateAndGetProjectRoundTrip verifies that creating and retrieving a project round-trips all fields.
+func TestCreateAndGetProjectRoundTrip(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Create a project
+	createPayload := map[string]string{
+		"name": "test-project",
+		"repo": "https://github.com/example/test-repo",
+	}
+	createBody, _ := json.Marshal(createPayload)
+	createReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	if createW.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d", createW.Code)
+	}
+
+	var createResp store.Project
+	if err := json.NewDecoder(createW.Body).Decode(&createResp); err != nil {
+		t.Fatalf("failed to decode create response: %v", err)
+	}
+
+	// Verify created project fields
+	if createResp.ID == "" {
+		t.Error("created project missing id")
+	}
+	if createResp.Name != "test-project" {
+		t.Errorf("expected name 'test-project', got %q", createResp.Name)
+	}
+	if createResp.Repo != "https://github.com/example/test-repo" {
+		t.Errorf("expected repo 'https://github.com/example/test-repo', got %q", createResp.Repo)
+	}
+	if createResp.CreatedAt == "" {
+		t.Error("created project missing created_at")
+	}
+
+	// Get the project
+	getReq := httptest.NewRequest("GET", "/projects/"+createResp.ID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW := httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+
+	if getW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", getW.Code)
+	}
+
+	var getResp store.Project
+	if err := json.NewDecoder(getW.Body).Decode(&getResp); err != nil {
+		t.Fatalf("failed to decode get response: %v", err)
+	}
+
+	// Verify retrieved project matches created project
+	if getResp.ID != createResp.ID {
+		t.Errorf("expected id %q, got %q", createResp.ID, getResp.ID)
+	}
+	if getResp.Name != createResp.Name {
+		t.Errorf("expected name %q, got %q", createResp.Name, getResp.Name)
+	}
+	if getResp.Repo != createResp.Repo {
+		t.Errorf("expected repo %q, got %q", createResp.Repo, getResp.Repo)
+	}
+	if getResp.CreatedAt != createResp.CreatedAt {
+		t.Errorf("expected created_at %q, got %q", createResp.CreatedAt, getResp.CreatedAt)
+	}
+}
+
+// TestGetProjectNotFound verifies that getting an unknown project returns 404.
+func TestGetProjectNotFound(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	getReq := httptest.NewRequest("GET", "/projects/nonexistent-id", nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW := httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+
+	if getW.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", getW.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(getW.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "NOT_FOUND" {
+		t.Errorf("expected error code 'NOT_FOUND', got %q", code)
+	}
+}
+
+// TestCreateProjectEmptyName verifies that creating a project with empty name returns 400.
+func TestCreateProjectEmptyName(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	createPayload := map[string]string{
+		"name": "",
+		"repo": "https://github.com/example/test-repo",
+	}
+	createBody, _ := json.Marshal(createPayload)
+	createReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(createBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	if createW.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", createW.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(createW.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "EMPTY_NAME" {
+		t.Errorf("expected error code 'EMPTY_NAME', got %q", code)
+	}
+}
