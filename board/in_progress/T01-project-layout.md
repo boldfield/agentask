@@ -1,7 +1,7 @@
 ---
 id: T01
 title: Go module + project layout + Makefile
-state: ready
+state: in_progress
 document: DESIGN.md
 depends_on: []
 ---
