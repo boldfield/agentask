@@ -139,7 +139,7 @@ body — no per-agent identity for the MVP.
 
 ## 7. Storage & deployment
 
-- **Language:** Go. Stdlib `net/http` with 1.22 routing; minimal deps.
+- **Language:** Go 1.25. Stdlib `net/http` with Go 1.22+ routing feature; minimal deps.
 - **Store:** SQLite via `modernc.org/sqlite` (pure Go, no cgo) so the container is a static
   binary on scratch/distroless. WAL mode.
 - **k8s:** single-replica `Deployment` (or `StatefulSet`), PVC on `local-path-storage`.

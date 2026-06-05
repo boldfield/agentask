@@ -21,6 +21,6 @@ exists.
 
 ## Stack
 
-- Go (stdlib `net/http`, 1.22 routing)
+- Go 1.25 (stdlib `net/http` with Go 1.22+ routing feature)
 - SQLite via `modernc.org/sqlite` (pure Go, no cgo)
 - Deployed as a single-replica k8s `Deployment` with a `local-path-storage` PVC
