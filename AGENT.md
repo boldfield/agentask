@@ -8,18 +8,22 @@ time**, end to end, following this loop exactly. Do not skip steps.
 1. **Pick a task.** List `board/ready/`. Choose exactly one file. If `board/ready/` is
    empty, stop — there is nothing to do.
 
-2. **Claim it.** Move the file to `in_progress` and update its `state:` frontmatter to match:
+2. **Branch first.** Create a branch off `main` named for the task, *before touching
+   anything*. Every commit for this task lives on this branch so `main` stays pristine and
+   only ever reflects merged state:
+   ```bash
+   git checkout main && git pull --ff-only
+   git checkout -b agentask/<ID>-<slug>
+   ```
+
+3. **Claim it on the branch.** Move the file to `in_progress` and update its `state:`
+   frontmatter to match. This is your branch's first commit:
    ```bash
    git mv board/ready/<file>.md board/in_progress/<file>.md
    # edit the file: set `state: in_progress`
    git add -A && git commit -m "claim <ID>: <title>"
    ```
-   Claiming is the first commit. Never work a task still in `ready/`.
-
-3. **Branch.** Create a branch off `main` named for the task:
-   ```bash
-   git checkout -b agentask/<ID>-<slug>
-   ```
+   Never commit a claim (or anything else) onto `main`. Never work a task still in `ready/`.
 
 4. **Read the spec.** Open the task file. Read its `## Spec` and `## Acceptance criteria`.
    Read the document it references (`document:` frontmatter, e.g. `DESIGN.md`) for context.
@@ -43,8 +47,7 @@ time**, end to end, following this loop exactly. Do not skip steps.
    The PR title should be `<ID>: <title>`. The body should list which acceptance criteria
    are met and how you verified them.
 
-8. **Move to review.** On `main` (or via a follow-up commit on your branch — keep it simple,
-   commit the board move on the branch so it travels with the PR):
+8. **Move to review.** On your branch, so the board move travels with the PR:
    - `git mv board/in_progress/<file>.md board/review/<file>.md`
    - Edit the file: set `state: review`, and under a new `## Result` section add the PR URL,
      the branch name, and the head commit SHA.
