@@ -62,10 +62,10 @@ Create a new project.
 **Response (201 Created):**
 ```json
 {
-  "ID": "550e8400-e29b-41d4-a716-446655440000",
-  "Name": "My Project",
-  "Repo": "https://github.com/user/my-project",
-  "CreatedAt": "2026-06-05T21:00:00.000000000Z"
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "My Project",
+  "repo": "https://github.com/user/my-project",
+  "created_at": "2026-06-05T21:00:00.000000000Z"
 }
 ```
 
@@ -75,7 +75,7 @@ Create a new project.
 - `400 JSON_DECODE_ERROR`: Invalid JSON in request body
 - `500 CREATE_ERROR`: Server error creating project
 
-**Note:** Field names are capitalized in the response. The `ID` field is a UUID that must be used in subsequent requests to reference this project.
+**Note:** The `id` field is a UUID that must be used in subsequent requests to reference this project.
 
 ---
 
@@ -92,10 +92,10 @@ curl -H "Authorization: Bearer token" \
 **Response (200 OK):**
 ```json
 {
-  "ID": "550e8400-e29b-41d4-a716-446655440000",
-  "Name": "My Project",
-  "Repo": "https://github.com/user/my-project",
-  "CreatedAt": "2026-06-05T21:00:00.000000000Z"
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "name": "My Project",
+  "repo": "https://github.com/user/my-project",
+  "created_at": "2026-06-05T21:00:00.000000000Z"
 }
 ```
 
@@ -131,14 +131,14 @@ Register a design or feature specification document.
 **Response (201 Created):**
 ```json
 {
-  "ID": "660e8400-e29b-41d4-a716-446655440001",
-  "ProjectID": "550e8400-e29b-41d4-a716-446655440000",
-  "Kind": "design",
-  "Title": "DESIGN.md",
-  "Ref": "DESIGN.md",
-  "Commit": null,
-  "CreatedAt": "2026-06-05T21:00:00.000000000Z",
-  "UpdatedAt": "2026-06-05T21:00:00.000000000Z"
+  "id": "660e8400-e29b-41d4-a716-446655440001",
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "kind": "design",
+  "title": "DESIGN.md",
+  "ref": "DESIGN.md",
+  "commit": null,
+  "created_at": "2026-06-05T21:00:00.000000000Z",
+  "updated_at": "2026-06-05T21:00:00.000000000Z"
 }
 ```
 
@@ -176,14 +176,14 @@ curl -H "Authorization: Bearer token" \
 ```json
 [
   {
-    "ID": "660e8400-e29b-41d4-a716-446655440001",
-    "ProjectID": "550e8400-e29b-41d4-a716-446655440000",
-    "Kind": "design",
-    "Title": "DESIGN.md",
-    "Ref": "DESIGN.md",
-    "Commit": null,
-    "CreatedAt": "2026-06-05T21:00:00.000000000Z",
-    "UpdatedAt": "2026-06-05T21:00:00.000000000Z"
+    "id": "660e8400-e29b-41d4-a716-446655440001",
+    "project_id": "550e8400-e29b-41d4-a716-446655440000",
+    "kind": "design",
+    "title": "DESIGN.md",
+    "ref": "DESIGN.md",
+    "commit": null,
+    "created_at": "2026-06-05T21:00:00.000000000Z",
+    "updated_at": "2026-06-05T21:00:00.000000000Z"
   }
 ]
 ```
@@ -230,30 +230,30 @@ Bulk-create tasks for a project.
 ```json
 [
   {
-    "ID": "770e8400-e29b-41d4-a716-446655440002",
-    "ProjectID": "550e8400-e29b-41d4-a716-446655440000",
-    "DocumentID": "660e8400-e29b-41d4-a716-446655440001",
-    "Title": "Implement authentication",
-    "Spec": "Add bearer token authentication to all endpoints",
-    "State": "backlog",
-    "Assignee": null,
-    "LeaseExpiresAt": null,
-    "Result": null,
-    "CreatedAt": "2026-06-05T21:00:00.000000000Z",
-    "UpdatedAt": "2026-06-05T21:00:00.000000000Z"
+    "id": "770e8400-e29b-41d4-a716-446655440002",
+    "project_id": "550e8400-e29b-41d4-a716-446655440000",
+    "document_id": "660e8400-e29b-41d4-a716-446655440001",
+    "title": "Implement authentication",
+    "spec": "Add bearer token authentication to all endpoints",
+    "state": "backlog",
+    "assignee": null,
+    "lease_expires_at": null,
+    "result": null,
+    "created_at": "2026-06-05T21:00:00.000000000Z",
+    "updated_at": "2026-06-05T21:00:00.000000000Z"
   },
   {
-    "ID": "880e8400-e29b-41d4-a716-446655440003",
-    "ProjectID": "550e8400-e29b-41d4-a716-446655440000",
-    "DocumentID": "660e8400-e29b-41d4-a716-446655440001",
-    "Title": "Add task claiming",
-    "Spec": "Implement atomic task claiming with leases",
-    "State": "backlog",
-    "Assignee": null,
-    "LeaseExpiresAt": null,
-    "Result": null,
-    "CreatedAt": "2026-06-05T21:00:00.000000000Z",
-    "UpdatedAt": "2026-06-05T21:00:00.000000000Z"
+    "id": "880e8400-e29b-41d4-a716-446655440003",
+    "project_id": "550e8400-e29b-41d4-a716-446655440000",
+    "document_id": "660e8400-e29b-41d4-a716-446655440001",
+    "title": "Add task claiming",
+    "spec": "Implement atomic task claiming with leases",
+    "state": "backlog",
+    "assignee": null,
+    "lease_expires_at": null,
+    "result": null,
+    "created_at": "2026-06-05T21:00:00.000000000Z",
+    "updated_at": "2026-06-05T21:00:00.000000000Z"
   }
 ]
 ```
@@ -301,17 +301,17 @@ curl -H "Authorization: Bearer token" \
 ```json
 [
   {
-    "ID": "770e8400-e29b-41d4-a716-446655440002",
-    "ProjectID": "550e8400-e29b-41d4-a716-446655440000",
-    "DocumentID": "660e8400-e29b-41d4-a716-446655440001",
-    "Title": "Implement authentication",
-    "Spec": "Add bearer token authentication to all endpoints",
-    "State": "ready",
-    "Assignee": null,
-    "LeaseExpiresAt": null,
-    "Result": null,
-    "CreatedAt": "2026-06-05T21:00:00.000000000Z",
-    "UpdatedAt": "2026-06-05T21:00:00.000000000Z"
+    "id": "770e8400-e29b-41d4-a716-446655440002",
+    "project_id": "550e8400-e29b-41d4-a716-446655440000",
+    "document_id": "660e8400-e29b-41d4-a716-446655440001",
+    "title": "Implement authentication",
+    "spec": "Add bearer token authentication to all endpoints",
+    "state": "ready",
+    "assignee": null,
+    "lease_expires_at": null,
+    "result": null,
+    "created_at": "2026-06-05T21:00:00.000000000Z",
+    "updated_at": "2026-06-05T21:00:00.000000000Z"
   }
 ]
 ```
@@ -353,16 +353,16 @@ curl -H "Authorization: Bearer token" \
   ],
   "links": [
     {
-      "ID": "990e8400-e29b-41d4-a716-446655440004",
-      "TaskID": "770e8400-e29b-41d4-a716-446655440002",
-      "Kind": "pr",
-      "Value": "#123"
+      "id": "990e8400-e29b-41d4-a716-446655440004",
+      "task_id": "770e8400-e29b-41d4-a716-446655440002",
+      "kind": "pr",
+      "value": "#123"
     },
     {
-      "ID": "aa0e8400-e29b-41d4-a716-446655440005",
-      "TaskID": "770e8400-e29b-41d4-a716-446655440002",
-      "Kind": "commit",
-      "Value": "abc123def456"
+      "id": "aa0e8400-e29b-41d4-a716-446655440005",
+      "task_id": "770e8400-e29b-41d4-a716-446655440002",
+      "kind": "commit",
+      "value": "abc123def456"
     }
   ]
 }
@@ -390,17 +390,17 @@ curl -X POST -H "Authorization: Bearer token" \
 **Response (200 OK):**
 ```json
 {
-  "ID": "770e8400-e29b-41d4-a716-446655440002",
-  "ProjectID": "550e8400-e29b-41d4-a716-446655440000",
-  "DocumentID": "660e8400-e29b-41d4-a716-446655440001",
-  "Title": "Implement authentication",
-  "Spec": "Add bearer token authentication to all endpoints",
-  "State": "ready",
-  "Assignee": null,
-  "LeaseExpiresAt": null,
-  "Result": null,
-  "CreatedAt": "2026-06-05T21:00:00.000000000Z",
-  "UpdatedAt": "2026-06-05T21:00:30.000000000Z"
+  "id": "770e8400-e29b-41d4-a716-446655440002",
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "document_id": "660e8400-e29b-41d4-a716-446655440001",
+  "title": "Implement authentication",
+  "spec": "Add bearer token authentication to all endpoints",
+  "state": "ready",
+  "assignee": null,
+  "lease_expires_at": null,
+  "result": null,
+  "created_at": "2026-06-05T21:00:00.000000000Z",
+  "updated_at": "2026-06-05T21:00:30.000000000Z"
 }
 ```
 
@@ -431,17 +431,17 @@ Claim a task and move it to `in_progress` state with a lease.
 **Response (200 OK):**
 ```json
 {
-  "ID": "770e8400-e29b-41d4-a716-446655440002",
-  "ProjectID": "550e8400-e29b-41d4-a716-446655440000",
-  "DocumentID": "660e8400-e29b-41d4-a716-446655440001",
-  "Title": "Implement authentication",
-  "Spec": "Add bearer token authentication to all endpoints",
-  "State": "in_progress",
-  "Assignee": "agent-1",
-  "LeaseExpiresAt": "2026-06-05T21:05:00.000000000Z",
-  "Result": null,
-  "CreatedAt": "2026-06-05T21:00:00.000000000Z",
-  "UpdatedAt": "2026-06-05T21:01:00.000000000Z"
+  "id": "770e8400-e29b-41d4-a716-446655440002",
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "document_id": "660e8400-e29b-41d4-a716-446655440001",
+  "title": "Implement authentication",
+  "spec": "Add bearer token authentication to all endpoints",
+  "state": "in_progress",
+  "assignee": "agent-1",
+  "lease_expires_at": "2026-06-05T21:05:00.000000000Z",
+  "result": null,
+  "created_at": "2026-06-05T21:00:00.000000000Z",
+  "updated_at": "2026-06-05T21:01:00.000000000Z"
 }
 ```
 
@@ -480,17 +480,17 @@ Extend the lease on a task claimed by an agent.
 **Response (200 OK):**
 ```json
 {
-  "ID": "770e8400-e29b-41d4-a716-446655440002",
-  "ProjectID": "550e8400-e29b-41d4-a716-446655440000",
-  "DocumentID": "660e8400-e29b-41d4-a716-446655440001",
-  "Title": "Implement authentication",
-  "Spec": "Add bearer token authentication to all endpoints",
-  "State": "in_progress",
-  "Assignee": "agent-1",
-  "LeaseExpiresAt": "2026-06-05T21:10:00.000000000Z",
-  "Result": null,
-  "CreatedAt": "2026-06-05T21:00:00.000000000Z",
-  "UpdatedAt": "2026-06-05T21:02:00.000000000Z"
+  "id": "770e8400-e29b-41d4-a716-446655440002",
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "document_id": "660e8400-e29b-41d4-a716-446655440001",
+  "title": "Implement authentication",
+  "spec": "Add bearer token authentication to all endpoints",
+  "state": "in_progress",
+  "assignee": "agent-1",
+  "lease_expires_at": "2026-06-05T21:10:00.000000000Z",
+  "result": null,
+  "created_at": "2026-06-05T21:00:00.000000000Z",
+  "updated_at": "2026-06-05T21:02:00.000000000Z"
 }
 ```
 
@@ -556,16 +556,16 @@ Submit a task for review and transition it from `in_progress` to `review` state.
   "depends_on": [],
   "links": [
     {
-      "ID": "990e8400-e29b-41d4-a716-446655440004",
-      "TaskID": "770e8400-e29b-41d4-a716-446655440002",
-      "Kind": "pr",
-      "Value": "#123"
+      "id": "990e8400-e29b-41d4-a716-446655440004",
+      "task_id": "770e8400-e29b-41d4-a716-446655440002",
+      "kind": "pr",
+      "value": "#123"
     },
     {
-      "ID": "aa0e8400-e29b-41d4-a716-446655440005",
-      "TaskID": "770e8400-e29b-41d4-a716-446655440002",
-      "Kind": "commit",
-      "Value": "abc123def456"
+      "id": "aa0e8400-e29b-41d4-a716-446655440005",
+      "task_id": "770e8400-e29b-41d4-a716-446655440002",
+      "kind": "commit",
+      "value": "abc123def456"
     }
   ]
 }
@@ -605,13 +605,13 @@ Post a review verdict on a task in the `review` state.
 **Response (201 Created):**
 ```json
 {
-  "ID": "bb0e8400-e29b-41d4-a716-446655440006",
-  "TaskID": "770e8400-e29b-41d4-a716-446655440002",
-  "Actor": "reviewer@example.com",
-  "Kind": "review",
-  "Verdict": "approve",
-  "Note": "Looks good! Code quality is solid.",
-  "CreatedAt": "2026-06-05T21:04:00.000000000Z"
+  "id": "bb0e8400-e29b-41d4-a716-446655440006",
+  "task_id": "770e8400-e29b-41d4-a716-446655440002",
+  "actor": "reviewer@example.com",
+  "kind": "review",
+  "verdict": "approve",
+  "note": "Looks good! Code quality is solid.",
+  "created_at": "2026-06-05T21:04:00.000000000Z"
 }
 ```
 
@@ -647,17 +647,17 @@ Transition a task to a new state (manual state machine operation).
 **Response (200 OK):**
 ```json
 {
-  "ID": "770e8400-e29b-41d4-a716-446655440002",
-  "ProjectID": "550e8400-e29b-41d4-a716-446655440000",
-  "DocumentID": "660e8400-e29b-41d4-a716-446655440001",
-  "Title": "Implement authentication",
-  "Spec": "Add bearer token authentication to all endpoints",
-  "State": "done",
-  "Assignee": "agent-1",
-  "LeaseExpiresAt": null,
-  "Result": "Task completed successfully. Implemented bearer token auth on all endpoints.",
-  "CreatedAt": "2026-06-05T21:00:00.000000000Z",
-  "UpdatedAt": "2026-06-05T21:05:00.000000000Z"
+  "id": "770e8400-e29b-41d4-a716-446655440002",
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "document_id": "660e8400-e29b-41d4-a716-446655440001",
+  "title": "Implement authentication",
+  "spec": "Add bearer token authentication to all endpoints",
+  "state": "done",
+  "assignee": "agent-1",
+  "lease_expires_at": null,
+  "result": "Task completed successfully. Implemented bearer token auth on all endpoints.",
+  "created_at": "2026-06-05T21:00:00.000000000Z",
+  "updated_at": "2026-06-05T21:05:00.000000000Z"
 }
 ```
 
