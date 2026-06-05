@@ -1,7 +1,7 @@
 ---
 id: T05
 title: HTTP server skeleton — router, auth, health, JSON helpers
-state: ready
+state: review
 document: DESIGN.md
 depends_on: [T01]
 ---
@@ -22,3 +22,9 @@ In `internal/api`:
 - `GET /healthz` returns 200 without auth.
 - A protected route returns 401 without/with a wrong token, and proceeds with the right token.
 - Malformed JSON body → 400 with the error envelope.
+
+## Result
+
+- PR: https://github.com/boldfield/agentask/pull/7
+- Branch: agentask/T05-http-skeleton
+- Head SHA: f74ec17
