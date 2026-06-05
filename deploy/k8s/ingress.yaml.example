@@ -1,0 +1,41 @@
+# EXAMPLE ONLY — not applied by the kustomization; adapt to your cluster.
+#
+# Exposes Agentask through an ingress controller. This sample targets Traefik with
+# its built-in ACME ("letsencrypt") cert resolver. Adjust ingressClassName, the
+# annotations, the host, and the TLS block for your environment (cert-manager,
+# nginx, etc.). You must create a DNS record for the host pointing at your ingress
+# controller's address.
+#
+# Agentask's only auth is a single bearer token, so prefer NOT exposing it on the
+# public internet — keep it on a private network / tailnet, or in front of an
+# auth proxy.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: agentask
+  labels:
+    app: agentask
+  annotations:
+    traefik.ingress.kubernetes.io/router.entrypoints: websecure
+    traefik.ingress.kubernetes.io/router.tls.certresolver: letsencrypt
+spec:
+  ingressClassName: traefik
+  rules:
+  - host: agentask.example.com   # <-- your hostname; create a DNS record pointing at the ingress controller
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: agentask
+            port:
+              number: 8080
+  # With a Traefik certresolver, Traefik obtains and serves the cert from its own
+  # ACME store — do NOT set secretName here. A secretName points Traefik at a k8s
+  # secret that won't exist (no cert-manager), which only spams "secret does not
+  # exist" errors. cert-manager users would instead set secretName and omit the
+  # certresolver annotation.
+  tls:
+  - hosts:
+    - agentask.example.com
