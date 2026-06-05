@@ -1,7 +1,7 @@
 ---
 id: T15
 title: k8s manifests — single-replica Deployment + local-path PVC + Service
-state: ready
+state: review
 document: DESIGN.md
 depends_on: [T14]
 ---
@@ -20,3 +20,9 @@ Manifests under `deploy/k8s/`:
 - `kubectl apply` brings up one running pod backed by the PVC.
 - Killing the pod and rescheduling preserves data (same PVC).
 - Manifest comments document the replicas:1 constraint.
+
+## Result
+
+**PR**: https://github.com/boldfield/agentask/pull/17
+**Branch**: agentask/T15-k8s-manifests
+**Head SHA**: 4973f3b86b8225d9922f9685d89e6708e37c6d4d
