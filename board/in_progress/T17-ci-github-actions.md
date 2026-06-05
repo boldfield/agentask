@@ -1,7 +1,7 @@
 ---
 id: T17
 title: CI — GitHub Actions build/vet/test on PRs
-state: ready
+state: in_progress
 document: DESIGN.md
 depends_on: [T01]
 ---
