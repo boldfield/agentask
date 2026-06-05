@@ -1,7 +1,7 @@
 ---
 id: T14
 title: Dockerfile — multi-stage static binary
-state: in_progress
+state: review
 document: DESIGN.md
 depends_on: [T01]
 ---
@@ -15,3 +15,8 @@ depends_on: [T01]
 ## Acceptance criteria
 - `docker build` produces an image that runs and serves `GET /healthz`.
 - Final image contains no shell/toolchain (distroless/scratch).
+
+## Result
+- **PR:** https://github.com/boldfield/agentask/pull/13
+- **Branch:** agentask/T14-dockerfile
+- **Head SHA:** 16bc5edca5627f296ccdf5e2b579748bb5fb6235
