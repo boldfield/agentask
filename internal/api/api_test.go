@@ -1474,3 +1474,345 @@ func TestHeartbeatRequiresAuth(t *testing.T) {
 		t.Errorf("expected status 401, got %d", heartbeatW.Code)
 	}
 }
+
+// TestSubmitTaskMovesToReviewAndPersistsLinks verifies that submit moves a task to review,
+// stores the result, persists links, and clears the lease.
+func TestSubmitTaskMovesToReviewAndPersistsLinks(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Setup: project, document, and claimed task
+	taskID, _ := setupClaimedTask(t, server, authHeader)
+
+	// Submit with a result and two links (pr and commit)
+	submitPayload := map[string]interface{}{
+		"agent_id": "test-agent",
+		"result":   "Work completed successfully",
+		"links": []map[string]string{
+			{"kind": "pr", "value": "https://github.com/repo/pull/123"},
+			{"kind": "commit", "value": "abc123def456"},
+		},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+
+	if submitW.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d; body: %s", submitW.Code, submitW.Body.String())
+	}
+
+	var submittedTask store.TaskWithDepsAndLinks
+	if err := json.NewDecoder(submitW.Body).Decode(&submittedTask); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify task state is review
+	if submittedTask.State != "review" {
+		t.Errorf("expected state 'review', got %q", submittedTask.State)
+	}
+
+	// Verify result is stored
+	if submittedTask.Result == nil || *submittedTask.Result != "Work completed successfully" {
+		t.Errorf("expected result 'Work completed successfully', got %v", submittedTask.Result)
+	}
+
+	// Verify lease is cleared (NULL)
+	if submittedTask.LeaseExpiresAt != nil {
+		t.Errorf("expected lease_expires_at to be NULL, got %v", submittedTask.LeaseExpiresAt)
+	}
+
+	// Verify links are persisted and returned
+	if len(submittedTask.Links) != 2 {
+		t.Fatalf("expected 2 links, got %d", len(submittedTask.Links))
+	}
+
+	// Check the first link (pr)
+	found := false
+	for _, link := range submittedTask.Links {
+		if link.Kind == "pr" && link.Value == "https://github.com/repo/pull/123" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected link (pr, https://github.com/repo/pull/123) not found in response")
+	}
+
+	// Check the second link (commit)
+	found = false
+	for _, link := range submittedTask.Links {
+		if link.Kind == "commit" && link.Value == "abc123def456" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected link (commit, abc123def456) not found in response")
+	}
+
+	// Verify links are retrievable via GET /tasks/{id}
+	getReq := httptest.NewRequest("GET", "/tasks/"+taskID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW := httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+
+	if getW.Code != http.StatusOK {
+		t.Fatalf("GET /tasks/{id} failed with status %d", getW.Code)
+	}
+
+	var retrievedTask store.TaskWithDepsAndLinks
+	if err := json.NewDecoder(getW.Body).Decode(&retrievedTask); err != nil {
+		t.Fatalf("failed to decode GET response: %v", err)
+	}
+
+	if len(retrievedTask.Links) != 2 {
+		t.Errorf("expected 2 links via GET, got %d", len(retrievedTask.Links))
+	}
+
+	// Verify links are queryable by (kind, value) via the store's Conn
+	// For this test, we just verify they exist in the retrieved task
+	linkFound := false
+	for _, link := range retrievedTask.Links {
+		if link.Kind == "pr" && link.Value == "https://github.com/repo/pull/123" {
+			linkFound = true
+			break
+		}
+	}
+	if !linkFound {
+		t.Errorf("link (pr, ...) not retrievable via GET")
+	}
+}
+
+// TestSubmitByDifferentAgentReturns409 verifies that submit by a different agent returns 409.
+func TestSubmitByDifferentAgentReturns409(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Setup: project, document, and claimed task
+	taskID, _ := setupClaimedTask(t, server, authHeader)
+
+	// Try to submit with a different agent_id
+	submitPayload := map[string]interface{}{
+		"agent_id": "different-agent",
+		"result":   "Work completed",
+		"links":    []map[string]string{},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+
+	if submitW.Code != http.StatusConflict {
+		t.Errorf("expected status 409, got %d", submitW.Code)
+	}
+}
+
+// TestSubmitFromNonInProgressReturns409 verifies that submit from a non-in_progress task returns 409.
+func TestSubmitFromNonInProgressReturns409(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a task (it starts in backlog)
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task in backlog",
+			Spec:       "Test task",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Try to submit without claiming (task is still in backlog, not in_progress)
+	submitPayload := map[string]interface{}{
+		"agent_id": "test-agent",
+		"result":   "Work completed",
+		"links":    []map[string]string{},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+
+	if submitW.Code != http.StatusConflict {
+		t.Errorf("expected status 409, got %d", submitW.Code)
+	}
+}
+
+// TestSubmitUnknownTaskReturns404 verifies that submit on an unknown task returns 404.
+func TestSubmitUnknownTaskReturns404(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	submitPayload := map[string]interface{}{
+		"agent_id": "test-agent",
+		"result":   "Work completed",
+		"links":    []map[string]string{},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/unknown-task-id/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+
+	if submitW.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", submitW.Code)
+	}
+}
+
+// TestSubmitWithInvalidLinkKindReturns400 verifies that submit with an invalid link kind returns 400
+// and nothing changes (task still in_progress, no links).
+func TestSubmitWithInvalidLinkKindReturns400(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Setup: project, document, and claimed task
+	taskID, _ := setupClaimedTask(t, server, authHeader)
+
+	// Try to submit with an invalid link kind
+	submitPayload := map[string]interface{}{
+		"agent_id": "test-agent",
+		"result":   "Work completed",
+		"links": []map[string]string{
+			{"kind": "invalid_kind", "value": "some-value"},
+		},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+
+	if submitW.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d; body: %s", submitW.Code, submitW.Body.String())
+	}
+
+	// Verify the error code is INVALID_LINK_KIND
+	var errResp map[string]interface{}
+	json.NewDecoder(submitW.Body).Decode(&errResp)
+	errObj := errResp["error"].(map[string]interface{})
+	if errObj["code"] != "INVALID_LINK_KIND" {
+		t.Errorf("expected error code 'INVALID_LINK_KIND', got %v", errObj["code"])
+	}
+
+	// Verify task is still in_progress and unchanged
+	getReq := httptest.NewRequest("GET", "/tasks/"+taskID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW := httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+
+	var task store.TaskWithDepsAndLinks
+	json.NewDecoder(getW.Body).Decode(&task)
+
+	if task.State != "in_progress" {
+		t.Errorf("expected task to still be in_progress, got %q", task.State)
+	}
+
+	if len(task.Links) != 0 {
+		t.Errorf("expected no links, but task has %d links", len(task.Links))
+	}
+}
+
+// TestSubmitEmptyAgentIDReturns400 verifies that submit with empty agent_id returns 400.
+func TestSubmitEmptyAgentIDReturns400(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a task
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task",
+			Spec:       "Test task",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Promote to ready
+	promoteReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	// Claim the task
+	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimBody, _ := json.Marshal(claimPayload)
+	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
+	claimReq.Header.Set("Authorization", authHeader)
+	claimReq.Header.Set("Content-Type", "application/json")
+	claimW := httptest.NewRecorder()
+	server.mux.ServeHTTP(claimW, claimReq)
+
+	// Try to submit with empty agent_id
+	submitPayload := map[string]interface{}{
+		"agent_id": "",
+		"result":   "Work completed",
+		"links":    []map[string]string{},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+
+	if submitW.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", submitW.Code)
+	}
+
+	var errResp map[string]interface{}
+	json.NewDecoder(submitW.Body).Decode(&errResp)
+	errObj := errResp["error"].(map[string]interface{})
+	if errObj["code"] != "EMPTY_AGENT_ID" {
+		t.Errorf("expected error code 'EMPTY_AGENT_ID', got %v", errObj["code"])
+	}
+}
+
+// TestSubmitRequiresAuth verifies that submit endpoint requires auth.
+func TestSubmitRequiresAuth(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+
+	submitPayload := map[string]interface{}{
+		"agent_id": "test-agent",
+		"result":   "Work completed",
+		"links":    []map[string]string{},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/some-id/submit", bytes.NewReader(submitBody))
+	// No Authorization header
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+
+	if submitW.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", submitW.Code)
+	}
+}

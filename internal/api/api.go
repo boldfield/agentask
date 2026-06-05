@@ -49,6 +49,7 @@ func New(s store.Store, authToken string, leaseTTL time.Duration) *Server {
 	mux.HandleFunc("POST /tasks/{id}/claim", server.authMiddleware(server.handleClaimTask))
 	mux.HandleFunc("POST /tasks/{id}/heartbeat", server.authMiddleware(server.handleHeartbeat))
 	mux.HandleFunc("POST /tasks/{id}/promote", server.authMiddleware(server.handlePromoteTask))
+	mux.HandleFunc("POST /tasks/{id}/submit", server.authMiddleware(server.handleSubmit))
 
 	return server
 }
@@ -406,6 +407,50 @@ func (s *Server) handlePromoteTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.errorResponse(w, http.StatusInternalServerError, "PROMOTE_ERROR", "Failed to promote task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleSubmit handles POST /tasks/{id}/submit to transition a task from in_progress to review.
+func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	var payload struct {
+		AgentID string           `json:"agent_id"`
+		Result  string           `json:"result"`
+		Links   []store.LinkInput `json:"links"`
+	}
+
+	if err := s.decodeJSON(w, r, &payload); err != nil {
+		return // decodeJSON already wrote error response
+	}
+
+	// Validate agent_id is non-empty
+	if payload.AgentID == "" {
+		s.errorResponse(w, http.StatusBadRequest, "EMPTY_AGENT_ID", "agent_id cannot be empty")
+		return
+	}
+
+	// Submit the task
+	task, err := s.store.SubmitTask(r.Context(), taskID, payload.AgentID, payload.Result, payload.Links)
+	if err != nil {
+		// Check if it's a ValidationError (invalid link kind)
+		var validationErr *store.ValidationError
+		if errors.As(err, &validationErr) {
+			s.errorResponse(w, http.StatusBadRequest, validationErr.Code, validationErr.Message)
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			s.errorResponse(w, http.StatusConflict, "CONFLICT", "Task is not in_progress or not assigned to this agent")
+			return
+		}
+		s.errorResponse(w, http.StatusInternalServerError, "SUBMIT_ERROR", "Failed to submit task")
 		return
 	}
 
