@@ -1,7 +1,7 @@
 ---
 id: T14
 title: Dockerfile — multi-stage static binary
-state: review
+state: done
 document: DESIGN.md
 depends_on: [T01]
 ---

@@ -1,7 +1,7 @@
 ---
 id: T11
 title: Heartbeat endpoint — extend lease
-state: backlog
+state: ready
 document: DESIGN.md
 depends_on: [T09]
 ---
