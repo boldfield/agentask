@@ -1,7 +1,7 @@
 ---
 id: T02
 title: SQLite schema + migrations
-state: review
+state: done
 document: DESIGN.md
 depends_on: [T01]
 ---
