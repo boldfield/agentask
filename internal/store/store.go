@@ -31,6 +31,9 @@ type Store interface {
 	GetProject(ctx context.Context, id string) (Project, error)
 	CreateDocument(ctx context.Context, projectID, kind, title, ref string, commit *string) (Document, error)
 	ListDocuments(ctx context.Context, projectID string, kind *string) ([]Document, error)
+	CreateTasks(ctx context.Context, projectID string, tasks []TaskInput) ([]Task, error)
+	GetTask(ctx context.Context, id string) (TaskWithDepsAndLinks, error)
+	ListTasks(ctx context.Context, projectID string, filter TaskListFilter) ([]Task, error)
 }
 
 // sqliteStore wraps a SQLite database connection and provides migration functionality.
@@ -364,6 +367,39 @@ type TaskLink struct {
 	Value  string `db:"value"`
 }
 
+// TaskInput is the input format for bulk task creation.
+type TaskInput struct {
+	Key        string   `json:"key"`        // optional client-provided key for intra-batch deps
+	Title      string   `json:"title"`
+	Spec       string   `json:"spec"`
+	DocumentID string   `json:"document_id"`
+	DependsOn  []string `json:"depends_on"` // refs to task ids or keys in the batch
+}
+
+// TaskWithDepsAndLinks combines a Task with its dependencies and links.
+type TaskWithDepsAndLinks struct {
+	ID            string      `json:"id"`
+	ProjectID     string      `json:"project_id"`
+	DocumentID    string      `json:"document_id"`
+	Title         string      `json:"title"`
+	Spec          string      `json:"spec"`
+	State         string      `json:"state"`
+	Assignee      *string     `json:"assignee"`
+	LeaseExpiresAt *string     `json:"lease_expires_at"`
+	Result        *string     `json:"result"`
+	CreatedAt     string      `json:"created_at"`
+	UpdatedAt     string      `json:"updated_at"`
+	DependsOn     []string    `json:"depends_on"`
+	Links         []TaskLink  `json:"links"`
+}
+
+// TaskListFilter contains filters for listing tasks.
+type TaskListFilter struct {
+	State     *string
+	Assignee  *string
+	Claimable bool
+}
+
 // Event represents an audit/event log entry.
 type Event struct {
 	ID        string `db:"id"`
@@ -380,6 +416,26 @@ var ErrNotFound = errors.New("not found")
 
 // ErrConflict is returned when a constraint is violated (e.g., second design per project).
 var ErrConflict = errors.New("conflict")
+
+// ValidationError is a client-input error. Handlers map it to HTTP 400 via errors.As,
+// surfacing Code and Message. Use invalid() to construct one. This is the validation
+// convention for all mutation endpoints — prefer it over bare fmt.Errorf so the
+// 400-vs-500 distinction never depends on string-matching error messages.
+type ValidationError struct {
+	Code    string
+	Message string
+}
+
+func (e *ValidationError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return e.Code
+}
+
+func invalid(code, message string) error {
+	return &ValidationError{Code: code, Message: message}
+}
 
 // CreateProject creates a new project with the given name and repo.
 // It generates the id and sets created_at automatically.
@@ -520,4 +576,267 @@ func (s *sqliteStore) ListDocuments(ctx context.Context, projectID string, kind 
 	}
 
 	return docs, nil
+}
+
+// CreateTasks bulk-creates tasks in a single transaction.
+// - All tasks must have non-empty title, spec, and document_id.
+// - Validates that document_id references a document in the given project.
+// - Resolves depends_on refs as either batch keys or existing task ids in the project.
+// - Returns 400-level error for validation failures; the tx rolls back and nothing is created.
+func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks []TaskInput) ([]Task, error) {
+	if len(tasks) == 0 {
+		return []Task{}, nil
+	}
+
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Validate all tasks and resolve dependencies
+	keyToID := make(map[string]string)
+	createdTasks := make([]Task, 0, len(tasks))
+	now := nowTimestamp()
+
+	for _, input := range tasks {
+		// Validate title and spec are non-empty
+		if strings.TrimSpace(input.Title) == "" {
+			return nil, invalid("EMPTY_TITLE", "title is required")
+		}
+		if strings.TrimSpace(input.Spec) == "" {
+			return nil, invalid("EMPTY_SPEC", "spec is required")
+		}
+		if strings.TrimSpace(input.DocumentID) == "" {
+			return nil, invalid("MISSING_DOCUMENT_ID", "document_id is required")
+		}
+
+		// Verify document_id references a document in this project
+		var docProjectID string
+		err := tx.QueryRowContext(ctx, "SELECT project_id FROM document WHERE id = ?", input.DocumentID).Scan(&docProjectID)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, invalid("INVALID_DOCUMENT_ID", "document_id does not exist")
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to verify document: %w", err)
+		}
+		if docProjectID != projectID {
+			return nil, invalid("DOCUMENT_NOT_IN_PROJECT", "document_id is not in this project")
+		}
+
+		// Generate task id
+		taskID := GenerateID()
+		keyToID[input.Key] = taskID
+
+		task := Task{
+			ID:        taskID,
+			ProjectID: projectID,
+			DocumentID: input.DocumentID,
+			Title:     input.Title,
+			Spec:      input.Spec,
+			State:     "backlog",
+			CreatedAt: now,
+			UpdatedAt: now,
+		}
+
+		// Insert task
+		_, err = tx.ExecContext(ctx, `
+			INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, task.ID, task.ProjectID, task.DocumentID, task.Title, task.Spec, task.State, task.CreatedAt, task.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to insert task: %w", err)
+		}
+
+		createdTasks = append(createdTasks, task)
+	}
+
+	// Now insert task_dep edges, resolving references
+	for i, input := range tasks {
+		if len(input.DependsOn) == 0 {
+			continue
+		}
+
+		taskID := createdTasks[i].ID
+
+		for _, ref := range input.DependsOn {
+			// Check for self-dependency
+			if ref == input.Key && input.Key != "" {
+				return nil, invalid("SELF_DEPENDENCY", "a task cannot depend on itself")
+			}
+
+			var dependsOnID string
+
+			// Try to resolve as a batch key first
+			if keyID, exists := keyToID[ref]; exists {
+				dependsOnID = keyID
+			} else {
+				// Try to resolve as an existing task id in this project
+				var existingProjectID string
+				err := tx.QueryRowContext(ctx, "SELECT project_id FROM task WHERE id = ?", ref).Scan(&existingProjectID)
+				if errors.Is(err, sql.ErrNoRows) {
+					return nil, invalid("UNKNOWN_DEPENDENCY", "depends_on references an unknown task")
+				}
+				if err != nil {
+					return nil, fmt.Errorf("failed to verify dependency: %w", err)
+				}
+				if existingProjectID != projectID {
+					return nil, invalid("DEPENDENCY_NOT_IN_PROJECT", "depends_on references a task in another project")
+				}
+				dependsOnID = ref
+			}
+
+			// Insert edge
+			_, err = tx.ExecContext(ctx, `
+				INSERT INTO task_dep (task_id, depends_on_id)
+				VALUES (?, ?)
+			`, taskID, dependsOnID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to insert task_dep: %w", err)
+			}
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return createdTasks, nil
+}
+
+// GetTask retrieves a task by id, including its dependencies and links.
+// Returns ErrNotFound if the task does not exist.
+func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLinks, error) {
+	var t Task
+	err := s.conn.QueryRowContext(ctx, `
+		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, created_at, updated_at
+		FROM task WHERE id = ?
+	`, id).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.CreatedAt, &t.UpdatedAt)
+
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskWithDepsAndLinks{}, ErrNotFound
+	}
+	if err != nil {
+		return TaskWithDepsAndLinks{}, fmt.Errorf("failed to get task: %w", err)
+	}
+
+	// Fetch dependencies
+	depRows, err := s.conn.QueryContext(ctx, `
+		SELECT depends_on_id FROM task_dep WHERE task_id = ? ORDER BY depends_on_id
+	`, id)
+	if err != nil {
+		return TaskWithDepsAndLinks{}, fmt.Errorf("failed to query dependencies: %w", err)
+	}
+	defer depRows.Close()
+
+	dependsOn := make([]string, 0)
+	for depRows.Next() {
+		var depID string
+		if err := depRows.Scan(&depID); err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to scan dependency: %w", err)
+		}
+		dependsOn = append(dependsOn, depID)
+	}
+	if err := depRows.Err(); err != nil {
+		return TaskWithDepsAndLinks{}, fmt.Errorf("error iterating dependencies: %w", err)
+	}
+
+	// Fetch links
+	linkRows, err := s.conn.QueryContext(ctx, `
+		SELECT id, task_id, kind, value FROM task_link WHERE task_id = ? ORDER BY id
+	`, id)
+	if err != nil {
+		return TaskWithDepsAndLinks{}, fmt.Errorf("failed to query links: %w", err)
+	}
+	defer linkRows.Close()
+
+	links := make([]TaskLink, 0)
+	for linkRows.Next() {
+		var link TaskLink
+		if err := linkRows.Scan(&link.ID, &link.TaskID, &link.Kind, &link.Value); err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to scan link: %w", err)
+		}
+		links = append(links, link)
+	}
+	if err := linkRows.Err(); err != nil {
+		return TaskWithDepsAndLinks{}, fmt.Errorf("error iterating links: %w", err)
+	}
+
+	return TaskWithDepsAndLinks{
+		ID:            t.ID,
+		ProjectID:     t.ProjectID,
+		DocumentID:    t.DocumentID,
+		Title:         t.Title,
+		Spec:          t.Spec,
+		State:         t.State,
+		Assignee:      t.Assignee,
+		LeaseExpiresAt: t.LeaseExpiresAt,
+		Result:        t.Result,
+		CreatedAt:     t.CreatedAt,
+		UpdatedAt:     t.UpdatedAt,
+		DependsOn:     dependsOn,
+		Links:         links,
+	}, nil
+}
+
+// claimableSQL is the SQL predicate for the claimable condition, reused by both GetTask and T09's claim.
+// A task is claimable iff:
+// - state = 'ready'
+// - all dependencies are done
+// - no live lease (lease_expires_at IS NULL OR lease_expires_at < now)
+// IMPORTANT: T09 (atomic claim) reuses this exact predicate in its UPDATE statement.
+// If you change this, update both places.
+const claimableSQL = `state = 'ready'
+	AND NOT EXISTS (
+		SELECT 1 FROM task_dep d
+		JOIN task t2 ON t2.id = d.depends_on_id
+		WHERE d.task_id = task.id AND t2.state != 'done'
+	)
+	AND (lease_expires_at IS NULL OR lease_expires_at < ?)`
+
+// ListTasks retrieves tasks for a project with optional filters.
+// Filters compose with AND logic.
+func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter TaskListFilter) ([]Task, error) {
+	query := `SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, created_at, updated_at
+		FROM task
+		WHERE project_id = ?`
+	args := []interface{}{projectID}
+
+	if filter.State != nil {
+		query += ` AND state = ?`
+		args = append(args, *filter.State)
+	}
+
+	if filter.Assignee != nil {
+		query += ` AND assignee = ?`
+		args = append(args, *filter.Assignee)
+	}
+
+	if filter.Claimable {
+		query += ` AND ` + claimableSQL
+		args = append(args, nowTimestamp())
+	}
+
+	query += ` ORDER BY created_at, id`
+
+	rows, err := s.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query tasks: %w", err)
+	}
+	defer rows.Close()
+
+	tasks := make([]Task, 0)
+	for rows.Next() {
+		var t Task
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.CreatedAt, &t.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("failed to scan task: %w", err)
+		}
+		tasks = append(tasks, t)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating tasks: %w", err)
+	}
+
+	return tasks, nil
 }

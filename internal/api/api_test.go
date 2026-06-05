@@ -2,6 +2,7 @@ package api
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -606,5 +607,326 @@ func TestListDocumentsWithKindFilter(t *testing.T) {
 	json.NewDecoder(designFilterW.Body).Decode(&designDocs)
 	if len(designDocs) != 1 {
 		t.Errorf("expected 1 design document, got %d", len(designDocs))
+	}
+}
+
+// Helper to create project and document for task tests
+func setupProjectAndDocument(t *testing.T, server *Server, authHeader string) (string, string) {
+	// Create a project
+	projectPayload := map[string]string{
+		"name": "test-project",
+		"repo": "https://github.com/example/test-repo",
+	}
+	projectBody, _ := json.Marshal(projectPayload)
+	projectReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(projectBody))
+	projectReq.Header.Set("Authorization", authHeader)
+	projectReq.Header.Set("Content-Type", "application/json")
+	projectW := httptest.NewRecorder()
+	server.mux.ServeHTTP(projectW, projectReq)
+
+	var project store.Project
+	json.NewDecoder(projectW.Body).Decode(&project)
+
+	// Create a document
+	docPayload := map[string]interface{}{
+		"kind":  "design",
+		"title": "Design",
+		"ref":   "DESIGN.md",
+	}
+	docBody, _ := json.Marshal(docPayload)
+	docReq := httptest.NewRequest("POST", "/projects/"+project.ID+"/documents", bytes.NewReader(docBody))
+	docReq.Header.Set("Authorization", authHeader)
+	docReq.Header.Set("Content-Type", "application/json")
+	docW := httptest.NewRecorder()
+	server.mux.ServeHTTP(docW, docReq)
+
+	var doc store.Document
+	json.NewDecoder(docW.Body).Decode(&doc)
+
+	return project.ID, doc.ID
+}
+
+// TestBulkCreateTasksWithIntraBatchDependency verifies bulk create persists tasks and edges.
+func TestBulkCreateTasksWithIntraBatchDependency(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Bulk create two tasks where B depends on A (via A's batch key)
+	taskPayload := []store.TaskInput{
+		{
+			Key:        "task-a",
+			Title:      "Task A",
+			Spec:       "Spec A",
+			DocumentID: docID,
+			DependsOn:  []string{},
+		},
+		{
+			Key:        "task-b",
+			Title:      "Task B",
+			Spec:       "Spec B",
+			DocumentID: docID,
+			DependsOn:  []string{"task-a"},
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	req := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d", w.Code)
+	}
+
+	var createdTasks []store.Task
+	if err := json.NewDecoder(w.Body).Decode(&createdTasks); err != nil {
+		t.Fatalf("failed to decode created tasks: %v", err)
+	}
+
+	if len(createdTasks) != 2 {
+		t.Errorf("expected 2 created tasks, got %d", len(createdTasks))
+	}
+
+	if createdTasks[0].Title != "Task A" || createdTasks[1].Title != "Task B" {
+		t.Error("task titles do not match")
+	}
+
+	taskAID := createdTasks[0].ID
+	taskBID := createdTasks[1].ID
+
+	// Get Task B and verify its dependency on Task A
+	getReq := httptest.NewRequest("GET", "/tasks/"+taskBID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW := httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+
+	if getW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", getW.Code)
+	}
+
+	var taskB store.TaskWithDepsAndLinks
+	if err := json.NewDecoder(getW.Body).Decode(&taskB); err != nil {
+		t.Fatalf("failed to decode task B: %v", err)
+	}
+
+	if len(taskB.DependsOn) != 1 || taskB.DependsOn[0] != taskAID {
+		t.Errorf("expected task B to depend on %q, got %v", taskAID, taskB.DependsOn)
+	}
+
+	// Verify both tasks are in backlog state
+	if createdTasks[0].State != "backlog" || createdTasks[1].State != "backlog" {
+		t.Error("tasks not in backlog state")
+	}
+}
+
+// TestListTasksWithStateFilter verifies state filter works.
+func TestListTasksWithStateFilter(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create two tasks
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task 1",
+			Spec:       "Spec 1",
+			DocumentID: docID,
+		},
+		{
+			Title:      "Task 2",
+			Spec:       "Spec 2",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	// List with state=backlog filter
+	listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?state=backlog", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var tasks []store.Task
+	if err := json.NewDecoder(listW.Body).Decode(&tasks); err != nil {
+		t.Fatalf("failed to decode tasks: %v", err)
+	}
+
+	if len(tasks) != 2 {
+		t.Errorf("expected 2 backlog tasks, got %d", len(tasks))
+	}
+
+	for _, task := range tasks {
+		if task.State != "backlog" {
+			t.Errorf("expected task state 'backlog', got %q", task.State)
+		}
+	}
+}
+
+// TestClaimableFilterExcludesUnfinishedDeps verifies a task with unfinished dependencies is excluded.
+func TestClaimableFilterExcludesUnfinishedDeps(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create two tasks where B depends on A
+	taskPayload := []store.TaskInput{
+		{
+			Key:        "task-a",
+			Title:      "Task A",
+			Spec:       "Spec A",
+			DocumentID: docID,
+		},
+		{
+			Key:        "task-b",
+			Title:      "Task B",
+			Spec:       "Spec B",
+			DocumentID: docID,
+			DependsOn:  []string{"task-a"},
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskAID := createdTasks[0].ID
+	taskBID := createdTasks[1].ID
+
+	// Update both to state=ready (directly in store for test setup)
+	conn := server.store.Conn()
+	_, err := conn.ExecContext(context.Background(), "UPDATE task SET state = 'ready' WHERE id IN (?, ?)", taskAID, taskBID)
+	if err != nil {
+		t.Fatalf("failed to promote tasks: %v", err)
+	}
+
+	// Query with claimable=true — A should be claimable (no deps, ready), B should NOT be (A not done)
+	listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?claimable=true", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var claimableTasks []store.Task
+	json.NewDecoder(listW.Body).Decode(&claimableTasks)
+
+	// Only A should be claimable (no deps, in ready state)
+	if len(claimableTasks) != 1 {
+		t.Errorf("expected 1 claimable task (A), got %d", len(claimableTasks))
+	}
+	if claimableTasks[0].ID != taskAID {
+		t.Errorf("expected task A to be claimable, got %q", claimableTasks[0].ID)
+	}
+
+	// Now mark A as done
+	_, err = conn.ExecContext(context.Background(), "UPDATE task SET state = 'done' WHERE id = ?", taskAID)
+	if err != nil {
+		t.Fatalf("failed to mark task A as done: %v", err)
+	}
+
+	// Query again — B should now be claimable (A is done, B is ready)
+	listReq2 := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?claimable=true", nil)
+	listReq2.Header.Set("Authorization", authHeader)
+	listW2 := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW2, listReq2)
+
+	var claimableTasks2 []store.Task
+	json.NewDecoder(listW2.Body).Decode(&claimableTasks2)
+
+	if len(claimableTasks2) != 1 {
+		t.Errorf("expected 1 claimable task (B with A done), got %d", len(claimableTasks2))
+	}
+	if claimableTasks2[0].ID != taskBID {
+		t.Errorf("expected task B to be claimable, got %q", claimableTasks2[0].ID)
+	}
+}
+
+// TestCreateTasksUnknownDependency returns 400.
+func TestCreateTasksUnknownDependency(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Try to create task with unknown dependency
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task A",
+			Spec:       "Spec A",
+			DocumentID: docID,
+			DependsOn:  []string{"nonexistent-id"},
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	req := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", w.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(w.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	code, ok := errObj["code"].(string)
+	if !ok || code != "UNKNOWN_DEPENDENCY" {
+		t.Errorf("expected error code 'UNKNOWN_DEPENDENCY', got %q", code)
+	}
+}
+
+// TestCreateTasksMissingDocumentID returns 400.
+func TestCreateTasksMissingDocumentID(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, _ := setupProjectAndDocument(t, server, authHeader)
+
+	// Try to create task without document_id
+	taskPayload := []store.TaskInput{
+		{
+			Title: "Task A",
+			Spec:  "Spec A",
+			// Missing DocumentID
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	req := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.mux.ServeHTTP(w, req)
+
+	if w.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", w.Code)
 	}
 }
