@@ -1,7 +1,7 @@
 ---
 id: T16
 title: API reference + curl walkthrough
-state: ready
+state: in_progress
 document: DESIGN.md
 depends_on: [T13]
 ---
