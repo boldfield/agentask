@@ -10,7 +10,7 @@ import (
 	"github.com/boldfield/agentask/internal/store"
 )
 
-const version = "0.1.0"
+const version = "0.1.1"
 
 func main() {
 	// Print version
