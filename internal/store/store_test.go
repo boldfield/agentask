@@ -47,6 +47,7 @@ func TestMigrations(t *testing.T) {
 	expectedIndexes := []string{
 		"idx_task_link_kind_value",
 		"idx_task_project_state",
+		"idx_document_one_design_per_project",
 	}
 
 	for _, indexName := range expectedIndexes {
@@ -63,14 +64,14 @@ func TestMigrations(t *testing.T) {
 		}
 	}
 
-	// Verify that schema_migrations table has the migration recorded
+	// Verify that schema_migrations table has the migrations recorded
 	var migrationCount int
 	err = store.Conn().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount)
 	if err != nil {
 		t.Fatalf("failed to count migrations: %v", err)
 	}
-	if migrationCount != 1 {
-		t.Errorf("expected 1 migration to be recorded, but got %d", migrationCount)
+	if migrationCount != 2 {
+		t.Errorf("expected 2 migrations to be recorded, but got %d", migrationCount)
 	}
 
 	// Verify idempotency: re-open the same database and it should work
@@ -80,13 +81,13 @@ func TestMigrations(t *testing.T) {
 	}
 	defer store2.Close()
 
-	// Verify that we still have exactly 1 migration recorded (idempotency)
+	// Verify that we still have exactly 2 migrations recorded (idempotency)
 	err = store2.Conn().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount)
 	if err != nil {
 		t.Fatalf("failed to count migrations after re-open: %v", err)
 	}
-	if migrationCount != 1 {
-		t.Errorf("expected 1 migration after re-open (idempotency), but got %d", migrationCount)
+	if migrationCount != 2 {
+		t.Errorf("expected 2 migrations after re-open (idempotency), but got %d", migrationCount)
 	}
 }
 
@@ -182,8 +183,8 @@ func TestOpenSamePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after second open: %v", err)
 	}
-	if migrationCount != 1 {
-		t.Errorf("expected 1 migration after second open, but got %d", migrationCount)
+	if migrationCount != 2 {
+		t.Errorf("expected 2 migrations after second open, but got %d", migrationCount)
 	}
 }
 

@@ -35,6 +35,10 @@ func New(s store.Store, authToken string) *Server {
 	mux.HandleFunc("POST /projects", server.authMiddleware(server.handleCreateProject))
 	mux.HandleFunc("GET /projects/{id}", server.authMiddleware(server.handleGetProject))
 
+	// Document endpoints (protected)
+	mux.HandleFunc("POST /projects/{id}/documents", server.authMiddleware(server.handleCreateDocument))
+	mux.HandleFunc("GET /projects/{id}/documents", server.authMiddleware(server.handleListDocuments))
+
 	return server
 }
 
@@ -164,4 +168,68 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.encodeJSON(w, http.StatusOK, project)
+}
+
+// handleCreateDocument handles POST /projects/{id}/documents to register a document.
+func (s *Server) handleCreateDocument(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	var payload struct {
+		Kind   string  `json:"kind"`
+		Title  string  `json:"title"`
+		Ref    string  `json:"ref"`
+		Commit *string `json:"commit"`
+	}
+
+	if err := s.decodeJSON(w, r, &payload); err != nil {
+		return // decodeJSON already wrote error response
+	}
+
+	// Validate kind is one of the allowed values
+	if payload.Kind != "design" && payload.Kind != "feature_spec" {
+		s.errorResponse(w, http.StatusBadRequest, "INVALID_KIND", "kind must be 'design' or 'feature_spec'")
+		return
+	}
+
+	// Create the document
+	doc, err := s.store.CreateDocument(r.Context(), id, payload.Kind, payload.Title, payload.Ref, payload.Commit)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Project not found")
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		s.errorResponse(w, http.StatusConflict, "CONFLICT", "A design document already exists for this project")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "CREATE_ERROR", "Failed to create document")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusCreated, doc)
+}
+
+// handleListDocuments handles GET /projects/{id}/documents to list documents.
+func (s *Server) handleListDocuments(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	// Parse optional kind query parameter
+	var kind *string
+	if kindQuery := r.URL.Query().Get("kind"); kindQuery != "" {
+		kind = &kindQuery
+	}
+
+	// List documents
+	docs, err := s.store.ListDocuments(r.Context(), id, kind)
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list documents")
+		return
+	}
+
+	// Ensure we return an empty array, not null
+	if docs == nil {
+		docs = make([]store.Document, 0)
+	}
+
+	s.encodeJSON(w, http.StatusOK, docs)
 }

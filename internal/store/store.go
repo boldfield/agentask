@@ -29,6 +29,8 @@ type Store interface {
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
 	CreateProject(ctx context.Context, name, repo string) (Project, error)
 	GetProject(ctx context.Context, id string) (Project, error)
+	CreateDocument(ctx context.Context, projectID, kind, title, ref string, commit *string) (Document, error)
+	ListDocuments(ctx context.Context, projectID string, kind *string) ([]Document, error)
 }
 
 // sqliteStore wraps a SQLite database connection and provides migration functionality.
@@ -376,6 +378,9 @@ type Event struct {
 // ErrNotFound is returned when a resource is not found.
 var ErrNotFound = errors.New("not found")
 
+// ErrConflict is returned when a constraint is violated (e.g., second design per project).
+var ErrConflict = errors.New("conflict")
+
 // CreateProject creates a new project with the given name and repo.
 // It generates the id and sets created_at automatically.
 func (s *sqliteStore) CreateProject(ctx context.Context, name, repo string) (Project, error) {
@@ -414,4 +419,105 @@ func (s *sqliteStore) GetProject(ctx context.Context, id string) (Project, error
 	}
 
 	return p, nil
+}
+
+// CreateDocument creates a new document (design or feature_spec) for a project.
+// Verifies the project exists, and if kind is 'design', ensures at most one design per project.
+// Returns ErrNotFound if the project does not exist.
+// Returns ErrConflict if attempting to create a second design for the same project.
+func (s *sqliteStore) CreateDocument(ctx context.Context, projectID, kind, title, ref string, commit *string) (Document, error) {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Document{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// Verify project exists
+	var projectExists bool
+	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) > 0 FROM project WHERE id = ?", projectID).Scan(&projectExists)
+	if err != nil {
+		return Document{}, fmt.Errorf("failed to check project: %w", err)
+	}
+	if !projectExists {
+		return Document{}, ErrNotFound
+	}
+
+	// If kind is 'design', check that no design already exists for this project
+	if kind == "design" {
+		var designCount int
+		err = tx.QueryRowContext(ctx, "SELECT COUNT(*) FROM document WHERE project_id = ? AND kind = 'design'", projectID).Scan(&designCount)
+		if err != nil {
+			return Document{}, fmt.Errorf("failed to check existing designs: %w", err)
+		}
+		if designCount > 0 {
+			return Document{}, ErrConflict
+		}
+	}
+
+	// Create the document
+	id := GenerateID()
+	now := nowTimestamp()
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO document (id, project_id, kind, title, ref, "commit", created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, id, projectID, kind, title, ref, commit, now, now)
+	if err != nil {
+		return Document{}, fmt.Errorf("failed to create document: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Document{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return Document{
+		ID:        id,
+		ProjectID: projectID,
+		Kind:      kind,
+		Title:     title,
+		Ref:       ref,
+		Commit:    commit,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}, nil
+}
+
+// ListDocuments retrieves all documents for a project, optionally filtered by kind.
+// Returns an empty slice (not nil) if no documents exist.
+func (s *sqliteStore) ListDocuments(ctx context.Context, projectID string, kind *string) ([]Document, error) {
+	query := `
+		SELECT id, project_id, kind, title, ref, "commit", created_at, updated_at
+		FROM document
+		WHERE project_id = ?
+	`
+	args := []interface{}{projectID}
+
+	if kind != nil {
+		query += ` AND kind = ?`
+		args = append(args, *kind)
+	}
+
+	query += ` ORDER BY created_at, id`
+
+	rows, err := s.conn.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query documents: %w", err)
+	}
+	defer rows.Close()
+
+	docs := make([]Document, 0)
+	for rows.Next() {
+		var d Document
+		err := rows.Scan(&d.ID, &d.ProjectID, &d.Kind, &d.Title, &d.Ref, &d.Commit, &d.CreatedAt, &d.UpdatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan document: %w", err)
+		}
+		docs = append(docs, d)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating documents: %w", err)
+	}
+
+	return docs, nil
 }
