@@ -931,3 +931,235 @@ func TestCreateTasksMissingDocumentID(t *testing.T) {
 		t.Errorf("expected status 400, got %d", w.Code)
 	}
 }
+
+// TestPromoteTaskBacklogToReady verifies promoting a backlog task to ready succeeds.
+func TestPromoteTaskBacklogToReady(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a backlog task
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task to Promote",
+			Spec:       "Promote this task",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Verify task is in backlog state
+	if createdTasks[0].State != "backlog" {
+		t.Errorf("expected initial state 'backlog', got %q", createdTasks[0].State)
+	}
+
+	// Promote the task
+	promoteReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	if promoteW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", promoteW.Code)
+	}
+
+	var promotedTask store.Task
+	if err := json.NewDecoder(promoteW.Body).Decode(&promotedTask); err != nil {
+		t.Fatalf("failed to decode promoted task: %v", err)
+	}
+
+	// Verify state changed to ready
+	if promotedTask.State != "ready" {
+		t.Errorf("expected state 'ready', got %q", promotedTask.State)
+	}
+	if promotedTask.ID != taskID {
+		t.Errorf("expected task id %q, got %q", taskID, promotedTask.ID)
+	}
+}
+
+// TestPromoteTaskNotInBacklog verifies promoting a non-backlog task returns 409.
+func TestPromoteTaskNotInBacklog(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a backlog task
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task",
+			Spec:       "Spec",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// First promotion: backlog -> ready
+	promoteReq1 := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq1.Header.Set("Authorization", authHeader)
+	promoteW1 := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW1, promoteReq1)
+
+	if promoteW1.Code != http.StatusOK {
+		t.Errorf("expected first promotion to succeed with 200, got %d", promoteW1.Code)
+	}
+
+	// Second promotion: already in ready, should fail
+	promoteReq2 := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq2.Header.Set("Authorization", authHeader)
+	promoteW2 := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW2, promoteReq2)
+
+	if promoteW2.Code != http.StatusConflict {
+		t.Errorf("expected second promotion to return 409, got %d", promoteW2.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(promoteW2.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "CONFLICT" {
+		t.Errorf("expected error code 'CONFLICT', got %q", code)
+	}
+}
+
+// TestPromoteTaskUnknownID verifies promoting an unknown task returns 404.
+func TestPromoteTaskUnknownID(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	promoteReq := httptest.NewRequest("POST", "/tasks/nonexistent-id/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	if promoteW.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", promoteW.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(promoteW.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "NOT_FOUND" {
+		t.Errorf("expected error code 'NOT_FOUND', got %q", code)
+	}
+}
+
+// TestPromoteTaskAppendsTransitionEvent verifies that promoting a task creates a transition event.
+func TestPromoteTaskAppendsTransitionEvent(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a backlog task
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task for Event",
+			Spec:       "Check events",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Promote the task
+	promoteReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	if promoteW.Code != http.StatusOK {
+		t.Errorf("expected promotion to succeed with 200, got %d", promoteW.Code)
+	}
+
+	// Get the task with events
+	getReq := httptest.NewRequest("GET", "/tasks/"+taskID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW := httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+
+	var taskWithDeps store.TaskWithDepsAndLinks
+	if err := json.NewDecoder(getW.Body).Decode(&taskWithDeps); err != nil {
+		t.Fatalf("failed to decode task: %v", err)
+	}
+
+	// Fetch events directly from the store
+	events, err := server.store.ListEvents(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+
+	if len(events) == 0 {
+		t.Errorf("expected at least 1 event (transition), got %d", len(events))
+	}
+
+	// Verify the transition event
+	transitionFound := false
+	for _, event := range events {
+		if event.Kind == "transition" && event.Actor == "system" {
+			transitionFound = true
+			if event.Note == nil || *event.Note != "backlog->ready" {
+				t.Errorf("expected transition note 'backlog->ready', got %v", event.Note)
+			}
+		}
+	}
+
+	if !transitionFound {
+		t.Error("transition event not found")
+	}
+}
+
+// TestPromoteTaskRequiresAuth verifies promote endpoint requires auth.
+func TestPromoteTaskRequiresAuth(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+
+	promoteReq := httptest.NewRequest("POST", "/tasks/some-id/promote", nil)
+	// No Authorization header
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	if promoteW.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", promoteW.Code)
+	}
+}

@@ -47,6 +47,7 @@ func New(s store.Store, authToken string, leaseTTL time.Duration) *Server {
 	mux.HandleFunc("GET /projects/{id}/tasks", server.authMiddleware(server.handleListTasks))
 	mux.HandleFunc("GET /tasks/{id}", server.authMiddleware(server.handleGetTask))
 	mux.HandleFunc("POST /tasks/{id}/claim", server.authMiddleware(server.handleClaimTask))
+	mux.HandleFunc("POST /tasks/{id}/promote", server.authMiddleware(server.handlePromoteTask))
 
 	return server
 }
@@ -346,6 +347,28 @@ func (s *Server) handleClaimTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.errorResponse(w, http.StatusInternalServerError, "CLAIM_ERROR", "Failed to claim task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handlePromoteTask handles POST /tasks/{id}/promote to promote a task from backlog to ready.
+func (s *Server) handlePromoteTask(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	// Promote the task
+	task, err := s.store.PromoteTask(r.Context(), taskID)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		s.errorResponse(w, http.StatusConflict, "CONFLICT", "Task is not in backlog")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "PROMOTE_ERROR", "Failed to promote task")
 		return
 	}
 
