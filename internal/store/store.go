@@ -339,45 +339,45 @@ func leaseExpiryTimestamp(ttl time.Duration) string {
 
 // Project represents a code project.
 type Project struct {
-	ID        string `db:"id"`
-	Name      string `db:"name"`
-	Repo      string `db:"repo"`
-	CreatedAt string `db:"created_at"`
+	ID        string `db:"id" json:"id"`
+	Name      string `db:"name" json:"name"`
+	Repo      string `db:"repo" json:"repo"`
+	CreatedAt string `db:"created_at" json:"created_at"`
 }
 
 // Document represents a design or feature spec document.
 type Document struct {
-	ID        string `db:"id"`
-	ProjectID string `db:"project_id"`
-	Kind      string `db:"kind"` // 'design' or 'feature_spec'
-	Title     string `db:"title"`
-	Ref       string `db:"ref"`
-	Commit    *string `db:"commit"` // nullable
-	CreatedAt string `db:"created_at"`
-	UpdatedAt string `db:"updated_at"`
+	ID        string `db:"id" json:"id"`
+	ProjectID string `db:"project_id" json:"project_id"`
+	Kind      string `db:"kind" json:"kind"` // 'design' or 'feature_spec'
+	Title     string `db:"title" json:"title"`
+	Ref       string `db:"ref" json:"ref"`
+	Commit    *string `db:"commit" json:"commit"` // nullable
+	CreatedAt string `db:"created_at" json:"created_at"`
+	UpdatedAt string `db:"updated_at" json:"updated_at"`
 }
 
 // Task represents a task on the board.
 type Task struct {
-	ID            string `db:"id"`
-	ProjectID     string `db:"project_id"`
-	DocumentID    string `db:"document_id"`
-	Title         string `db:"title"`
-	Spec          string `db:"spec"`
-	State         string `db:"state"`
-	Assignee      *string `db:"assignee"` // nullable
-	LeaseExpiresAt *string `db:"lease_expires_at"` // nullable
-	Result        *string `db:"result"` // nullable
-	CreatedAt     string `db:"created_at"`
-	UpdatedAt     string `db:"updated_at"`
+	ID            string `db:"id" json:"id"`
+	ProjectID     string `db:"project_id" json:"project_id"`
+	DocumentID    string `db:"document_id" json:"document_id"`
+	Title         string `db:"title" json:"title"`
+	Spec          string `db:"spec" json:"spec"`
+	State         string `db:"state" json:"state"`
+	Assignee      *string `db:"assignee" json:"assignee"` // nullable
+	LeaseExpiresAt *string `db:"lease_expires_at" json:"lease_expires_at"` // nullable
+	Result        *string `db:"result" json:"result"` // nullable
+	CreatedAt     string `db:"created_at" json:"created_at"`
+	UpdatedAt     string `db:"updated_at" json:"updated_at"`
 }
 
 // TaskLink represents a link from a task to external resources (PR, branch, commit, CI).
 type TaskLink struct {
-	ID     string `db:"id"`
-	TaskID string `db:"task_id"`
-	Kind   string `db:"kind"` // 'pr', 'branch', 'commit', or 'ci'
-	Value  string `db:"value"`
+	ID     string `db:"id" json:"id"`
+	TaskID string `db:"task_id" json:"task_id"`
+	Kind   string `db:"kind" json:"kind"` // 'pr', 'branch', 'commit', or 'ci'
+	Value  string `db:"value" json:"value"`
 }
 
 // TaskInput is the input format for bulk task creation.
@@ -421,13 +421,13 @@ type TaskListFilter struct {
 
 // Event represents an audit/event log entry.
 type Event struct {
-	ID        string `db:"id"`
-	TaskID    string `db:"task_id"`
-	Actor     string `db:"actor"`
-	Kind      string `db:"kind"`
-	Verdict   *string `db:"verdict"` // nullable
-	Note      *string `db:"note"` // nullable
-	CreatedAt string `db:"created_at"`
+	ID        string `db:"id" json:"id"`
+	TaskID    string `db:"task_id" json:"task_id"`
+	Actor     string `db:"actor" json:"actor"`
+	Kind      string `db:"kind" json:"kind"`
+	Verdict   *string `db:"verdict" json:"verdict"` // nullable
+	Note      *string `db:"note" json:"note"` // nullable
+	CreatedAt string `db:"created_at" json:"created_at"`
 }
 
 // ErrNotFound is returned when a resource is not found.

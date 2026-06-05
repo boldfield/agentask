@@ -9,6 +9,10 @@ not a kanban UI.
 
 See [`DESIGN.md`](./DESIGN.md) for the MVP design.
 
+## API Documentation
+
+See [`docs/api.md`](./docs/api.md) for the complete API reference, including all endpoints, request/response formats, status codes, and a full lifecycle walkthrough.
+
 ## Status
 
 Bootstrapping. The MVP is being built using a minimalist text-file board under
