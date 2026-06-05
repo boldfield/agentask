@@ -37,6 +37,7 @@ type Store interface {
 	ClaimTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 	HeartbeatTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 	PromoteTask(ctx context.Context, taskID string) (Task, error)
+	SubmitTask(ctx context.Context, taskID, agentID, result string, links []LinkInput) (TaskWithDepsAndLinks, error)
 }
 
 // sqliteStore wraps a SQLite database connection and provides migration functionality.
@@ -384,6 +385,12 @@ type TaskInput struct {
 	Spec       string   `json:"spec"`
 	DocumentID string   `json:"document_id"`
 	DependsOn  []string `json:"depends_on"` // refs to task ids or keys in the batch
+}
+
+// LinkInput is the input format for task links during submission.
+type LinkInput struct {
+	Kind  string `json:"kind"`  // 'pr', 'branch', 'commit', or 'ci'
+	Value string `json:"value"`
 }
 
 // TaskWithDepsAndLinks combines a Task with its dependencies and links.
@@ -1068,4 +1075,154 @@ func (s *sqliteStore) PromoteTask(ctx context.Context, taskID string) (Task, err
 	// Task exists but not in backlog -> ErrConflict
 	tx.Rollback()
 	return Task{}, ErrConflict
+}
+
+// SubmitTask atomically transitions a task from in_progress to review.
+// It validates link kinds, updates the task (clearing the lease), inserts task_link rows,
+// appends a submit event, and returns the updated task with all links, all within one transaction.
+// Returns the updated TaskWithDepsAndLinks on success.
+// Returns ValidationError if a link kind is invalid.
+// Returns ErrNotFound if the task doesn't exist.
+// Returns ErrConflict if the task is not in_progress or not assigned to the given agentID.
+func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result string, links []LinkInput) (TaskWithDepsAndLinks, error) {
+	// Validate link kinds first (before mutating anything)
+	validKinds := map[string]bool{"pr": true, "branch": true, "commit": true, "ci": true}
+	for _, link := range links {
+		if !validKinds[link.Kind] {
+			return TaskWithDepsAndLinks{}, invalid("INVALID_LINK_KIND", fmt.Sprintf("invalid link kind: %s", link.Kind))
+		}
+	}
+
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return TaskWithDepsAndLinks{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := nowTimestamp()
+
+	// Single conditional UPDATE: transition from in_progress to review, store result, clear lease
+	result_ptr := &result
+	update_result, err := tx.ExecContext(ctx, `
+		UPDATE task
+		SET state='review', result=?, lease_expires_at=NULL, updated_at=?
+		WHERE id=? AND state='in_progress' AND assignee=?
+	`, result_ptr, now, taskID, agentID)
+	if err != nil {
+		return TaskWithDepsAndLinks{}, fmt.Errorf("failed to submit task: %w", err)
+	}
+
+	rowsAffected, err := update_result.RowsAffected()
+	if err != nil {
+		return TaskWithDepsAndLinks{}, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 1 {
+		// Submit succeeded. Insert task_link rows.
+		for _, link := range links {
+			linkID := GenerateID()
+			_, err := tx.ExecContext(ctx, `
+				INSERT INTO task_link (id, task_id, kind, value)
+				VALUES (?, ?, ?, ?)
+			`, linkID, taskID, link.Kind, link.Value)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to insert link: %w", err)
+			}
+		}
+
+		// Append submit event in the same transaction
+		_, err := s.AppendEvent(ctx, tx, taskID, agentID, "submit", nil, nil)
+		if err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append submit event: %w", err)
+		}
+
+		// SELECT the submitted task within the same transaction (reuse GetTask logic)
+		var t Task
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, created_at, updated_at
+			FROM task WHERE id = ?
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.CreatedAt, &t.UpdatedAt)
+		if err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to fetch submitted task: %w", err)
+		}
+
+		// Fetch dependencies
+		depRows, err := tx.QueryContext(ctx, `
+			SELECT depends_on_id FROM task_dep WHERE task_id = ? ORDER BY depends_on_id
+		`, taskID)
+		if err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to query dependencies: %w", err)
+		}
+		defer depRows.Close()
+
+		dependsOn := make([]string, 0)
+		for depRows.Next() {
+			var depID string
+			if err := depRows.Scan(&depID); err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to scan dependency: %w", err)
+			}
+			dependsOn = append(dependsOn, depID)
+		}
+		if err := depRows.Err(); err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("error iterating dependencies: %w", err)
+		}
+
+		// Fetch links (including those we just inserted)
+		linkRows, err := tx.QueryContext(ctx, `
+			SELECT id, task_id, kind, value FROM task_link WHERE task_id = ? ORDER BY id
+		`, taskID)
+		if err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to query links: %w", err)
+		}
+		defer linkRows.Close()
+
+		fetchedLinks := make([]TaskLink, 0)
+		for linkRows.Next() {
+			var link TaskLink
+			if err := linkRows.Scan(&link.ID, &link.TaskID, &link.Kind, &link.Value); err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to scan link: %w", err)
+			}
+			fetchedLinks = append(fetchedLinks, link)
+		}
+		if err := linkRows.Err(); err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("error iterating links: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to commit transaction: %w", err)
+		}
+
+		return TaskWithDepsAndLinks{
+			ID:            t.ID,
+			ProjectID:     t.ProjectID,
+			DocumentID:    t.DocumentID,
+			Title:         t.Title,
+			Spec:          t.Spec,
+			State:         t.State,
+			Assignee:      t.Assignee,
+			LeaseExpiresAt: t.LeaseExpiresAt,
+			Result:        t.Result,
+			CreatedAt:     t.CreatedAt,
+			UpdatedAt:     t.UpdatedAt,
+			DependsOn:     dependsOn,
+			Links:         fetchedLinks,
+		}, nil
+	}
+
+	// rowsAffected == 0: task was not submittable. Determine the cause for the right error.
+	var taskExists bool
+	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) > 0 FROM task WHERE id = ?", taskID).Scan(&taskExists)
+	if err != nil {
+		return TaskWithDepsAndLinks{}, fmt.Errorf("failed to check task existence: %w", err)
+	}
+
+	if !taskExists {
+		// Task does not exist -> ErrNotFound
+		tx.Rollback()
+		return TaskWithDepsAndLinks{}, ErrNotFound
+	}
+
+	// Task exists but not submittable (not in_progress or wrong assignee) -> ErrConflict
+	tx.Rollback()
+	return TaskWithDepsAndLinks{}, ErrConflict
 }
