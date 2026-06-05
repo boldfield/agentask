@@ -31,7 +31,11 @@ spec:
             name: agentask
             port:
               number: 8080
+  # With a Traefik certresolver, Traefik obtains and serves the cert from its own
+  # ACME store — do NOT set secretName here. A secretName points Traefik at a k8s
+  # secret that won't exist (no cert-manager), which only spams "secret does not
+  # exist" errors. cert-manager users would instead set secretName and omit the
+  # certresolver annotation.
   tls:
   - hosts:
     - agentask.example.com
-    secretName: agentask-tls
