@@ -139,7 +139,7 @@ func (s *sqliteStore) migrate() error {
 		}
 
 		// Record that the migration was applied
-		now := time.Now().UTC().Format(time.RFC3339)
+		now := nowTimestamp()
 		if _, err := tx.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)",
 			migration.version, now); err != nil {
 			return fmt.Errorf("failed to record migration %s: %w", migration.version, err)
@@ -198,7 +198,7 @@ func (s *sqliteStore) Conn() *sql.DB {
 // committed atomically.
 func (s *sqliteStore) AppendEvent(ctx context.Context, tx *sql.Tx, taskID, actor, kind string, verdict, note *string) (Event, error) {
 	eventID := GenerateID()
-	now := time.Now().UTC().Format(time.RFC3339)
+	now := nowTimestamp()
 
 	result, err := tx.ExecContext(ctx, `
 		INSERT INTO event (id, task_id, actor, kind, verdict, note, created_at)
@@ -299,6 +299,19 @@ func splitStatements(sql string) []string {
 // This is the reusable ID pattern that all tasks (T06+) will use.
 func GenerateID() string {
 	return uuid.NewString()
+}
+
+// timestampLayout is a fixed-width, nanosecond-precision RFC3339 layout. Unlike
+// time.RFC3339Nano (which drops trailing-zero fractions and so yields variable-width
+// strings that do not sort lexically), every timestamp here is the same width, so a
+// lexical ORDER BY on the stored TEXT equals chronological order. All persisted
+// timestamps use this single format to keep ordering consistent across tables — the
+// event log (DESIGN §2/§5) depends on it for chronological audit ordering.
+const timestampLayout = "2006-01-02T15:04:05.000000000Z07:00"
+
+// nowTimestamp returns the current UTC time formatted with timestampLayout.
+func nowTimestamp() string {
+	return time.Now().UTC().Format(timestampLayout)
 }
 
 // Domain structs mirroring the schema (DESIGN.md §2)

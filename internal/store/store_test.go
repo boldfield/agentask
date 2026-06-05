@@ -2,6 +2,7 @@ package store
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"testing"
 	"time"
@@ -388,6 +389,71 @@ func TestListEvents(t *testing.T) {
 	for _, expected := range expectedPairs {
 		if !foundActorKindPairs[expected] {
 			t.Errorf("expected to find event with %s, but didn't", expected)
+		}
+	}
+}
+
+// TestListEventsRapidOrdering appends many events back-to-back with NO sleep and
+// asserts they come back in insertion order. This is the regression guard for the
+// event-spine ordering bug: under second-granularity timestamps all of these inserts
+// share the same created_at, so ORDER BY (created_at, id) sorts by random UUID and
+// scrambles them. With fixed-width nanosecond timestamps and the single-writer store,
+// each insert gets a distinct increasing timestamp, preserving order.
+func TestListEventsRapidOrdering(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	now := nowTimestamp()
+
+	// Parent rows (FKs are enforced).
+	if _, err = store.Conn().ExecContext(ctx,
+		`INSERT INTO project (id, name, repo, created_at) VALUES (?, ?, ?, ?)`,
+		"proj-rapid", "rapid", "https://example.com/r", now); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if _, err = store.Conn().ExecContext(ctx,
+		`INSERT INTO document (id, project_id, kind, title, ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"doc-rapid", "proj-rapid", "design", "d", "DESIGN.md", now, now); err != nil {
+		t.Fatalf("insert document: %v", err)
+	}
+	taskID := "task-rapid"
+	if _, err = store.Conn().ExecContext(ctx,
+		`INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		taskID, "proj-rapid", "doc-rapid", "t", "s", "ready", now, now); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	const n = 25
+	for i := 0; i < n; i++ {
+		tx, err := store.Conn().BeginTx(ctx, nil)
+		if err != nil {
+			t.Fatalf("begin tx: %v", err)
+		}
+		// kind encodes insertion order; no sleep between appends.
+		if _, err = store.AppendEvent(ctx, tx, taskID, "agent", fmt.Sprintf("evt-%02d", i), nil, nil); err != nil {
+			t.Fatalf("append event %d: %v", i, err)
+		}
+		if err := tx.Commit(); err != nil {
+			t.Fatalf("commit %d: %v", i, err)
+		}
+	}
+
+	listed, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("list events: %v", err)
+	}
+	if len(listed) != n {
+		t.Fatalf("expected %d events, got %d", n, len(listed))
+	}
+	for i, e := range listed {
+		want := fmt.Sprintf("evt-%02d", i)
+		if e.Kind != want {
+			t.Fatalf("event at position %d out of order: got kind %q, want %q "+
+				"(events scrambled — timestamp ordering regression)", i, e.Kind, want)
 		}
 	}
 }
