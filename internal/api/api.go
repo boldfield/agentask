@@ -39,6 +39,11 @@ func New(s store.Store, authToken string) *Server {
 	mux.HandleFunc("POST /projects/{id}/documents", server.authMiddleware(server.handleCreateDocument))
 	mux.HandleFunc("GET /projects/{id}/documents", server.authMiddleware(server.handleListDocuments))
 
+	// Task endpoints (protected)
+	mux.HandleFunc("POST /projects/{id}/tasks", server.authMiddleware(server.handleCreateTasks))
+	mux.HandleFunc("GET /projects/{id}/tasks", server.authMiddleware(server.handleListTasks))
+	mux.HandleFunc("GET /tasks/{id}", server.authMiddleware(server.handleGetTask))
+
 	return server
 }
 
@@ -232,4 +237,84 @@ func (s *Server) handleListDocuments(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.encodeJSON(w, http.StatusOK, docs)
+}
+
+// handleCreateTasks handles POST /projects/{id}/tasks to bulk-create tasks.
+func (s *Server) handleCreateTasks(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+
+	var payload []store.TaskInput
+	if err := s.decodeJSON(w, r, &payload); err != nil {
+		return
+	}
+
+	tasks, err := s.store.CreateTasks(r.Context(), projectID, payload)
+	if err != nil {
+		// Map store validation errors to 400
+		errMsg := err.Error()
+		if strings.HasPrefix(errMsg, "EMPTY_TITLE") ||
+			strings.HasPrefix(errMsg, "EMPTY_SPEC") ||
+			strings.HasPrefix(errMsg, "MISSING_DOCUMENT_ID") ||
+			strings.HasPrefix(errMsg, "INVALID_DOCUMENT_ID") ||
+			strings.HasPrefix(errMsg, "DOCUMENT_NOT_IN_PROJECT") ||
+			strings.HasPrefix(errMsg, "UNKNOWN_DEPENDENCY") ||
+			strings.HasPrefix(errMsg, "DEPENDENCY_NOT_IN_PROJECT") ||
+			strings.HasPrefix(errMsg, "SELF_DEPENDENCY") {
+			s.errorResponse(w, http.StatusBadRequest, "INVALID_INPUT", errMsg)
+			return
+		}
+		s.errorResponse(w, http.StatusInternalServerError, "CREATE_ERROR", "Failed to create tasks")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusCreated, tasks)
+}
+
+// handleGetTask handles GET /tasks/{id} to retrieve a task with dependencies and links.
+func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	task, err := s.store.GetTask(r.Context(), id)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "GET_ERROR", "Failed to get task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleListTasks handles GET /projects/{id}/tasks with optional filters.
+func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+
+	filter := store.TaskListFilter{}
+
+	if state := r.URL.Query().Get("state"); state != "" {
+		filter.State = &state
+	}
+
+	if assignee := r.URL.Query().Get("assignee"); assignee != "" {
+		filter.Assignee = &assignee
+	}
+
+	if claimable := r.URL.Query().Get("claimable"); claimable == "true" {
+		filter.Claimable = true
+	}
+
+	tasks, err := s.store.ListTasks(r.Context(), projectID, filter)
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list tasks")
+		return
+	}
+
+	// Ensure we return an empty array, not null
+	if tasks == nil {
+		tasks = make([]store.Task, 0)
+	}
+
+	s.encodeJSON(w, http.StatusOK, tasks)
 }
