@@ -154,7 +154,7 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 
 	project, err := s.store.GetProject(r.Context(), id)
-	if err == store.ErrNotFound {
+	if errors.Is(err, store.ErrNotFound) {
 		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Project not found")
 		return
 	}

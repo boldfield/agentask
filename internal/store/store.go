@@ -406,7 +406,7 @@ func (s *sqliteStore) GetProject(ctx context.Context, id string) (Project, error
 		SELECT id, name, repo, created_at FROM project WHERE id = ?
 	`, id).Scan(&p.ID, &p.Name, &p.Repo, &p.CreatedAt)
 
-	if err == sql.ErrNoRows {
+	if errors.Is(err, sql.ErrNoRows) {
 		return Project{}, ErrNotFound
 	}
 	if err != nil {
