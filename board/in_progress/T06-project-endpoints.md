@@ -1,7 +1,7 @@
 ---
 id: T06
 title: Project endpoints — create / get
-state: ready
+state: in_progress
 document: DESIGN.md
 depends_on: [T03, T05]
 ---
