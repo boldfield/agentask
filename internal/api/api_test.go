@@ -1163,3 +1163,314 @@ func TestPromoteTaskRequiresAuth(t *testing.T) {
 		t.Errorf("expected status 401, got %d", promoteW.Code)
 	}
 }
+
+// Helper to set up a project, document, and an in_progress task with a lease
+func setupClaimedTask(t *testing.T, server *Server, authHeader string) (string, *string) {
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a task
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task to Claim",
+			Spec:       "Test task for claiming",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Promote the task to ready
+	promoteReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	// Claim the task
+	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimBody, _ := json.Marshal(claimPayload)
+	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
+	claimReq.Header.Set("Authorization", authHeader)
+	claimReq.Header.Set("Content-Type", "application/json")
+	claimW := httptest.NewRecorder()
+	server.mux.ServeHTTP(claimW, claimReq)
+
+	if claimW.Code != http.StatusOK {
+		t.Fatalf("failed to claim task: got status %d", claimW.Code)
+	}
+
+	var claimedTask store.Task
+	json.NewDecoder(claimW.Body).Decode(&claimedTask)
+
+	return taskID, claimedTask.LeaseExpiresAt
+}
+
+// TestHeartbeatExtendsLease verifies that heartbeat by the assignee extends the lease.
+func TestHeartbeatExtendsLease(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID, oldLeaseExpiry := setupClaimedTask(t, server, authHeader)
+
+	// Small sleep to ensure time passes and new timestamp will be > old
+	time.Sleep(10 * time.Millisecond)
+
+	// Heartbeat the task with the same agent
+	heartbeatPayload := map[string]string{"agent_id": "test-agent"}
+	heartbeatBody, _ := json.Marshal(heartbeatPayload)
+	heartbeatReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/heartbeat", bytes.NewReader(heartbeatBody))
+	heartbeatReq.Header.Set("Authorization", authHeader)
+	heartbeatReq.Header.Set("Content-Type", "application/json")
+	heartbeatW := httptest.NewRecorder()
+	server.mux.ServeHTTP(heartbeatW, heartbeatReq)
+
+	if heartbeatW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", heartbeatW.Code)
+	}
+
+	var heartbeatTask store.Task
+	if err := json.NewDecoder(heartbeatW.Body).Decode(&heartbeatTask); err != nil {
+		t.Fatalf("failed to decode heartbeat response: %v", err)
+	}
+
+	// Verify lease was extended
+	if heartbeatTask.LeaseExpiresAt == nil {
+		t.Fatal("lease_expires_at is nil after heartbeat")
+	}
+	if oldLeaseExpiry == nil {
+		t.Fatal("old lease_expires_at is nil")
+	}
+	if *heartbeatTask.LeaseExpiresAt <= *oldLeaseExpiry {
+		t.Errorf("new lease expiry (%q) not greater than old (%q)", *heartbeatTask.LeaseExpiresAt, *oldLeaseExpiry)
+	}
+}
+
+// TestHeartbeatByDifferentAgentReturns409 verifies that heartbeat by a non-assignee returns 409.
+func TestHeartbeatByDifferentAgentReturns409(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID, _ := setupClaimedTask(t, server, authHeader)
+
+	// Heartbeat with a different agent ID
+	heartbeatPayload := map[string]string{"agent_id": "different-agent"}
+	heartbeatBody, _ := json.Marshal(heartbeatPayload)
+	heartbeatReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/heartbeat", bytes.NewReader(heartbeatBody))
+	heartbeatReq.Header.Set("Authorization", authHeader)
+	heartbeatReq.Header.Set("Content-Type", "application/json")
+	heartbeatW := httptest.NewRecorder()
+	server.mux.ServeHTTP(heartbeatW, heartbeatReq)
+
+	if heartbeatW.Code != http.StatusConflict {
+		t.Errorf("expected status 409, got %d", heartbeatW.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(heartbeatW.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "CONFLICT" {
+		t.Errorf("expected error code 'CONFLICT', got %q", code)
+	}
+}
+
+// TestHeartbeatOnNotInProgressReturns409 verifies that heartbeat on non-in_progress task returns 409.
+func TestHeartbeatOnNotInProgressReturns409(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a task but keep it in backlog (don't promote/claim)
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Backlog Task",
+			Spec:       "This stays in backlog",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Try to heartbeat a backlog task
+	heartbeatPayload := map[string]string{"agent_id": "test-agent"}
+	heartbeatBody, _ := json.Marshal(heartbeatPayload)
+	heartbeatReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/heartbeat", bytes.NewReader(heartbeatBody))
+	heartbeatReq.Header.Set("Authorization", authHeader)
+	heartbeatReq.Header.Set("Content-Type", "application/json")
+	heartbeatW := httptest.NewRecorder()
+	server.mux.ServeHTTP(heartbeatW, heartbeatReq)
+
+	if heartbeatW.Code != http.StatusConflict {
+		t.Errorf("expected status 409, got %d", heartbeatW.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(heartbeatW.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "CONFLICT" {
+		t.Errorf("expected error code 'CONFLICT', got %q", code)
+	}
+}
+
+// TestHeartbeatUnknownTaskReturns404 verifies that heartbeat on unknown task returns 404.
+func TestHeartbeatUnknownTaskReturns404(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	heartbeatPayload := map[string]string{"agent_id": "test-agent"}
+	heartbeatBody, _ := json.Marshal(heartbeatPayload)
+	heartbeatReq := httptest.NewRequest("POST", "/tasks/nonexistent-id/heartbeat", bytes.NewReader(heartbeatBody))
+	heartbeatReq.Header.Set("Authorization", authHeader)
+	heartbeatReq.Header.Set("Content-Type", "application/json")
+	heartbeatW := httptest.NewRecorder()
+	server.mux.ServeHTTP(heartbeatW, heartbeatReq)
+
+	if heartbeatW.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", heartbeatW.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(heartbeatW.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "NOT_FOUND" {
+		t.Errorf("expected error code 'NOT_FOUND', got %q", code)
+	}
+}
+
+// TestHeartbeatEmptyAgentIDReturns400 verifies that empty agent_id returns 400.
+func TestHeartbeatEmptyAgentIDReturns400(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID, _ := setupClaimedTask(t, server, authHeader)
+
+	// Heartbeat with empty agent_id
+	heartbeatPayload := map[string]string{"agent_id": ""}
+	heartbeatBody, _ := json.Marshal(heartbeatPayload)
+	heartbeatReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/heartbeat", bytes.NewReader(heartbeatBody))
+	heartbeatReq.Header.Set("Authorization", authHeader)
+	heartbeatReq.Header.Set("Content-Type", "application/json")
+	heartbeatW := httptest.NewRecorder()
+	server.mux.ServeHTTP(heartbeatW, heartbeatReq)
+
+	if heartbeatW.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", heartbeatW.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(heartbeatW.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "EMPTY_AGENT_ID" {
+		t.Errorf("expected error code 'EMPTY_AGENT_ID', got %q", code)
+	}
+}
+
+// TestHeartbeatAppendsHeartbeatEvent verifies that a heartbeat appends a heartbeat event.
+func TestHeartbeatAppendsHeartbeatEvent(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID, _ := setupClaimedTask(t, server, authHeader)
+
+	// Get events before heartbeat
+	eventsBefore, err := server.store.ListEvents(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("failed to list events before heartbeat: %v", err)
+	}
+
+	// Heartbeat the task
+	heartbeatPayload := map[string]string{"agent_id": "test-agent"}
+	heartbeatBody, _ := json.Marshal(heartbeatPayload)
+	heartbeatReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/heartbeat", bytes.NewReader(heartbeatBody))
+	heartbeatReq.Header.Set("Authorization", authHeader)
+	heartbeatReq.Header.Set("Content-Type", "application/json")
+	heartbeatW := httptest.NewRecorder()
+	server.mux.ServeHTTP(heartbeatW, heartbeatReq)
+
+	if heartbeatW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", heartbeatW.Code)
+	}
+
+	// Get events after heartbeat
+	eventsAfter, err := server.store.ListEvents(context.Background(), taskID)
+	if err != nil {
+		t.Fatalf("failed to list events after heartbeat: %v", err)
+	}
+
+	// Verify a new heartbeat event was appended
+	if len(eventsAfter) <= len(eventsBefore) {
+		t.Errorf("expected more events after heartbeat, got same count: %d", len(eventsAfter))
+	}
+
+	// Find the heartbeat event
+	heartbeatFound := false
+	for _, event := range eventsAfter {
+		if event.Kind == "heartbeat" && event.Actor == "test-agent" {
+			heartbeatFound = true
+			break
+		}
+	}
+
+	if !heartbeatFound {
+		t.Error("heartbeat event not found in events after heartbeat")
+	}
+}
+
+// TestHeartbeatRequiresAuth verifies that heartbeat endpoint requires auth.
+func TestHeartbeatRequiresAuth(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+
+	heartbeatPayload := map[string]string{"agent_id": "test-agent"}
+	heartbeatBody, _ := json.Marshal(heartbeatPayload)
+	heartbeatReq := httptest.NewRequest("POST", "/tasks/some-id/heartbeat", bytes.NewReader(heartbeatBody))
+	// No Authorization header
+	heartbeatW := httptest.NewRecorder()
+	server.mux.ServeHTTP(heartbeatW, heartbeatReq)
+
+	if heartbeatW.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", heartbeatW.Code)
+	}
+}

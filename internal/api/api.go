@@ -47,6 +47,7 @@ func New(s store.Store, authToken string, leaseTTL time.Duration) *Server {
 	mux.HandleFunc("GET /projects/{id}/tasks", server.authMiddleware(server.handleListTasks))
 	mux.HandleFunc("GET /tasks/{id}", server.authMiddleware(server.handleGetTask))
 	mux.HandleFunc("POST /tasks/{id}/claim", server.authMiddleware(server.handleClaimTask))
+	mux.HandleFunc("POST /tasks/{id}/heartbeat", server.authMiddleware(server.handleHeartbeat))
 	mux.HandleFunc("POST /tasks/{id}/promote", server.authMiddleware(server.handlePromoteTask))
 
 	return server
@@ -347,6 +348,42 @@ func (s *Server) handleClaimTask(w http.ResponseWriter, r *http.Request) {
 	}
 	if err != nil {
 		s.errorResponse(w, http.StatusInternalServerError, "CLAIM_ERROR", "Failed to claim task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleHeartbeat handles POST /tasks/{id}/heartbeat to extend a task's lease.
+func (s *Server) handleHeartbeat(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	var payload struct {
+		AgentID string `json:"agent_id"`
+	}
+
+	if err := s.decodeJSON(w, r, &payload); err != nil {
+		return // decodeJSON already wrote error response
+	}
+
+	// Validate agent_id is non-empty
+	if payload.AgentID == "" {
+		s.errorResponse(w, http.StatusBadRequest, "EMPTY_AGENT_ID", "agent_id cannot be empty")
+		return
+	}
+
+	// Heartbeat the task
+	task, err := s.store.HeartbeatTask(r.Context(), taskID, payload.AgentID, s.leaseTTL)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+		return
+	}
+	if errors.Is(err, store.ErrConflict) {
+		s.errorResponse(w, http.StatusConflict, "CONFLICT", "Task is not in_progress or not assigned to this agent")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "HEARTBEAT_ERROR", "Failed to heartbeat task")
 		return
 	}
 

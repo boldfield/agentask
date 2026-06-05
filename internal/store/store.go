@@ -35,6 +35,7 @@ type Store interface {
 	GetTask(ctx context.Context, id string) (TaskWithDepsAndLinks, error)
 	ListTasks(ctx context.Context, projectID string, filter TaskListFilter) ([]Task, error)
 	ClaimTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
+	HeartbeatTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 	PromoteTask(ctx context.Context, taskID string) (Task, error)
 }
 
@@ -919,6 +920,79 @@ func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID string, lea
 	}
 
 	// Task exists but not claimable (not ready, unfinished deps, or live lease) -> ErrConflict
+	tx.Rollback()
+	return Task{}, ErrConflict
+}
+
+// HeartbeatTask atomically extends the lease on an in_progress task.
+// It reuses the pattern from ClaimTask: a single conditional UPDATE within a transaction,
+// updating lease_expires_at and appending a heartbeat event in the same tx.
+// Returns the updated Task on success (rowsAffected == 1).
+// Returns ErrNotFound if the task doesn't exist.
+// Returns ErrConflict if the task is not in_progress or not assigned to the given agentID.
+func (s *sqliteStore) HeartbeatTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error) {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := nowTimestamp()
+	leaseExpiry := leaseExpiryTimestamp(leaseTTL)
+
+	// Single conditional UPDATE: only update if state is 'in_progress' AND assignee matches
+	result, err := tx.ExecContext(ctx, `
+		UPDATE task
+		SET lease_expires_at=?, updated_at=?
+		WHERE id=? AND state='in_progress' AND assignee=?
+	`, leaseExpiry, now, taskID, agentID)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to heartbeat task: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected == 1 {
+		// Heartbeat succeeded. Append event in the same transaction.
+		_, err := s.AppendEvent(ctx, tx, taskID, agentID, "heartbeat", nil, nil)
+		if err != nil {
+			return Task{}, fmt.Errorf("failed to append heartbeat event: %w", err)
+		}
+
+		// SELECT the updated task within the same transaction
+		var t Task
+		err = tx.QueryRowContext(ctx, `
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, created_at, updated_at
+			FROM task WHERE id = ?
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.CreatedAt, &t.UpdatedAt)
+		if err != nil {
+			return Task{}, fmt.Errorf("failed to fetch updated task: %w", err)
+		}
+
+		if err := tx.Commit(); err != nil {
+			return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
+		}
+
+		return t, nil
+	}
+
+	// rowsAffected == 0: task was not heartbeateable. Determine the cause for the right error.
+	var taskExists bool
+	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) > 0 FROM task WHERE id = ?", taskID).Scan(&taskExists)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to check task existence: %w", err)
+	}
+
+	if !taskExists {
+		// Task does not exist -> ErrNotFound
+		tx.Rollback()
+		return Task{}, ErrNotFound
+	}
+
+	// Task exists but not heartbeateable (not in_progress or wrong assignee) -> ErrConflict
 	tx.Rollback()
 	return Task{}, ErrConflict
 }
