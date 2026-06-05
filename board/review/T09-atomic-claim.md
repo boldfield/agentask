@@ -1,7 +1,7 @@
 ---
 id: T09
 title: Atomic claim endpoint + query + concurrency test
-state: in_progress
+state: review
 document: DESIGN.md
 depends_on: [T08, T04]
 ---
@@ -21,3 +21,8 @@ The crown jewel (DESIGN.md §4). `POST /tasks/{id}/claim` `{agent_id}`.
 - Claiming a task with an unfinished dependency → 409.
 - **Concurrency test:** N goroutines claim the same task; exactly one wins. This is the test
   that proves the design — it must be present and pass reliably.
+
+## Result
+- PR URL: https://github.com/boldfield/agentask/pull/11
+- Branch: agentask/T09-atomic-claim
+- Head SHA: 7dde39b
