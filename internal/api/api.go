@@ -250,17 +250,10 @@ func (s *Server) handleCreateTasks(w http.ResponseWriter, r *http.Request) {
 
 	tasks, err := s.store.CreateTasks(r.Context(), projectID, payload)
 	if err != nil {
-		// Map store validation errors to 400
-		errMsg := err.Error()
-		if strings.HasPrefix(errMsg, "EMPTY_TITLE") ||
-			strings.HasPrefix(errMsg, "EMPTY_SPEC") ||
-			strings.HasPrefix(errMsg, "MISSING_DOCUMENT_ID") ||
-			strings.HasPrefix(errMsg, "INVALID_DOCUMENT_ID") ||
-			strings.HasPrefix(errMsg, "DOCUMENT_NOT_IN_PROJECT") ||
-			strings.HasPrefix(errMsg, "UNKNOWN_DEPENDENCY") ||
-			strings.HasPrefix(errMsg, "DEPENDENCY_NOT_IN_PROJECT") ||
-			strings.HasPrefix(errMsg, "SELF_DEPENDENCY") {
-			s.errorResponse(w, http.StatusBadRequest, "INVALID_INPUT", errMsg)
+		// Client-input errors map to 400 with their specific code; everything else is 500.
+		var ve *store.ValidationError
+		if errors.As(err, &ve) {
+			s.errorResponse(w, http.StatusBadRequest, ve.Code, ve.Error())
 			return
 		}
 		s.errorResponse(w, http.StatusInternalServerError, "CREATE_ERROR", "Failed to create tasks")

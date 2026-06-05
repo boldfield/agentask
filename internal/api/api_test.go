@@ -899,8 +899,8 @@ func TestCreateTasksUnknownDependency(t *testing.T) {
 	}
 
 	code, ok := errObj["code"].(string)
-	if !ok || code != "INVALID_INPUT" {
-		t.Errorf("expected error code 'INVALID_INPUT', got %q", code)
+	if !ok || code != "UNKNOWN_DEPENDENCY" {
+		t.Errorf("expected error code 'UNKNOWN_DEPENDENCY', got %q", code)
 	}
 }
 

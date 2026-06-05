@@ -417,6 +417,26 @@ var ErrNotFound = errors.New("not found")
 // ErrConflict is returned when a constraint is violated (e.g., second design per project).
 var ErrConflict = errors.New("conflict")
 
+// ValidationError is a client-input error. Handlers map it to HTTP 400 via errors.As,
+// surfacing Code and Message. Use invalid() to construct one. This is the validation
+// convention for all mutation endpoints — prefer it over bare fmt.Errorf so the
+// 400-vs-500 distinction never depends on string-matching error messages.
+type ValidationError struct {
+	Code    string
+	Message string
+}
+
+func (e *ValidationError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return e.Code
+}
+
+func invalid(code, message string) error {
+	return &ValidationError{Code: code, Message: message}
+}
+
 // CreateProject creates a new project with the given name and repo.
 // It generates the id and sets created_at automatically.
 func (s *sqliteStore) CreateProject(ctx context.Context, name, repo string) (Project, error) {
@@ -582,26 +602,26 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 	for _, input := range tasks {
 		// Validate title and spec are non-empty
 		if strings.TrimSpace(input.Title) == "" {
-			return nil, fmt.Errorf("EMPTY_TITLE")
+			return nil, invalid("EMPTY_TITLE", "title is required")
 		}
 		if strings.TrimSpace(input.Spec) == "" {
-			return nil, fmt.Errorf("EMPTY_SPEC")
+			return nil, invalid("EMPTY_SPEC", "spec is required")
 		}
 		if strings.TrimSpace(input.DocumentID) == "" {
-			return nil, fmt.Errorf("MISSING_DOCUMENT_ID")
+			return nil, invalid("MISSING_DOCUMENT_ID", "document_id is required")
 		}
 
 		// Verify document_id references a document in this project
 		var docProjectID string
 		err := tx.QueryRowContext(ctx, "SELECT project_id FROM document WHERE id = ?", input.DocumentID).Scan(&docProjectID)
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, fmt.Errorf("INVALID_DOCUMENT_ID")
+			return nil, invalid("INVALID_DOCUMENT_ID", "document_id does not exist")
 		}
 		if err != nil {
 			return nil, fmt.Errorf("failed to verify document: %w", err)
 		}
 		if docProjectID != projectID {
-			return nil, fmt.Errorf("DOCUMENT_NOT_IN_PROJECT")
+			return nil, invalid("DOCUMENT_NOT_IN_PROJECT", "document_id is not in this project")
 		}
 
 		// Generate task id
@@ -642,7 +662,7 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 		for _, ref := range input.DependsOn {
 			// Check for self-dependency
 			if ref == input.Key && input.Key != "" {
-				return nil, fmt.Errorf("SELF_DEPENDENCY")
+				return nil, invalid("SELF_DEPENDENCY", "a task cannot depend on itself")
 			}
 
 			var dependsOnID string
@@ -655,13 +675,13 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 				var existingProjectID string
 				err := tx.QueryRowContext(ctx, "SELECT project_id FROM task WHERE id = ?", ref).Scan(&existingProjectID)
 				if errors.Is(err, sql.ErrNoRows) {
-					return nil, fmt.Errorf("UNKNOWN_DEPENDENCY")
+					return nil, invalid("UNKNOWN_DEPENDENCY", "depends_on references an unknown task")
 				}
 				if err != nil {
 					return nil, fmt.Errorf("failed to verify dependency: %w", err)
 				}
 				if existingProjectID != projectID {
-					return nil, fmt.Errorf("DEPENDENCY_NOT_IN_PROJECT")
+					return nil, invalid("DEPENDENCY_NOT_IN_PROJECT", "depends_on references a task in another project")
 				}
 				dependsOnID = ref
 			}
