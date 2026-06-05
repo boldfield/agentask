@@ -2222,3 +2222,124 @@ func TestTransitionToBlockedFromActiveStateSucceeds(t *testing.T) {
 		t.Errorf("expected state 'blocked', got %q", task.State)
 	}
 }
+
+// TestListProjectsReturnsAllProjects verifies that GET /projects returns all created projects ordered by created_at.
+func TestListProjectsReturnsAllProjects(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Create multiple projects
+	projects := []map[string]string{
+		{"name": "list-test-project-a", "repo": "https://github.com/example/repo-a"},
+		{"name": "list-test-project-b", "repo": "https://github.com/example/repo-b"},
+		{"name": "list-test-project-c", "repo": "https://github.com/example/repo-c"},
+	}
+
+	createdProjects := make([]store.Project, len(projects))
+	for i, p := range projects {
+		payload := map[string]string{"name": p["name"], "repo": p["repo"]}
+		body, _ := json.Marshal(payload)
+		req := httptest.NewRequest("POST", "/projects", bytes.NewReader(body))
+		req.Header.Set("Authorization", authHeader)
+		req.Header.Set("Content-Type", "application/json")
+		w := httptest.NewRecorder()
+		server.mux.ServeHTTP(w, req)
+
+		var resp store.Project
+		json.NewDecoder(w.Body).Decode(&resp)
+		createdProjects[i] = resp
+	}
+
+	// List all projects
+	listReq := httptest.NewRequest("GET", "/projects", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var respProjects []store.Project
+	if err := json.NewDecoder(listW.Body).Decode(&respProjects); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify all created projects are in the response
+	for _, created := range createdProjects {
+		found := false
+		for _, resp := range respProjects {
+			if resp.ID == created.ID {
+				// Verify the fields match
+				if resp.Name != created.Name {
+					t.Errorf("expected name %q, got %q", created.Name, resp.Name)
+				}
+				if resp.Repo != created.Repo {
+					t.Errorf("expected repo %q, got %q", created.Repo, resp.Repo)
+				}
+				if resp.CreatedAt != created.CreatedAt {
+					t.Errorf("expected created_at %q, got %q", created.CreatedAt, resp.CreatedAt)
+				}
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("created project %q not found in list response", created.ID)
+		}
+	}
+
+	// Verify projects are ordered by created_at
+	for i := 1; i < len(respProjects); i++ {
+		if respProjects[i].CreatedAt < respProjects[i-1].CreatedAt {
+			t.Errorf("projects not ordered by created_at: %s >= %s", respProjects[i-1].CreatedAt, respProjects[i].CreatedAt)
+		}
+	}
+}
+
+// TestListProjectsWithoutAuth verifies that GET /projects returns 401 without a token.
+func TestListProjectsWithoutAuth(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+
+	listReq := httptest.NewRequest("GET", "/projects", nil)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", listW.Code)
+	}
+}
+
+// TestListProjectsReturnsEmptyArray verifies that GET /projects returns [] (not null) when no projects exist.
+// This test uses a fresh database to ensure no prior projects exist.
+func TestListProjectsReturnsEmptyArray(t *testing.T) {
+	tmpdb := t.TempDir() + "/test.db"
+	s, err := store.Open(tmpdb)
+	if err != nil {
+		t.Fatalf("failed to open test store: %v", err)
+	}
+	server := New(s, "test-token", 5*time.Minute)
+	authHeader := "Bearer test-token"
+
+	// List projects without creating any
+	listReq := httptest.NewRequest("GET", "/projects", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var respProjects []store.Project
+	if err := json.NewDecoder(listW.Body).Decode(&respProjects); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if respProjects == nil {
+		t.Error("expected empty array, got nil")
+	}
+	if len(respProjects) != 0 {
+		t.Errorf("expected 0 projects, got %d", len(respProjects))
+	}
+}

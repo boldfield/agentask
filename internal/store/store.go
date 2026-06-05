@@ -29,6 +29,7 @@ type Store interface {
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
 	CreateProject(ctx context.Context, name, repo string) (Project, error)
 	GetProject(ctx context.Context, id string) (Project, error)
+	ListProjects(ctx context.Context) ([]Project, error)
 	CreateDocument(ctx context.Context, projectID, kind, title, ref string, commit *string) (Document, error)
 	ListDocuments(ctx context.Context, projectID string, kind *string) ([]Document, error)
 	CreateTasks(ctx context.Context, projectID string, tasks []TaskInput) ([]Task, error)
@@ -494,6 +495,37 @@ func (s *sqliteStore) GetProject(ctx context.Context, id string) (Project, error
 	}
 
 	return p, nil
+}
+
+// ListProjects lists all projects ordered by created_at.
+// Returns an empty slice (not nil) when no projects exist.
+func (s *sqliteStore) ListProjects(ctx context.Context) ([]Project, error) {
+	query := `
+		SELECT id, name, repo, created_at FROM project
+		ORDER BY created_at
+	`
+
+	rows, err := s.conn.QueryContext(ctx, query)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query projects: %w", err)
+	}
+	defer rows.Close()
+
+	projects := make([]Project, 0)
+	for rows.Next() {
+		var p Project
+		err := rows.Scan(&p.ID, &p.Name, &p.Repo, &p.CreatedAt)
+		if err != nil {
+			return nil, fmt.Errorf("failed to scan project: %w", err)
+		}
+		projects = append(projects, p)
+	}
+
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating projects: %w", err)
+	}
+
+	return projects, nil
 }
 
 // CreateDocument creates a new document (design or feature_spec) for a project.
