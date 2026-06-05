@@ -36,6 +36,7 @@ func New(s store.Store, authToken string, leaseTTL time.Duration) *Server {
 
 	// Project endpoints (protected)
 	mux.HandleFunc("POST /projects", server.authMiddleware(server.handleCreateProject))
+	mux.HandleFunc("GET /projects", server.authMiddleware(server.handleListProjects))
 	mux.HandleFunc("GET /projects/{id}", server.authMiddleware(server.handleGetProject))
 
 	// Document endpoints (protected)
@@ -182,6 +183,22 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.encodeJSON(w, http.StatusOK, project)
+}
+
+// handleListProjects handles GET /projects to list all projects.
+func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	projects, err := s.store.ListProjects(r.Context())
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list projects")
+		return
+	}
+
+	// Ensure we return an empty array, not null
+	if projects == nil {
+		projects = make([]store.Project, 0)
+	}
+
+	s.encodeJSON(w, http.StatusOK, projects)
 }
 
 // handleCreateDocument handles POST /projects/{id}/documents to register a document.
