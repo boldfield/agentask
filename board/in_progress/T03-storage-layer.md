@@ -1,7 +1,7 @@
 ---
 id: T03
 title: Storage layer — open DB, WAL, Store interface
-state: backlog
+state: in_progress
 document: DESIGN.md
 depends_on: [T02]
 ---
