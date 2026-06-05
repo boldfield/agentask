@@ -1,6 +1,7 @@
 package api
 
 import (
+	"crypto/subtle"
 	"encoding/json"
 	"errors"
 	"io"
@@ -65,7 +66,8 @@ func (s *Server) authMiddleware(next http.HandlerFunc) http.HandlerFunc {
 		}
 
 		token := parts[1]
-		if token != s.authToken {
+		// Constant-time compare to avoid leaking the token via timing.
+		if subtle.ConstantTimeCompare([]byte(token), []byte(s.authToken)) != 1 {
 			s.errorResponse(w, http.StatusUnauthorized, "INVALID_TOKEN", "Invalid authentication token")
 			return
 		}
