@@ -50,6 +50,8 @@ func New(s store.Store, authToken string, leaseTTL time.Duration) *Server {
 	mux.HandleFunc("POST /tasks/{id}/heartbeat", server.authMiddleware(server.handleHeartbeat))
 	mux.HandleFunc("POST /tasks/{id}/promote", server.authMiddleware(server.handlePromoteTask))
 	mux.HandleFunc("POST /tasks/{id}/submit", server.authMiddleware(server.handleSubmit))
+	mux.HandleFunc("POST /tasks/{id}/review", server.authMiddleware(server.handleReview))
+	mux.HandleFunc("POST /tasks/{id}/transition", server.authMiddleware(server.handleTransition))
 
 	return server
 }
@@ -451,6 +453,87 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.errorResponse(w, http.StatusInternalServerError, "SUBMIT_ERROR", "Failed to submit task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleReview handles POST /tasks/{id}/review to record a review verdict event.
+func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	var payload struct {
+		Actor  string `json:"actor"`
+		Verdict string `json:"verdict"`
+		Note   *string `json:"note"`
+	}
+
+	if err := s.decodeJSON(w, r, &payload); err != nil {
+		return // decodeJSON already wrote error response
+	}
+
+	// Validate actor is non-empty
+	if payload.Actor == "" {
+		s.errorResponse(w, http.StatusBadRequest, "EMPTY_ACTOR", "actor cannot be empty")
+		return
+	}
+
+	// Add the review
+	event, err := s.store.AddReview(r.Context(), taskID, payload.Actor, payload.Verdict, payload.Note)
+	if err != nil {
+		// Check if it's a ValidationError
+		var validationErr *store.ValidationError
+		if errors.As(err, &validationErr) {
+			s.errorResponse(w, http.StatusBadRequest, validationErr.Code, validationErr.Message)
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			s.errorResponse(w, http.StatusConflict, "CONFLICT", "Task is not in review state")
+			return
+		}
+		s.errorResponse(w, http.StatusInternalServerError, "REVIEW_ERROR", "Failed to add review")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusCreated, event)
+}
+
+// handleTransition handles POST /tasks/{id}/transition to move a task to a new state.
+func (s *Server) handleTransition(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	var payload struct {
+		To   string `json:"to"`
+		Note *string `json:"note"`
+	}
+
+	if err := s.decodeJSON(w, r, &payload); err != nil {
+		return // decodeJSON already wrote error response
+	}
+
+	// Transition the task
+	task, err := s.store.TransitionTask(r.Context(), taskID, payload.To, payload.Note)
+	if err != nil {
+		// Check if it's a ValidationError
+		var validationErr *store.ValidationError
+		if errors.As(err, &validationErr) {
+			s.errorResponse(w, http.StatusBadRequest, validationErr.Code, validationErr.Message)
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			s.errorResponse(w, http.StatusConflict, "CONFLICT", "Transition is not allowed from the current state")
+			return
+		}
+		s.errorResponse(w, http.StatusInternalServerError, "TRANSITION_ERROR", "Failed to transition task")
 		return
 	}
 

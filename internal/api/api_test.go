@@ -1816,3 +1816,409 @@ func TestSubmitRequiresAuth(t *testing.T) {
 		t.Errorf("expected status 401, got %d", submitW.Code)
 	}
 }
+
+// Helper to set up a task in review state (for review and transition tests).
+func setupTaskInReview(t *testing.T, server *Server, authHeader string) string {
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a task
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task for Review",
+			Spec:       "Test task for review",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Promote the task to ready
+	promoteReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	// Claim the task
+	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimBody, _ := json.Marshal(claimPayload)
+	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
+	claimReq.Header.Set("Authorization", authHeader)
+	claimReq.Header.Set("Content-Type", "application/json")
+	claimW := httptest.NewRecorder()
+	server.mux.ServeHTTP(claimW, claimReq)
+
+	// Submit the task to move it to review state
+	submitPayload := map[string]interface{}{
+		"agent_id": "test-agent",
+		"result":   "Work completed",
+		"links":    []map[string]string{},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+
+	if submitW.Code != http.StatusOK {
+		t.Fatalf("failed to submit task to review state: got status %d", submitW.Code)
+	}
+
+	return taskID
+}
+
+// TestReviewWithApproveVerdictSucceeds verifies that posting an approve review succeeds.
+func TestReviewWithApproveVerdictSucceeds(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID := setupTaskInReview(t, server, authHeader)
+
+	// Post an approve review
+	reviewPayload := map[string]interface{}{
+		"actor":   "reviewer-1",
+		"verdict": "approve",
+		"note":    "Looks good!",
+	}
+	reviewBody, _ := json.Marshal(reviewPayload)
+	reviewReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/review", bytes.NewReader(reviewBody))
+	reviewReq.Header.Set("Authorization", authHeader)
+	reviewReq.Header.Set("Content-Type", "application/json")
+	reviewW := httptest.NewRecorder()
+	server.mux.ServeHTTP(reviewW, reviewReq)
+
+	if reviewW.Code != http.StatusCreated {
+		t.Fatalf("expected status 201, got %d; body: %s", reviewW.Code, reviewW.Body.String())
+	}
+
+	var event store.Event
+	if err := json.NewDecoder(reviewW.Body).Decode(&event); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify event details
+	if event.TaskID != taskID {
+		t.Errorf("expected task_id %q, got %q", taskID, event.TaskID)
+	}
+	if event.Actor != "reviewer-1" {
+		t.Errorf("expected actor 'reviewer-1', got %q", event.Actor)
+	}
+	if event.Kind != "review" {
+		t.Errorf("expected kind 'review', got %q", event.Kind)
+	}
+	if event.Verdict == nil || *event.Verdict != "approve" {
+		t.Errorf("expected verdict 'approve', got %v", event.Verdict)
+	}
+	if event.Note == nil || *event.Note != "Looks good!" {
+		t.Errorf("expected note 'Looks good!', got %v", event.Note)
+	}
+}
+
+// TestTransitionToDoneAfterApproveSucceeds verifies that transition to done succeeds after an approve review.
+func TestTransitionToDoneAfterApproveSucceeds(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID := setupTaskInReview(t, server, authHeader)
+
+	// Post an approve review
+	reviewPayload := map[string]interface{}{
+		"actor":   "reviewer-1",
+		"verdict": "approve",
+	}
+	reviewBody, _ := json.Marshal(reviewPayload)
+	reviewReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/review", bytes.NewReader(reviewBody))
+	reviewReq.Header.Set("Authorization", authHeader)
+	reviewReq.Header.Set("Content-Type", "application/json")
+	reviewW := httptest.NewRecorder()
+	server.mux.ServeHTTP(reviewW, reviewReq)
+
+	if reviewW.Code != http.StatusCreated {
+		t.Fatalf("failed to post review: got status %d", reviewW.Code)
+	}
+
+	// Transition to done
+	transitionPayload := map[string]interface{}{
+		"to":   "done",
+		"note": "Approved and ready to close",
+	}
+	transitionBody, _ := json.Marshal(transitionPayload)
+	transitionReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/transition", bytes.NewReader(transitionBody))
+	transitionReq.Header.Set("Authorization", authHeader)
+	transitionReq.Header.Set("Content-Type", "application/json")
+	transitionW := httptest.NewRecorder()
+	server.mux.ServeHTTP(transitionW, transitionReq)
+
+	if transitionW.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d; body: %s", transitionW.Code, transitionW.Body.String())
+	}
+
+	var task store.Task
+	if err := json.NewDecoder(transitionW.Body).Decode(&task); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if task.State != "done" {
+		t.Errorf("expected state 'done', got %q", task.State)
+	}
+}
+
+// TestTransitionToDoneWithoutApproveReturns409 verifies that transition to done fails without an approve event.
+func TestTransitionToDoneWithoutApproveReturns409(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID := setupTaskInReview(t, server, authHeader)
+
+	// Try to transition to done WITHOUT any approve review
+	transitionPayload := map[string]interface{}{
+		"to": "done",
+	}
+	transitionBody, _ := json.Marshal(transitionPayload)
+	transitionReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/transition", bytes.NewReader(transitionBody))
+	transitionReq.Header.Set("Authorization", authHeader)
+	transitionReq.Header.Set("Content-Type", "application/json")
+	transitionW := httptest.NewRecorder()
+	server.mux.ServeHTTP(transitionW, transitionReq)
+
+	if transitionW.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d", transitionW.Code)
+	}
+
+	// Verify task state is still review
+	getReq := httptest.NewRequest("GET", "/tasks/"+taskID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW := httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+
+	var task store.TaskWithDepsAndLinks
+	json.NewDecoder(getW.Body).Decode(&task)
+
+	if task.State != "review" {
+		t.Errorf("expected task to still be in 'review', got %q", task.State)
+	}
+}
+
+// TestTransitionToReadyFromReviewReturnsToClaimablePool verifies that transition to ready from review allows reclaiming.
+func TestTransitionToReadyFromReviewReturnsToClaimablePool(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID := setupTaskInReview(t, server, authHeader)
+
+	// Transition back to ready (kick back for rework)
+	transitionPayload := map[string]interface{}{
+		"to":   "ready",
+		"note": "Needs rework",
+	}
+	transitionBody, _ := json.Marshal(transitionPayload)
+	transitionReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/transition", bytes.NewReader(transitionBody))
+	transitionReq.Header.Set("Authorization", authHeader)
+	transitionReq.Header.Set("Content-Type", "application/json")
+	transitionW := httptest.NewRecorder()
+	server.mux.ServeHTTP(transitionW, transitionReq)
+
+	if transitionW.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", transitionW.Code)
+	}
+
+	var task store.Task
+	if err := json.NewDecoder(transitionW.Body).Decode(&task); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if task.State != "ready" {
+		t.Errorf("expected state 'ready', got %q", task.State)
+	}
+
+	// Verify it can be claimed again
+	claimPayload := map[string]string{"agent_id": "test-agent-2"}
+	claimBody, _ := json.Marshal(claimPayload)
+	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
+	claimReq.Header.Set("Authorization", authHeader)
+	claimReq.Header.Set("Content-Type", "application/json")
+	claimW := httptest.NewRecorder()
+	server.mux.ServeHTTP(claimW, claimReq)
+
+	if claimW.Code != http.StatusOK {
+		t.Errorf("expected claim to succeed (status 200), got %d", claimW.Code)
+	}
+}
+
+// TestReviewOnNonReviewTaskReturns409 verifies that posting a review on a non-review task fails.
+func TestReviewOnNonReviewTaskReturns409(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a task but leave it in backlog (no promote, no claim)
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Backlog Task",
+			Spec:       "This stays in backlog",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Try to post a review on a backlog task
+	reviewPayload := map[string]interface{}{
+		"actor":   "reviewer",
+		"verdict": "approve",
+	}
+	reviewBody, _ := json.Marshal(reviewPayload)
+	reviewReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/review", bytes.NewReader(reviewBody))
+	reviewReq.Header.Set("Authorization", authHeader)
+	reviewReq.Header.Set("Content-Type", "application/json")
+	reviewW := httptest.NewRecorder()
+	server.mux.ServeHTTP(reviewW, reviewReq)
+
+	if reviewW.Code != http.StatusConflict {
+		t.Errorf("expected status 409, got %d", reviewW.Code)
+	}
+}
+
+// TestReviewWithInvalidVerdictReturns400 verifies that posting a review with invalid verdict returns 400.
+func TestReviewWithInvalidVerdictReturns400(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID := setupTaskInReview(t, server, authHeader)
+
+	// Post a review with invalid verdict
+	reviewPayload := map[string]interface{}{
+		"actor":   "reviewer",
+		"verdict": "invalid-verdict",
+	}
+	reviewBody, _ := json.Marshal(reviewPayload)
+	reviewReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/review", bytes.NewReader(reviewBody))
+	reviewReq.Header.Set("Authorization", authHeader)
+	reviewReq.Header.Set("Content-Type", "application/json")
+	reviewW := httptest.NewRecorder()
+	server.mux.ServeHTTP(reviewW, reviewReq)
+
+	if reviewW.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", reviewW.Code)
+	}
+
+	var errResp map[string]interface{}
+	json.NewDecoder(reviewW.Body).Decode(&errResp)
+	errObj := errResp["error"].(map[string]interface{})
+	if errObj["code"] != "INVALID_VERDICT" {
+		t.Errorf("expected error code 'INVALID_VERDICT', got %v", errObj["code"])
+	}
+}
+
+// TestTransitionWithInvalidTargetStateReturns400 verifies that transition with invalid target state returns 400.
+func TestTransitionWithInvalidTargetStateReturns400(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID := setupTaskInReview(t, server, authHeader)
+
+	// Try to transition to an invalid state
+	transitionPayload := map[string]interface{}{
+		"to": "invalid-state",
+	}
+	transitionBody, _ := json.Marshal(transitionPayload)
+	transitionReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/transition", bytes.NewReader(transitionBody))
+	transitionReq.Header.Set("Authorization", authHeader)
+	transitionReq.Header.Set("Content-Type", "application/json")
+	transitionW := httptest.NewRecorder()
+	server.mux.ServeHTTP(transitionW, transitionReq)
+
+	if transitionW.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", transitionW.Code)
+	}
+
+	var errResp map[string]interface{}
+	json.NewDecoder(transitionW.Body).Decode(&errResp)
+	errObj := errResp["error"].(map[string]interface{})
+	if errObj["code"] != "INVALID_TARGET_STATE" {
+		t.Errorf("expected error code 'INVALID_TARGET_STATE', got %v", errObj["code"])
+	}
+}
+
+// TestTransitionToBlockedFromActiveStateSucceeds verifies that transition to blocked from an active state succeeds.
+func TestTransitionToBlockedFromActiveStateSucceeds(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Set up a task in in_progress state
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task to Block",
+			Spec:       "Test task",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Promote and claim
+	promoteReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimBody, _ := json.Marshal(claimPayload)
+	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
+	claimReq.Header.Set("Authorization", authHeader)
+	claimReq.Header.Set("Content-Type", "application/json")
+	claimW := httptest.NewRecorder()
+	server.mux.ServeHTTP(claimW, claimReq)
+
+	// Transition to blocked
+	transitionPayload := map[string]interface{}{
+		"to":   "blocked",
+		"note": "Blocked on external dependency",
+	}
+	transitionBody, _ := json.Marshal(transitionPayload)
+	transitionReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/transition", bytes.NewReader(transitionBody))
+	transitionReq.Header.Set("Authorization", authHeader)
+	transitionReq.Header.Set("Content-Type", "application/json")
+	transitionW := httptest.NewRecorder()
+	server.mux.ServeHTTP(transitionW, transitionReq)
+
+	if transitionW.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d", transitionW.Code)
+	}
+
+	var task store.Task
+	if err := json.NewDecoder(transitionW.Body).Decode(&task); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if task.State != "blocked" {
+		t.Errorf("expected state 'blocked', got %q", task.State)
+	}
+}
