@@ -3,8 +3,10 @@ package tuiclient
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -275,14 +277,26 @@ func TestReviewTask(t *testing.T) {
 func TestReviewTaskWithoutNote(t *testing.T) {
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request body
+		// Read raw body to verify "note" key is genuinely absent
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("failed to read raw body: %v", err)
+		}
+		bodyStr := string(rawBody)
+
+		// Verify request body via JSON decode
 		var req reviewTaskRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(rawBody, &req); err != nil {
 			t.Errorf("failed to decode request body: %v", err)
 		}
 
 		if req.Note != nil {
 			t.Errorf("expected note to be omitted (nil), got %v", req.Note)
+		}
+
+		// Verify "note" key is genuinely absent from the raw JSON body
+		if strings.Contains(bodyStr, `"note"`) {
+			t.Errorf("expected 'note' key to be absent from raw body, but found it: %s", bodyStr)
 		}
 
 		// Write response
@@ -350,14 +364,26 @@ func TestTransitionTask(t *testing.T) {
 func TestTransitionTaskWithoutNote(t *testing.T) {
 	// Create a test server
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Verify request body
+		// Read raw body to verify "note" key is genuinely absent
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("failed to read raw body: %v", err)
+		}
+		bodyStr := string(rawBody)
+
+		// Verify request body via JSON decode
 		var req transitionTaskRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		if err := json.Unmarshal(rawBody, &req); err != nil {
 			t.Errorf("failed to decode request body: %v", err)
 		}
 
 		if req.Note != nil {
 			t.Errorf("expected note to be omitted (nil), got %v", req.Note)
+		}
+
+		// Verify "note" key is genuinely absent from the raw JSON body
+		if strings.Contains(bodyStr, `"note"`) {
+			t.Errorf("expected 'note' key to be absent from raw body, but found it: %s", bodyStr)
 		}
 
 		// Write response

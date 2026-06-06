@@ -112,9 +112,9 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body interface
 	var err error
 
 	if body != nil {
-		jsonBody, err := json.Marshal(body)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal request body: %w", err)
+		jsonBody, marshalErr := json.Marshal(body)
+		if marshalErr != nil {
+			return nil, fmt.Errorf("failed to marshal request body: %w", marshalErr)
 		}
 		req, err = http.NewRequestWithContext(ctx, method, url, bytes.NewReader(jsonBody))
 		if err != nil {
