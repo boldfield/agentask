@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -1463,6 +1464,895 @@ func TestBoardModel_ReviewActionsNoopOutsideReviewColumn(t *testing.T) {
 	}
 	if transitionCalled {
 		t.Errorf("TransitionTask was called but should not have been outside review column")
+	}
+}
+
+// --- TUI-5: Detail view tests ---
+
+// buildDetailModel constructs a board model that has the in_progress column populated with
+// one task and the model is in modeDetail for that task.
+// The provided task detail and documents are injected via a canned GetTask/ListDocuments.
+func buildDetailModel(
+	t *testing.T,
+	taskDetail tuiclient.TaskDetail,
+	documents []tuiclient.Document,
+	boardTasks map[string][]tuiclient.Task,
+) *BoardModel {
+	t.Helper()
+
+	var recordedURL string
+	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			return taskDetail, nil
+		},
+		ListDocumentsFunc: func(ctx context.Context, projectID string) ([]tuiclient.Document, error) {
+			return documents, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "reviewer-bot",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test", Repo: "https://github.com/example/repo"}
+
+	model := NewBoardModel(mockClient, config, project)
+	// Inject a no-op opener so tests don't launch a browser; the recorded URL is unused here.
+	model.urlOpener = func(rawURL string) error {
+		recordedURL = rawURL
+		return nil
+	}
+	_ = recordedURL // used in individual tests
+
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Load board tasks.
+	if boardTasks == nil {
+		boardTasks = make(map[string][]tuiclient.Task)
+		for _, state := range []string{"backlog", "ready", "review", "done"} {
+			boardTasks[state] = []tuiclient.Task{}
+		}
+		boardTasks["in_progress"] = []tuiclient.Task{
+			{ID: taskDetail.ID, Title: taskDetail.Title, State: taskDetail.State},
+		}
+	}
+	m, _ = model.Update(tasksFetchedMsg{tasks: boardTasks})
+	model = m.(*BoardModel)
+
+	// Trigger detail mode by pressing enter (with the task selected).
+	model.selectedTaskID = taskDetail.ID
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+
+	// Execute the fetchDetailCmd.
+	if detailCmd != nil {
+		detailMsg := detailCmd()
+		m, _ = model.Update(detailMsg)
+		model = m.(*BoardModel)
+	}
+
+	return model
+}
+
+// TestDetail_EnterOpensDetail verifies that pressing enter opens the detail view and
+// that spec, state, deps-as-titles, links, result, and meta are rendered.
+func TestDetail_EnterOpensDetail(t *testing.T) {
+	depID := "dep-task-1111"
+	depTitle := "Dep Task One"
+	result := "see PR #42"
+	leaseAt := time.Now().Add(3 * time.Minute).Format(time.RFC3339Nano)
+	assignee := "agent-x"
+
+	taskDetail := tuiclient.TaskDetail{
+		ID:             "task-detail-1",
+		Title:          "My Feature Task",
+		Spec:           "This is the full spec text for the task.",
+		State:          "in_progress",
+		Assignee:       &assignee,
+		LeaseExpiresAt: &leaseAt,
+		Result:         &result,
+		CreatedAt:      "2026-01-01T00:00:00Z",
+		UpdatedAt:      "2026-01-02T00:00:00Z",
+		DependsOn:      []string{depID},
+		Links: []tuiclient.TaskLink{
+			{Kind: "pr", Value: "https://github.com/example/repo/pull/42"},
+		},
+	}
+
+	// The board has the dep task so we can resolve its title.
+	boardTasks := make(map[string][]tuiclient.Task)
+	for _, state := range []string{"backlog", "ready", "review", "done"} {
+		boardTasks[state] = []tuiclient.Task{}
+	}
+	boardTasks["in_progress"] = []tuiclient.Task{
+		{ID: "task-detail-1", Title: "My Feature Task", State: "in_progress"},
+		{ID: depID, Title: depTitle, State: "in_progress"},
+	}
+
+	model := buildDetailModel(t, taskDetail, nil, boardTasks)
+
+	if model.mode != modeDetail {
+		t.Fatalf("Expected modeDetail after enter + fetch, got mode %d", model.mode)
+	}
+
+	output := model.View()
+
+	// Title and state.
+	if !strings.Contains(output, "My Feature Task") {
+		t.Errorf("Expected task title in detail view, got:\n%s", output)
+	}
+	if !strings.Contains(output, "in_progress") {
+		t.Errorf("Expected state in detail view, got:\n%s", output)
+	}
+
+	// Assignee.
+	if !strings.Contains(output, "agent-x") {
+		t.Errorf("Expected assignee in detail view, got:\n%s", output)
+	}
+
+	// Spec.
+	if !strings.Contains(output, "This is the full spec text") {
+		t.Errorf("Expected spec content in detail view, got:\n%s", output)
+	}
+
+	// Dep resolved to title.
+	if !strings.Contains(output, depTitle) {
+		t.Errorf("Expected dep title %q in detail view, got:\n%s", depTitle, output)
+	}
+
+	// Link.
+	if !strings.Contains(output, "https://github.com/example/repo/pull/42") {
+		t.Errorf("Expected PR link in detail view, got:\n%s", output)
+	}
+
+	// Result.
+	if !strings.Contains(output, "see PR #42") {
+		t.Errorf("Expected result in detail view, got:\n%s", output)
+	}
+
+	// Timestamps.
+	if !strings.Contains(output, "2026-01-01") {
+		t.Errorf("Expected created timestamp in detail view, got:\n%s", output)
+	}
+}
+
+// TestDetail_EscReturnsToBoard verifies that pressing esc from detail returns to board (modeNormal).
+func TestDetail_EscReturnsToBoard(t *testing.T) {
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "task-esc-1",
+		Title:     "Esc Test Task",
+		Spec:      "spec",
+		State:     "in_progress",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+
+	model := buildDetailModel(t, taskDetail, nil, nil)
+
+	if model.mode != modeDetail {
+		t.Fatalf("Expected modeDetail, got %d", model.mode)
+	}
+
+	// Press esc.
+	m, cmd := model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = m.(*BoardModel)
+
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after esc, got %d", model.mode)
+	}
+	if cmd != nil {
+		t.Errorf("Expected nil cmd after esc in detail, got non-nil")
+	}
+
+	// Should render the board, not the detail view.
+	output := model.View()
+	if strings.Contains(output, "Task:") && strings.Contains(output, "State:") && !strings.Contains(output, "‹") {
+		t.Errorf("Expected board view after esc, got something else:\n%s", output)
+	}
+	// Board view should show tabs.
+	if !strings.Contains(output, "in_progress") {
+		t.Errorf("Expected board column tabs after esc, got:\n%s", output)
+	}
+}
+
+// TestDetail_BoardNavKeysIgnoredInDetail verifies that board navigation (arrow keys, h/l/j/k,
+// column switching) does NOT fire when in detail mode.
+func TestDetail_BoardNavKeysIgnoredInDetail(t *testing.T) {
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "task-nav-isolation",
+		Title:     "Nav Isolation",
+		Spec:      "spec",
+		State:     "in_progress",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+
+	model := buildDetailModel(t, taskDetail, nil, nil)
+
+	originalColumn := model.selectedColumn
+
+	// Press left/right — should NOT change the selected column.
+	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = m.(*BoardModel)
+	if model.selectedColumn != originalColumn {
+		t.Errorf("Left key in detail changed column from %d to %d", originalColumn, model.selectedColumn)
+	}
+	if model.mode != modeDetail {
+		t.Errorf("Expected to remain in modeDetail after left key, got %d", model.mode)
+	}
+
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = m.(*BoardModel)
+	if model.selectedColumn != originalColumn {
+		t.Errorf("Right key in detail changed column from %d to %d", originalColumn, model.selectedColumn)
+	}
+}
+
+// TestDetail_OpenPRLink verifies that pressing 'o' in detail calls the opener with the PR URL.
+func TestDetail_OpenPRLink(t *testing.T) {
+	var openedURL string
+	prURL := "https://github.com/example/repo/pull/99"
+
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "task-pr-open",
+		Title:     "PR Open Task",
+		Spec:      "spec",
+		State:     "in_progress",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+		Links: []tuiclient.TaskLink{
+			{Kind: "pr", Value: prURL},
+		},
+	}
+
+	model := buildDetailModel(t, taskDetail, nil, nil)
+	model.urlOpener = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+
+	// Press 'o' to open PR.
+	m, openCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	model = m.(*BoardModel)
+
+	if openCmd == nil {
+		t.Fatal("Expected non-nil cmd from 'o' key in detail")
+	}
+	resultMsg := openCmd()
+	m, _ = model.Update(resultMsg)
+	model = m.(*BoardModel)
+
+	if openedURL != prURL {
+		t.Errorf("Expected opener called with %q, got %q", prURL, openedURL)
+	}
+
+	// No error message shown.
+	if model.detailMessage != "" {
+		t.Errorf("Expected empty detailMessage on success, got %q", model.detailMessage)
+	}
+}
+
+// TestDetail_OpenPRLink_NoPR verifies that 'o' when there's no PR link shows a message.
+func TestDetail_OpenPRLink_NoPR(t *testing.T) {
+	openerCalled := false
+
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "task-no-pr",
+		Title:     "No PR Task",
+		Spec:      "spec",
+		State:     "in_progress",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+		Links:     []tuiclient.TaskLink{}, // no PR link
+	}
+
+	model := buildDetailModel(t, taskDetail, nil, nil)
+	model.urlOpener = func(rawURL string) error {
+		openerCalled = true
+		return nil
+	}
+
+	m, openCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'o'}})
+	model = m.(*BoardModel)
+
+	if openCmd == nil {
+		t.Fatal("Expected non-nil cmd from 'o'")
+	}
+	resultMsg := openCmd()
+	m, _ = model.Update(resultMsg)
+	model = m.(*BoardModel)
+
+	if openerCalled {
+		t.Errorf("Opener was called but should not have been (no PR link)")
+	}
+	if model.detailMessage == "" {
+		t.Errorf("Expected a detailMessage (no PR link case), got empty")
+	}
+	if !strings.Contains(model.detailMessage, "no PR link") {
+		t.Errorf("Expected 'no PR link' message, got %q", model.detailMessage)
+	}
+}
+
+// TestDetail_OpenSourceDoc_RefPath verifies that 's' builds <repo>/blob/<branch>/<ref> for a path ref.
+func TestDetail_OpenSourceDoc_RefPath(t *testing.T) {
+	var openedURL string
+
+	docID := "doc-source-1"
+	taskDetail := tuiclient.TaskDetail{
+		ID:         "task-src-path",
+		Title:      "Source Path Task",
+		Spec:       "spec",
+		DocumentID: docID,
+		State:      "in_progress",
+		CreatedAt:  "2026-01-01T00:00:00Z",
+		UpdatedAt:  "2026-01-01T00:00:00Z",
+	}
+
+	docs := []tuiclient.Document{
+		{
+			ID:        docID,
+			ProjectID: "project-1",
+			Kind:      "feature_spec",
+			Title:     "Feature Doc",
+			Ref:       "docs/features/my-feature.md",
+			Commit:    nil, // no commit pin → use "main"
+		},
+	}
+
+	model := buildDetailModel(t, taskDetail, docs, nil)
+	model.urlOpener = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+
+	m, srcCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	model = m.(*BoardModel)
+
+	if srcCmd == nil {
+		t.Fatal("Expected non-nil cmd from 's'")
+	}
+	resultMsg := srcCmd()
+	m, _ = model.Update(resultMsg)
+	model = m.(*BoardModel)
+
+	expectedURL := "https://github.com/example/repo/blob/main/docs/features/my-feature.md"
+	if openedURL != expectedURL {
+		t.Errorf("Source doc URL: expected %q, got %q", expectedURL, openedURL)
+	}
+	if model.detailMessage != "" {
+		t.Errorf("Expected no error message, got %q", model.detailMessage)
+	}
+}
+
+// TestDetail_OpenSourceDoc_CommitPin verifies that 's' uses the commit hash when set.
+func TestDetail_OpenSourceDoc_CommitPin(t *testing.T) {
+	var openedURL string
+
+	docID := "doc-source-2"
+	commit := "abc1234def567890"
+	taskDetail := tuiclient.TaskDetail{
+		ID:         "task-src-commit",
+		Title:      "Source Commit Task",
+		Spec:       "spec",
+		DocumentID: docID,
+		State:      "in_progress",
+		CreatedAt:  "2026-01-01T00:00:00Z",
+		UpdatedAt:  "2026-01-01T00:00:00Z",
+	}
+
+	docs := []tuiclient.Document{
+		{
+			ID:        docID,
+			ProjectID: "project-1",
+			Kind:      "feature_spec",
+			Title:     "Feature Doc",
+			Ref:       "docs/features/pinned.md",
+			Commit:    &commit,
+		},
+	}
+
+	model := buildDetailModel(t, taskDetail, docs, nil)
+	model.urlOpener = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+
+	m, srcCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	model = m.(*BoardModel)
+
+	resultMsg := srcCmd()
+	m, _ = model.Update(resultMsg)
+	model = m.(*BoardModel)
+
+	expectedURL := "https://github.com/example/repo/blob/abc1234def567890/docs/features/pinned.md"
+	if openedURL != expectedURL {
+		t.Errorf("Commit-pinned source doc URL: expected %q, got %q", expectedURL, openedURL)
+	}
+}
+
+// TestDetail_OpenSourceDoc_RefIsURL verifies that 's' opens a ref that is already a URL directly.
+func TestDetail_OpenSourceDoc_RefIsURL(t *testing.T) {
+	var openedURL string
+
+	docID := "doc-source-url"
+	refURL := "https://docs.example.com/feature-spec"
+	taskDetail := tuiclient.TaskDetail{
+		ID:         "task-src-url",
+		Title:      "Source URL Task",
+		Spec:       "spec",
+		DocumentID: docID,
+		State:      "in_progress",
+		CreatedAt:  "2026-01-01T00:00:00Z",
+		UpdatedAt:  "2026-01-01T00:00:00Z",
+	}
+
+	docs := []tuiclient.Document{
+		{
+			ID:        docID,
+			ProjectID: "project-1",
+			Kind:      "feature_spec",
+			Title:     "External Doc",
+			Ref:       refURL, // already a URL
+		},
+	}
+
+	model := buildDetailModel(t, taskDetail, docs, nil)
+	model.urlOpener = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+
+	m, srcCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	model = m.(*BoardModel)
+
+	resultMsg := srcCmd()
+	m, _ = model.Update(resultMsg)
+	model = m.(*BoardModel)
+
+	// Must open the ref URL directly, not build a blob URL.
+	if openedURL != refURL {
+		t.Errorf("Ref-as-URL: expected opener called with %q, got %q", refURL, openedURL)
+	}
+}
+
+// TestDetail_OpenDesignDoc verifies that 'd' finds the kind=design doc and builds the correct URL.
+func TestDetail_OpenDesignDoc(t *testing.T) {
+	var openedURL string
+
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "task-design-open",
+		Title:     "Design Doc Task",
+		Spec:      "spec",
+		State:     "in_progress",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+
+	docs := []tuiclient.Document{
+		{
+			ID:        "doc-spec-1",
+			ProjectID: "project-1",
+			Kind:      "feature_spec",
+			Title:     "Some Feature",
+			Ref:       "docs/features/some.md",
+		},
+		{
+			ID:        "doc-design-1",
+			ProjectID: "project-1",
+			Kind:      "design",
+			Title:     "Project Design",
+			Ref:       "DESIGN.md",
+		},
+	}
+
+	model := buildDetailModel(t, taskDetail, docs, nil)
+	model.urlOpener = func(rawURL string) error {
+		openedURL = rawURL
+		return nil
+	}
+
+	m, designCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = m.(*BoardModel)
+
+	resultMsg := designCmd()
+	m, _ = model.Update(resultMsg)
+	model = m.(*BoardModel)
+
+	expectedURL := "https://github.com/example/repo/blob/main/DESIGN.md"
+	if openedURL != expectedURL {
+		t.Errorf("Design doc URL: expected %q, got %q", expectedURL, openedURL)
+	}
+}
+
+// TestDetail_OpenDesignDoc_NoDesignDoc verifies that 'd' shows a message when no design doc exists.
+func TestDetail_OpenDesignDoc_NoDesignDoc(t *testing.T) {
+	openerCalled := false
+
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "task-no-design",
+		Title:     "No Design Task",
+		Spec:      "spec",
+		State:     "in_progress",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+
+	// Only a feature_spec doc, no design doc.
+	docs := []tuiclient.Document{
+		{
+			ID:        "doc-feat-1",
+			ProjectID: "project-1",
+			Kind:      "feature_spec",
+			Title:     "A Feature",
+			Ref:       "docs/features/feat.md",
+		},
+	}
+
+	model := buildDetailModel(t, taskDetail, docs, nil)
+	model.urlOpener = func(rawURL string) error {
+		openerCalled = true
+		return nil
+	}
+
+	m, designCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = m.(*BoardModel)
+
+	resultMsg := designCmd()
+	m, _ = model.Update(resultMsg)
+	model = m.(*BoardModel)
+
+	if openerCalled {
+		t.Errorf("Opener was called but should not (no design doc)")
+	}
+	if model.detailMessage == "" {
+		t.Errorf("Expected detailMessage for no-design-doc case, got empty")
+	}
+	if !strings.Contains(model.detailMessage, "no design document") {
+		t.Errorf("Expected 'no design document' message, got %q", model.detailMessage)
+	}
+}
+
+// TestDetail_ReviewApproveFromDetail verifies that 'a' in detail mode for a review task
+// initiates the approve flow and that it succeeds.
+func TestDetail_ReviewApproveFromDetail(t *testing.T) {
+	var callLog []string
+
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "review-detail-task-1",
+		Title:     "Detail Review Task",
+		Spec:      "spec",
+		State:     "review", // must be review to allow a/x
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+
+	boardTasks := make(map[string][]tuiclient.Task)
+	for _, state := range []string{"backlog", "ready", "in_progress", "done"} {
+		boardTasks[state] = []tuiclient.Task{}
+	}
+	boardTasks["review"] = []tuiclient.Task{
+		{ID: "review-detail-task-1", Title: "Detail Review Task", State: "review"},
+	}
+
+	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			return taskDetail, nil
+		},
+		ListDocumentsFunc: func(ctx context.Context, projectID string) ([]tuiclient.Document, error) {
+			return nil, nil
+		},
+		ReviewTaskFunc: func(ctx context.Context, id, actor, verdict string, note *string) error {
+			callLog = append(callLog, "review:"+verdict)
+			return nil
+		},
+		TransitionTaskFunc: func(ctx context.Context, id, to string, note *string) error {
+			callLog = append(callLog, "transition:"+to)
+			return nil
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			callLog = append(callLog, "refetch")
+			return []tuiclient.Task{
+				{ID: "review-detail-task-1", Title: "Detail Review Task", State: "done"},
+			}, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "reviewer-bot",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test", Repo: "https://github.com/example/repo"}
+
+	model := NewBoardModel(mockClient, config, project)
+	model.urlOpener = func(rawURL string) error { return nil }
+
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: boardTasks})
+	model = m.(*BoardModel)
+
+	// Navigate to review column (index 3): one right from in_progress (index 2).
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = m.(*BoardModel)
+
+	model.selectedTaskID = "review-detail-task-1"
+
+	// Press enter to open detail.
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+	if detailCmd != nil {
+		m, _ = model.Update(detailCmd())
+		model = m.(*BoardModel)
+	}
+
+	if model.mode != modeDetail {
+		t.Fatalf("Expected modeDetail, got %d", model.mode)
+	}
+
+	// Press 'a' to start approve flow from detail.
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeApproveNote {
+		t.Fatalf("Expected modeApproveNote after 'a' in detail, got %d", model.mode)
+	}
+	if !model.reviewFromDetail {
+		t.Errorf("Expected reviewFromDetail=true")
+	}
+
+	// Skip note (press enter).
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+
+	if model.mode != modeApproveConfirm {
+		t.Fatalf("Expected modeApproveConfirm, got %d", model.mode)
+	}
+
+	// Confirm with 'y'.
+	m, approveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = m.(*BoardModel)
+
+	// After cancel, should return to modeDetail.
+	if model.mode != modeDetail {
+		t.Errorf("Expected modeDetail after confirm (before cmd runs), got %d", model.mode)
+	}
+
+	// Execute the approve command.
+	model = executeReviewCmd(t, model, approveCmd)
+
+	// Verify approve was called.
+	if len(callLog) < 2 {
+		t.Fatalf("Expected at least review+transition calls, got %d: %v", len(callLog), callLog)
+	}
+	if callLog[0] != "review:approve" {
+		t.Errorf("Expected first call review:approve, got %q", callLog[0])
+	}
+	if callLog[1] != "transition:done" {
+		t.Errorf("Expected second call transition:done, got %q", callLog[1])
+	}
+
+	// After the command completes, the model must be back in modeNormal (the board),
+	// not stuck in detail showing stale state.
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after from-detail approve cmd, got %d", model.mode)
+	}
+
+	// The board should show the task in its new state (done(1)).
+	output := model.View()
+	if !strings.Contains(output, "done(1)") {
+		t.Errorf("Expected done(1) in board view after from-detail approve, got:\n%s", output)
+	}
+}
+
+// TestDetail_ReviewApproveFromDetail_409Visible verifies that when a 409 is returned during
+// a from-detail approve, the error is visible in the board view (modeNormal), not swallowed
+// in the detail view which does not render m.error.
+func TestDetail_ReviewApproveFromDetail_409Visible(t *testing.T) {
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "review-detail-409",
+		Title:     "Detail 409 Task",
+		Spec:      "spec",
+		State:     "review",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+
+	boardTasks := make(map[string][]tuiclient.Task)
+	for _, state := range []string{"backlog", "ready", "in_progress", "done"} {
+		boardTasks[state] = []tuiclient.Task{}
+	}
+	boardTasks["review"] = []tuiclient.Task{
+		{ID: "review-detail-409", Title: "Detail 409 Task", State: "review"},
+	}
+
+	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			return taskDetail, nil
+		},
+		ListDocumentsFunc: func(ctx context.Context, projectID string) ([]tuiclient.Document, error) {
+			return nil, nil
+		},
+		ReviewTaskFunc: func(ctx context.Context, id, actor, verdict string, note *string) error {
+			return nil
+		},
+		TransitionTaskFunc: func(ctx context.Context, id, to string, note *string) error {
+			// Simulate a 409: task already transitioned (race).
+			return &tuiclient.APIError{
+				StatusCode: http.StatusConflict,
+				Code:       "CONFLICT",
+				Message:    "task already transitioned",
+			}
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			// Refetch after 409: task is already done.
+			return []tuiclient.Task{
+				{ID: "review-detail-409", Title: "Detail 409 Task", State: "done"},
+			}, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "reviewer-bot",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test", Repo: "https://github.com/example/repo"}
+
+	model := NewBoardModel(mockClient, config, project)
+	model.urlOpener = func(rawURL string) error { return nil }
+
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: boardTasks})
+	model = m.(*BoardModel)
+
+	// Navigate to review column and open detail.
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = m.(*BoardModel)
+	model.selectedTaskID = "review-detail-409"
+
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+	if detailCmd != nil {
+		m, _ = model.Update(detailCmd())
+		model = m.(*BoardModel)
+	}
+	if model.mode != modeDetail {
+		t.Fatalf("Expected modeDetail, got %d", model.mode)
+	}
+
+	// Start approve flow from detail.
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model = m.(*BoardModel)
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter}) // skip note
+	model = m.(*BoardModel)
+	m, approveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}) // confirm
+	model = m.(*BoardModel)
+
+	// Execute the approve command (which triggers a 409 from TransitionTask).
+	model = executeReviewCmd(t, model, approveCmd)
+
+	// The model must be back in modeNormal so the error banner is visible.
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after from-detail 409, got %d — error is invisible in detail mode", model.mode)
+	}
+
+	// The error must be non-empty and visible in the board view.
+	if model.error == "" {
+		t.Errorf("Expected non-empty error after 409 from-detail action, got empty")
+	}
+
+	output := model.View()
+	if !strings.Contains(output, "409") && !strings.Contains(output, "task already transitioned") {
+		t.Errorf("Expected 409 error in board view output, got:\n%s", output)
+	}
+
+	// Board was refreshed: the task should now show as done(1).
+	if !strings.Contains(output, "done(1)") {
+		t.Errorf("Expected done(1) in board view after refetch, got:\n%s", output)
+	}
+}
+
+// TestDetail_SpecViewportScrolls verifies that the spec viewport scrolls when up/down are pressed.
+func TestDetail_SpecViewportScrolls(t *testing.T) {
+	// Build a spec with many lines so there is room to scroll.
+	var specLines []string
+	for i := 0; i < 50; i++ {
+		specLines = append(specLines, fmt.Sprintf("Spec line %d: some content here to fill space.", i))
+	}
+	longSpec := strings.Join(specLines, "\n")
+
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "task-scroll",
+		Title:     "Scroll Test Task",
+		Spec:      longSpec,
+		State:     "in_progress",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+
+	model := buildDetailModel(t, taskDetail, nil, nil)
+
+	if model.mode != modeDetail {
+		t.Fatalf("Expected modeDetail, got %d", model.mode)
+	}
+
+	// Initial viewport should be at the top.
+	if model.detailViewport.YOffset != 0 {
+		t.Errorf("Expected initial YOffset=0, got %d", model.detailViewport.YOffset)
+	}
+
+	// Press down to scroll.
+	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = m.(*BoardModel)
+
+	if model.detailViewport.YOffset != 1 {
+		t.Errorf("Expected YOffset=1 after one down, got %d", model.detailViewport.YOffset)
+	}
+
+	// Press up to scroll back.
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyUp})
+	model = m.(*BoardModel)
+
+	if model.detailViewport.YOffset != 0 {
+		t.Errorf("Expected YOffset=0 after up, got %d", model.detailViewport.YOffset)
+	}
+}
+
+// TestResolveDocURL_GitSuffix verifies that a project.repo ending in ".git" is normalized
+// before building the blob URL, so the result is "…/repo/blob/main/<ref>" not "…/repo.git/blob/…".
+func TestResolveDocURL_GitSuffix(t *testing.T) {
+	doc := tuiclient.Document{
+		ID:     "doc-git-suffix",
+		Ref:    "docs/spec.md",
+		Commit: nil, // no pin → defaults to "main"
+	}
+
+	tests := []struct {
+		name        string
+		projectRepo string
+		expectedURL string
+	}{
+		{
+			name:        "trailing .git stripped",
+			projectRepo: "https://github.com/owner/repo.git",
+			expectedURL: "https://github.com/owner/repo/blob/main/docs/spec.md",
+		},
+		{
+			name:        "trailing slash then .git both stripped",
+			projectRepo: "https://github.com/owner/repo.git/",
+			expectedURL: "https://github.com/owner/repo/blob/main/docs/spec.md",
+		},
+		{
+			name:        "clean repo unaffected",
+			projectRepo: "https://github.com/owner/repo",
+			expectedURL: "https://github.com/owner/repo/blob/main/docs/spec.md",
+		},
+		{
+			name:        "trailing slash only stripped",
+			projectRepo: "https://github.com/owner/repo/",
+			expectedURL: "https://github.com/owner/repo/blob/main/docs/spec.md",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotURL, errMsg := resolveDocURL(doc.Ref, doc, tc.projectRepo)
+			if errMsg != "" {
+				t.Errorf("resolveDocURL returned error: %q", errMsg)
+			}
+			if gotURL != tc.expectedURL {
+				t.Errorf("resolveDocURL: expected %q, got %q", tc.expectedURL, gotURL)
+			}
+		})
 	}
 }
 
