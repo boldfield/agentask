@@ -15,6 +15,6 @@ tidy:
 
 check:
 	@echo "Running gofmt check..."
-	@gofmt -l . | tee /dev/stderr | (! read) || exit 1
+	@out=$$(gofmt -e -l . 2>&1); rc=$$?; if [ "$$rc" -ne 0 ] || [ -n "$$out" ]; then echo "gofmt issues:"; echo "$$out"; exit 1; fi
 	@echo "Running go vet..."
 	@go vet ./...

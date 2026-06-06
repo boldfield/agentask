@@ -21,12 +21,8 @@ jobs:
 
       - name: Check gofmt
         run: |
-          UNFORMATTED=$(gofmt -l .)
-          if [ -n "$UNFORMATTED" ]; then
-            echo "The following files are not gofmt-clean:"
-            echo "$UNFORMATTED"
-            exit 1
-          fi
+          out=$(gofmt -e -l . 2>&1); rc=$?
+          if [ "$rc" -ne 0 ] || [ -n "$out" ]; then echo "gofmt issues:"; echo "$out"; exit 1; fi
 
       - run: go vet ./...
 
