@@ -269,9 +269,7 @@ func (m *BoardModel) fetchTasksInline(ctx context.Context, errPrefix string) rev
 		}
 	}
 	for _, taskList := range bucketed {
-		sort.Slice(taskList, func(i, j int) bool {
-			return taskList[i].UpdatedAt > taskList[j].UpdatedAt
-		})
+		sortTasksNatural(taskList)
 	}
 
 	msg := reviewActionMsg{tasks: bucketed}
@@ -306,17 +304,63 @@ func (m *BoardModel) fetchTasks() tea.Cmd {
 			}
 		}
 
-		// Sort each state's tasks by update time (descending)
+		// Sort each state's tasks in natural title order (MR-1 < MR-2 < ... < MR-10).
 		for _, taskList := range bucketed {
-			sort.Slice(taskList, func(i, j int) bool {
-				return taskList[i].UpdatedAt > taskList[j].UpdatedAt
-			})
+			sortTasksNatural(taskList)
 		}
 
 		return tasksFetchedMsg{
 			tasks: bucketed,
 		}
 	}
+}
+
+// sortTasksNatural orders tasks within a column by title in natural order, so MR-1 < MR-2 <
+// ... < MR-10 (a plain lexicographic sort puts MR-10 before MR-2). Ties break by ID so the
+// order is stable across refreshes. Note: tasks created in one batch share a created_at, so
+// sorting by time can't disambiguate them — title order is the predictable choice.
+func sortTasksNatural(tasks []tuiclient.Task) {
+	sort.Slice(tasks, func(i, j int) bool {
+		if tasks[i].Title != tasks[j].Title {
+			return naturalLess(tasks[i].Title, tasks[j].Title)
+		}
+		return tasks[i].ID < tasks[j].ID
+	})
+}
+
+// naturalLess reports whether a sorts before b in natural order: runs of digits are compared
+// numerically (so "MR-2" < "MR-10"), all other characters byte-by-byte.
+func naturalLess(a, b string) bool {
+	ia, ib := 0, 0
+	for ia < len(a) && ib < len(b) {
+		da := a[ia] >= '0' && a[ia] <= '9'
+		db := b[ib] >= '0' && b[ib] <= '9'
+		if da && db {
+			ja, jb := ia, ib
+			for ja < len(a) && a[ja] >= '0' && a[ja] <= '9' {
+				ja++
+			}
+			for jb < len(b) && b[jb] >= '0' && b[jb] <= '9' {
+				jb++
+			}
+			na := strings.TrimLeft(a[ia:ja], "0")
+			nb := strings.TrimLeft(b[ib:jb], "0")
+			if len(na) != len(nb) {
+				return len(na) < len(nb)
+			}
+			if na != nb {
+				return na < nb
+			}
+			ia, ib = ja, jb
+			continue
+		}
+		if a[ia] != b[ib] {
+			return a[ia] < b[ib]
+		}
+		ia++
+		ib++
+	}
+	return len(a)-ia < len(b)-ib
 }
 
 type tasksFetchedMsg struct {
