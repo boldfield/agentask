@@ -129,8 +129,8 @@ func TestMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations: %v", err)
 	}
-	if migrationCount != 2 {
-		t.Errorf("expected 2 migrations to be recorded, but got %d", migrationCount)
+	if migrationCount != 3 {
+		t.Errorf("expected 3 migrations to be recorded, but got %d", migrationCount)
 	}
 
 	// Verify idempotency: re-open the same database and it should work
@@ -140,13 +140,13 @@ func TestMigrations(t *testing.T) {
 	}
 	defer store2.Close()
 
-	// Verify that we still have exactly 2 migrations recorded (idempotency)
+	// Verify that we still have exactly 3 migrations recorded (idempotency)
 	err = store2.Conn().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount)
 	if err != nil {
 		t.Fatalf("failed to count migrations after re-open: %v", err)
 	}
-	if migrationCount != 2 {
-		t.Errorf("expected 2 migrations after re-open (idempotency), but got %d", migrationCount)
+	if migrationCount != 3 {
+		t.Errorf("expected 3 migrations after re-open (idempotency), but got %d", migrationCount)
 	}
 }
 
@@ -242,8 +242,8 @@ func TestOpenSamePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after second open: %v", err)
 	}
-	if migrationCount != 2 {
-		t.Errorf("expected 2 migrations after second open, but got %d", migrationCount)
+	if migrationCount != 3 {
+		t.Errorf("expected 3 migrations after second open, but got %d", migrationCount)
 	}
 }
 
@@ -1076,5 +1076,352 @@ func TestMigrationRoundTrip(t *testing.T) {
 
 	if err == nil {
 		t.Error("expected FK constraint violation after migration, but insert succeeded")
+	}
+}
+
+// TestMigration0003ApprovedState verifies that migration 0003 (widening state CHECK to include 'approved'):
+// 1. Applies cleanly to a database populated with tasks in various states (with deps, links, events)
+// 2. All existing rows remain intact with identical column values
+// 3. Foreign keys still resolve and are enforced
+// 4. A task can now be set to 'approved' state
+// 5. Invalid states are still rejected by the CHECK constraint
+//
+// This test builds a PRE-0003 schema, seeds it with data, then applies 0003 to verify the table
+// rebuild succeeds and preserves all rows/columns/FKs. This differs from TestMigrationRoundTrip
+// which relies on Open() (which applies all migrations upfront against empty DBs); this test
+// directly subjects populated data to the rebuild.
+func TestMigration0003ApprovedState(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "migration_0003_test.db")
+
+	// Step 1: Build a fresh DB at PRE-0003 schema by executing 0001 and 0002 migrations
+	conn, err := sql.Open("sqlite", buildDSN(dbPath))
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer conn.Close()
+
+	conn.SetMaxOpenConns(1)
+
+	// Disable FK for initial schema creation
+	if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("failed to disable foreign keys: %v", err)
+	}
+
+	// Execute 0001 migration to create initial schema
+	migration0001, err := fs.ReadFile(migrationsFS, "migrations/0001_init.sql")
+	if err != nil {
+		t.Fatalf("failed to read migration 0001: %v", err)
+	}
+	for _, stmt := range splitStatements(string(migration0001)) {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatalf("failed to execute 0001: %v", err)
+		}
+	}
+
+	// Execute 0002 migration
+	migration0002, err := fs.ReadFile(migrationsFS, "migrations/0002_document_one_design.sql")
+	if err != nil {
+		t.Fatalf("failed to read migration 0002: %v", err)
+	}
+	for _, stmt := range splitStatements(string(migration0002)) {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatalf("failed to execute 0002: %v", err)
+		}
+	}
+
+	// Record that 0001 and 0002 were applied
+	if _, err := conn.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at TEXT NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("failed to create schema_migrations: %v", err)
+	}
+	now := nowTimestamp()
+	if _, err := conn.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", "0001", now); err != nil {
+		t.Fatalf("failed to record 0001: %v", err)
+	}
+	if _, err := conn.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", "0002", now); err != nil {
+		t.Fatalf("failed to record 0002: %v", err)
+	}
+
+	// Re-enable FK for data validation
+	if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatalf("failed to enable foreign keys: %v", err)
+	}
+
+	// Step 2: Seed test data into the PRE-0003 schema
+	// Create projects
+	if _, err := conn.Exec(`
+		INSERT INTO project (id, name, repo, created_at) VALUES (?, ?, ?, ?)
+	`, "proj-0003-1", "repo1", "https://example.com/repo1", now); err != nil {
+		t.Fatalf("failed to insert project 1: %v", err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO project (id, name, repo, created_at) VALUES (?, ?, ?, ?)
+	`, "proj-0003-2", "repo2", "https://example.com/repo2", now); err != nil {
+		t.Fatalf("failed to insert project 2: %v", err)
+	}
+
+	// Create documents
+	if _, err := conn.Exec(`
+		INSERT INTO document (id, project_id, kind, title, ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "doc-0003-1", "proj-0003-1", "design", "Design 1", "DESIGN.md", now, now); err != nil {
+		t.Fatalf("failed to insert document 1: %v", err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO document (id, project_id, kind, title, ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "doc-0003-2", "proj-0003-2", "feature_spec", "Spec 2", "SPEC.md", now, now); err != nil {
+		t.Fatalf("failed to insert document 2: %v", err)
+	}
+
+	// Create tasks in various PRE-0003 states (no 'approved' yet)
+	taskData := []struct {
+		id       string
+		projID   string
+		docID    string
+		title    string
+		spec     string
+		state    string
+		assignee *string
+	}{
+		{"task-0003-1a", "proj-0003-1", "doc-0003-1", "Task 1A", "Spec 1A", "backlog", nil},
+		{"task-0003-1b", "proj-0003-1", "doc-0003-1", "Task 1B", "Spec 1B", "ready", nil},
+		{"task-0003-2a", "proj-0003-2", "doc-0003-2", "Task 2A", "Spec 2A", "in_progress", strPtr("agent-1")},
+		{"task-0003-2b", "proj-0003-2", "doc-0003-2", "Task 2B", "Spec 2B", "done", nil},
+	}
+
+	for _, td := range taskData {
+		assigneeVal := sql.NullString{}
+		if td.assignee != nil {
+			assigneeVal = sql.NullString{String: *td.assignee, Valid: true}
+		}
+		if _, err := conn.Exec(`
+			INSERT INTO task (id, project_id, document_id, title, spec, state, assignee, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, td.id, td.projID, td.docID, td.title, td.spec, td.state, assigneeVal, now, now); err != nil {
+			t.Fatalf("failed to insert task %s: %v", td.id, err)
+		}
+	}
+
+	// Create task dependency (1b depends on 1a)
+	if _, err := conn.Exec(`
+		INSERT INTO task_dep (task_id, depends_on_id) VALUES (?, ?)
+	`, "task-0003-1b", "task-0003-1a"); err != nil {
+		t.Fatalf("failed to insert task_dep: %v", err)
+	}
+
+	// Create task links
+	if _, err := conn.Exec(`
+		INSERT INTO task_link (id, task_id, kind, value) VALUES (?, ?, ?, ?)
+	`, "link-0003-1", "task-0003-1a", "pr", "#123"); err != nil {
+		t.Fatalf("failed to insert task_link 1: %v", err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO task_link (id, task_id, kind, value) VALUES (?, ?, ?, ?)
+	`, "link-0003-2", "task-0003-2a", "commit", "abc123"); err != nil {
+		t.Fatalf("failed to insert task_link 2: %v", err)
+	}
+
+	// Create events
+	if _, err := conn.Exec(`
+		INSERT INTO event (id, task_id, actor, kind, created_at) VALUES (?, ?, ?, ?, ?)
+	`, "event-0003-1", "task-0003-1a", "agent-1", "claim", now); err != nil {
+		t.Fatalf("failed to insert event 1: %v", err)
+	}
+	if _, err := conn.Exec(`
+		INSERT INTO event (id, task_id, actor, kind, verdict, note, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "event-0003-2", "task-0003-2b", "human", "review", "approve", "looks good", now); err != nil {
+		t.Fatalf("failed to insert event 2: %v", err)
+	}
+
+	// Record initial row counts and values before migration
+	initialCounts := make(map[string]int)
+	for _, table := range []string{"project", "document", "task", "task_dep", "task_link", "event"} {
+		var count int
+		if err := conn.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&count); err != nil {
+			t.Fatalf("failed to count %s: %v", table, err)
+		}
+		initialCounts[table] = count
+	}
+
+	// Record task field values for field-by-field comparison
+	type TaskRow struct {
+		id       string
+		title    string
+		spec     string
+		state    string
+		assignee sql.NullString
+		result   sql.NullString
+	}
+	initialTasks := make(map[string]TaskRow)
+	rows, err := conn.Query(`
+		SELECT id, title, spec, state, assignee, result FROM task ORDER BY id
+	`)
+	if err != nil {
+		t.Fatalf("failed to query initial tasks: %v", err)
+	}
+	for rows.Next() {
+		var tr TaskRow
+		if err := rows.Scan(&tr.id, &tr.title, &tr.spec, &tr.state, &tr.assignee, &tr.result); err != nil {
+			t.Fatalf("failed to scan task: %v", err)
+		}
+		initialTasks[tr.id] = tr
+	}
+	rows.Close()
+
+	// Step 3: Apply migration 0003 to the populated database
+	// Disable FK during migration (following the runner's pattern)
+	if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("failed to disable FK for migration: %v", err)
+	}
+
+	migration0003, err := fs.ReadFile(migrationsFS, "migrations/0003_approved_state.sql")
+	if err != nil {
+		t.Fatalf("failed to read migration 0003: %v", err)
+	}
+	for _, stmt := range splitStatements(string(migration0003)) {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatalf("failed to execute 0003: %v", err)
+		}
+	}
+
+	// Re-enable FK and check integrity
+	if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatalf("failed to enable FK after migration: %v", err)
+	}
+
+	// Record that 0003 was applied
+	if _, err := conn.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", "0003", now); err != nil {
+		t.Fatalf("failed to record 0003: %v", err)
+	}
+
+	// Step 4: Verify row counts survived
+	for table, initialCount := range initialCounts {
+		var finalCount int
+		if err := conn.QueryRow("SELECT COUNT(*) FROM " + table).Scan(&finalCount); err != nil {
+			t.Fatalf("failed to count %s after migration: %v", table, err)
+		}
+		if finalCount != initialCount {
+			t.Errorf("%s count mismatch after 0003: initial=%d, final=%d", table, initialCount, finalCount)
+		}
+	}
+
+	// Step 5: Verify task field values survived (field-by-field check catches column-order bugs)
+	finalTasks := make(map[string]TaskRow)
+	rows, err = conn.Query(`
+		SELECT id, title, spec, state, assignee, result FROM task ORDER BY id
+	`)
+	if err != nil {
+		t.Fatalf("failed to query final tasks: %v", err)
+	}
+	for rows.Next() {
+		var tr TaskRow
+		if err := rows.Scan(&tr.id, &tr.title, &tr.spec, &tr.state, &tr.assignee, &tr.result); err != nil {
+			t.Fatalf("failed to scan final task: %v", err)
+		}
+		finalTasks[tr.id] = tr
+	}
+	rows.Close()
+
+	for taskID, initialTask := range initialTasks {
+		finalTask, exists := finalTasks[taskID]
+		if !exists {
+			t.Errorf("task %s missing after migration 0003", taskID)
+			continue
+		}
+		if initialTask.title != finalTask.title {
+			t.Errorf("task %s title mismatch: initial=%q, final=%q", taskID, initialTask.title, finalTask.title)
+		}
+		if initialTask.spec != finalTask.spec {
+			t.Errorf("task %s spec mismatch: initial=%q, final=%q", taskID, initialTask.spec, finalTask.spec)
+		}
+		if initialTask.state != finalTask.state {
+			t.Errorf("task %s state mismatch: initial=%q, final=%q", taskID, initialTask.state, finalTask.state)
+		}
+		if initialTask.assignee != finalTask.assignee {
+			t.Errorf("task %s assignee mismatch: initial=%v, final=%v", taskID, initialTask.assignee, finalTask.assignee)
+		}
+		if initialTask.result != finalTask.result {
+			t.Errorf("task %s result mismatch: initial=%v, final=%v", taskID, initialTask.result, finalTask.result)
+		}
+	}
+
+	// Step 6: Verify FK integrity (PRAGMA foreign_key_check should return no violations)
+	fkRows, err := conn.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatalf("failed to run foreign_key_check: %v", err)
+	}
+	defer fkRows.Close()
+
+	fkViolationCount := 0
+	for fkRows.Next() {
+		fkViolationCount++
+		var table, rowid, parent, fkid string
+		if err := fkRows.Scan(&table, &rowid, &parent, &fkid); err != nil {
+			t.Errorf("failed to scan FK violation: %v", err)
+		}
+	}
+	if err := fkRows.Err(); err != nil {
+		t.Fatalf("error iterating FK check results: %v", err)
+	}
+	if fkViolationCount > 0 {
+		t.Errorf("found %d foreign key violations after migration 0003", fkViolationCount)
+	}
+
+	// Step 7: Verify FK constraints still enforced
+	_, err = conn.Exec(`
+		INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "bad-task", "non-existent-proj", "non-existent-doc", "Bad Task", "bad spec", "backlog", now, now)
+	if err == nil {
+		t.Error("expected FK constraint violation after 0003, but insert succeeded")
+	}
+
+	// Step 8: Verify 'approved' state is now accepted by the widened CHECK constraint
+	testTaskID := "task-0003-1a"
+	if _, err := conn.Exec(`UPDATE task SET state = ? WHERE id = ?`, "approved", testTaskID); err != nil {
+		t.Errorf("failed to update task to 'approved' state: %v", err)
+	}
+
+	var state string
+	if err := conn.QueryRow("SELECT state FROM task WHERE id = ?", testTaskID).Scan(&state); err != nil {
+		t.Fatalf("failed to query task state: %v", err)
+	}
+	if state != "approved" {
+		t.Errorf("expected task state='approved', got '%s'", state)
+	}
+
+	// Step 9: Verify invalid states are still rejected
+	_, err = conn.Exec(`UPDATE task SET state = ? WHERE id = ?`, "invalid-state", testTaskID)
+	if err == nil {
+		t.Error("expected CHECK constraint violation for invalid state, but update succeeded")
+	}
+
+	// Step 10: Verify a new task can be inserted with 'approved' state
+	if _, err := conn.Exec(`
+		INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "new-approved-task", "proj-0003-1", "doc-0003-1", "New Approved", "spec", "approved", now, now); err != nil {
+		t.Errorf("failed to insert task with 'approved' state: %v", err)
+	}
+
+	var approvedCount int
+	if err := conn.QueryRow("SELECT COUNT(*) FROM task WHERE state = ?", "approved").Scan(&approvedCount); err != nil {
+		t.Fatalf("failed to count approved tasks: %v", err)
+	}
+	if approvedCount != 2 {
+		t.Errorf("expected 2 approved tasks, got %d", approvedCount)
 	}
 }
