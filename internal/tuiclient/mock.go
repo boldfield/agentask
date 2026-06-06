@@ -28,11 +28,17 @@ func (m *MockClient) ListTasks(ctx context.Context, projectID string) ([]Task, e
 }
 
 func (m *MockClient) GetTask(ctx context.Context, id string) (TaskDetail, error) {
-	return m.GetTaskFunc(ctx, id)
+	if m.GetTaskFunc != nil {
+		return m.GetTaskFunc(ctx, id)
+	}
+	return TaskDetail{}, nil
 }
 
 func (m *MockClient) ListDocuments(ctx context.Context, projectID string) ([]Document, error) {
-	return m.ListDocumentsFunc(ctx, projectID)
+	if m.ListDocumentsFunc != nil {
+		return m.ListDocumentsFunc(ctx, projectID)
+	}
+	return nil, nil
 }
 
 func (m *MockClient) PromoteTask(ctx context.Context, id string) error {

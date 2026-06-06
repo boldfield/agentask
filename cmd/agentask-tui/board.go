@@ -12,6 +12,7 @@ import (
 	"github.com/boldfield/agentask/internal/tuiclient"
 	"github.com/boldfield/agentask/internal/tuiconfig"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 )
@@ -23,6 +24,8 @@ type boardMode int
 const (
 	// modeNormal is the default navigation mode.
 	modeNormal boardMode = iota
+	// modeDetail is the full-screen task detail view.
+	modeDetail
 	// modeApproveNote is the optional note input step for an approve action.
 	modeApproveNote
 	// modeApproveConfirm is the "Approve → done? [y/N]" confirmation step.
@@ -50,11 +53,21 @@ type BoardModel struct {
 	newTickCmd func() tea.Cmd
 
 	// Review action state
-	mode          boardMode
-	reviewInput   textinput.Model // shared textinput for note/reason
-	pendingNote   *string         // captured note (nil = omitted) when in modeApproveConfirm
-	pendingTaskID string          // ID of the task being reviewed
-	inputHint     string          // hint displayed below the input (e.g. "reason required")
+	mode             boardMode
+	reviewInput      textinput.Model // shared textinput for note/reason
+	pendingNote      *string         // captured note (nil = omitted) when in modeApproveConfirm
+	pendingTaskID    string          // ID of the task being reviewed
+	inputHint        string          // hint displayed below the input (e.g. "reason required")
+	reviewFromDetail bool            // true when the review flow was started from the detail view
+
+	// Detail view state
+	detailTask      tuiclient.TaskDetail // the currently displayed task detail
+	detailDocuments []tuiclient.Document // cached documents for opener actions
+	detailViewport  viewport.Model       // scrollable spec viewport
+	detailMessage   string               // brief status message (opener result, error, etc.)
+	// urlOpener is called to open a URL in the user's browser.
+	// In production it is defaultURLOpener; tests inject a recorder to assert the URL.
+	urlOpener func(rawURL string) error
 }
 
 const (
@@ -87,6 +100,7 @@ func NewBoardModel(client tuiclient.Client, config *tuiconfig.Config, project tu
 		selectedColumn: 2, // in_progress by default
 		loading:        true,
 		reviewInput:    inputWidget,
+		urlOpener:      defaultURLOpener,
 	}
 	m.newTickCmd = m.defaultTickCmd
 	return m
@@ -297,9 +311,18 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		// Reinitialize the detail viewport if we're in detail mode.
+		if m.mode == modeDetail {
+			m.initDetailViewport(m.detailTask.Spec)
+		}
 		return m, nil
 
 	case tea.KeyMsg:
+		// Detail mode: all keys go to the detail handler — board nav must not fire.
+		if m.mode == modeDetail {
+			return m.updateDetailMode(msg)
+		}
+
 		// When a text-input or confirm mode is active, route keys to the review flow
 		// instead of the normal navigation handlers.
 		if m.mode != modeNormal {
@@ -371,6 +394,14 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			return m, m.fetchTasks()
 
+		// Open detail view for the selected task.
+		case "enter":
+			if m.selectedTaskID != "" {
+				m.mode = modeDetail
+				m.detailMessage = ""
+				return m, m.fetchDetailCmd(m.selectedTaskID)
+			}
+
 		// Promote: only on backlog tasks
 		case "p":
 			if m.selectedColumn == 0 && m.selectedTaskID != "" {
@@ -409,6 +440,23 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "?":
 			// TODO: show help overlay
 		}
+
+	case detailFetchedMsg:
+		if msg.err != nil {
+			// Fall back to board view with an error banner.
+			m.mode = modeNormal
+			m.error = fmt.Sprintf("detail load failed: %v", msg.err)
+			return m, nil
+		}
+		m.detailTask = msg.task
+		m.detailDocuments = msg.documents
+		// (Re)initialize the viewport with the spec content.
+		m.initDetailViewport(msg.task.Spec)
+		return m, nil
+
+	case openerResultMsg:
+		m.detailMessage = msg.message
+		return m, nil
 
 	case promoteErrorMsg:
 		m.error = msg.err
@@ -453,6 +501,75 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.fetchTasks(),
 			m.newTickCmd(),
 		)
+	}
+
+	return m, nil
+}
+
+// updateDetailMode handles key events while the full-screen detail view is active.
+// Board navigation is fully suppressed in this mode.
+func (m *BoardModel) updateDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc", "q":
+		// Return to the board.
+		m.mode = modeNormal
+		m.detailMessage = ""
+		return m, nil
+
+	// Spec viewport scrolling.
+	case "up", "k":
+		m.detailViewport.LineUp(1)
+		return m, nil
+	case "down", "j":
+		m.detailViewport.LineDown(1)
+		return m, nil
+	case "pgup":
+		m.detailViewport.HalfViewUp()
+		return m, nil
+	case "pgdown":
+		m.detailViewport.HalfViewDown()
+		return m, nil
+
+	// Open PR link.
+	case "o":
+		return m, m.openPRCmd(m.detailTask)
+
+	// Open the task's source document.
+	case "s":
+		return m, m.openSourceDocCmd(m.detailTask, m.detailDocuments)
+
+	// Open the project's base design document.
+	case "d":
+		return m, m.openDesignDocCmd(m.detailDocuments)
+
+	// Approve / reject: only available for review tasks; reuse existing review flow.
+	case "a":
+		if m.detailTask.State == stateReview {
+			m.pendingTaskID = m.detailTask.ID
+			m.reviewFromDetail = true
+			m.reviewInput.Placeholder = "optional note (enter to skip)"
+			m.reviewInput.SetValue("")
+			m.reviewInput.Focus()
+			m.inputHint = ""
+			m.mode = modeApproveNote
+			var cmd tea.Cmd
+			m.reviewInput, cmd = m.reviewInput.Update(nil)
+			return m, cmd
+		}
+
+	case "x":
+		if m.detailTask.State == stateReview {
+			m.pendingTaskID = m.detailTask.ID
+			m.reviewFromDetail = true
+			m.reviewInput.Placeholder = "rejection reason (required)"
+			m.reviewInput.SetValue("")
+			m.reviewInput.Focus()
+			m.inputHint = ""
+			m.mode = modeRejectReason
+			var cmd tea.Cmd
+			m.reviewInput, cmd = m.reviewInput.Update(nil)
+			return m, cmd
+		}
 	}
 
 	return m, nil
@@ -527,9 +644,15 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// cancelReviewMode resets all review-mode state and returns to normal navigation.
+// cancelReviewMode resets all review-mode state and returns to the appropriate mode.
+// If the review was started from the detail view, we return to modeDetail; otherwise modeNormal.
 func (m *BoardModel) cancelReviewMode() {
-	m.mode = modeNormal
+	if m.reviewFromDetail {
+		m.mode = modeDetail
+	} else {
+		m.mode = modeNormal
+	}
+	m.reviewFromDetail = false
 	m.pendingNote = nil
 	m.pendingTaskID = ""
 	m.inputHint = ""
@@ -573,10 +696,21 @@ func (m *BoardModel) ensureSelectionInColumn() {
 	m.selectedTaskID = tasksInColumn[newIdx].ID
 }
 
-// View renders the board.
+// View renders the board (or the detail view if in modeDetail).
 func (m *BoardModel) View() string {
 	if m.width < 40 {
 		return "Terminal too narrow. Please resize."
+	}
+
+	// Full-screen detail view.
+	if m.mode == modeDetail {
+		var b strings.Builder
+		b.WriteString(m.renderDetailView())
+		b.WriteString("\n")
+		b.WriteString(strings.Repeat("─", m.width))
+		b.WriteString("\n")
+		b.WriteString(m.renderDetailHelpBar())
+		return b.String()
 	}
 
 	var b strings.Builder
@@ -760,10 +894,10 @@ func (m *BoardModel) renderHelpBar() string {
 	}
 	switch m.selectedColumn {
 	case 0: // backlog
-		return "←/→ column   ↑/↓ select   p promote   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   p promote   r refresh   q quit"
 	case 3: // review
-		return "←/→ column   ↑/↓ select   a approve   x reject   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   a approve   x reject   r refresh   q quit"
 	default:
-		return "←/→ column   ↑/↓ select   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   r refresh   q quit"
 	}
 }
