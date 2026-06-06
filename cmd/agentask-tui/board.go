@@ -79,6 +79,40 @@ func (m *BoardModel) Init() tea.Cmd {
 	)
 }
 
+// promoteTask creates a command that promotes a task and then refetches.
+func (m *BoardModel) promoteTask(taskID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := m.client.PromoteTask(ctx, taskID)
+		if err != nil {
+			// Check if it's a 409 (not in backlog)
+			errStr := err.Error()
+			if strings.Contains(errStr, "409") {
+				return promoteErrorMsg{
+					taskID: taskID,
+					err:    "not in backlog (already moved?)",
+				}
+			}
+			return promoteErrorMsg{
+				taskID: taskID,
+				err:    fmt.Sprintf("promote failed: %v", err),
+			}
+		}
+
+		// Promotion succeeded; refetch to get updated board state
+		// Issue a new fetch command and return its result
+		return m.fetchTasks()()
+	}
+}
+
+// promoteErrorMsg carries an error from a promote action.
+type promoteErrorMsg struct {
+	taskID string
+	err    string
+}
+
 // fetchTasks creates a command that fetches tasks and returns them.
 func (m *BoardModel) fetchTasks() tea.Cmd {
 	return func() tea.Msg {
@@ -199,10 +233,20 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			return m, m.fetchTasks()
 
+		// Promote: only on backlog tasks
+		case "p":
+			if m.selectedColumn == 0 && m.selectedTaskID != "" {
+				return m, m.promoteTask(m.selectedTaskID)
+			}
+
 		// Help (stub for TUI-3+)
 		case "?":
 			// TODO: show help overlay
 		}
+
+	case promoteErrorMsg:
+		m.error = msg.err
+		return m, nil
 
 	case tasksFetchedMsg:
 		if msg.err != nil {
@@ -416,7 +460,13 @@ func (m *BoardModel) formatTime(timestamp string) string {
 }
 
 // renderHelpBar renders the bottom help bar.
-// Only advertise keys that have handlers in TUI-2; p/a/x are TUI-3/4.
+// Show promote action only when in backlog column.
 func (m *BoardModel) renderHelpBar() string {
-	return "←/→ column   ↑/↓ select   r refresh   q quit"
+	var bar string
+	if m.selectedColumn == 0 {
+		bar = "←/→ column   ↑/↓ select   p promote   r refresh   q quit"
+	} else {
+		bar = "←/→ column   ↑/↓ select   r refresh   q quit"
+	}
+	return bar
 }
