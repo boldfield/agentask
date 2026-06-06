@@ -13,6 +13,7 @@ type MockClient struct {
 	PromoteTaskFunc    func(ctx context.Context, id string) error
 	ReviewTaskFunc     func(ctx context.Context, id, actor, verdict string, note *string) error
 	TransitionTaskFunc func(ctx context.Context, id, to string, note *string) error
+	Tasks              []Task // for simple test data
 }
 
 func (m *MockClient) ListProjects(ctx context.Context) ([]Project, error) {
@@ -20,7 +21,10 @@ func (m *MockClient) ListProjects(ctx context.Context) ([]Project, error) {
 }
 
 func (m *MockClient) ListTasks(ctx context.Context, projectID string) ([]Task, error) {
-	return m.ListTasksFunc(ctx, projectID)
+	if m.ListTasksFunc != nil {
+		return m.ListTasksFunc(ctx, projectID)
+	}
+	return m.Tasks, nil
 }
 
 func (m *MockClient) GetTask(ctx context.Context, id string) (TaskDetail, error) {
