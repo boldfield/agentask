@@ -348,29 +348,29 @@ type Project struct {
 
 // Document represents a design or feature spec document.
 type Document struct {
-	ID        string `db:"id" json:"id"`
-	ProjectID string `db:"project_id" json:"project_id"`
-	Kind      string `db:"kind" json:"kind"` // 'design' or 'feature_spec'
-	Title     string `db:"title" json:"title"`
-	Ref       string `db:"ref" json:"ref"`
+	ID        string  `db:"id" json:"id"`
+	ProjectID string  `db:"project_id" json:"project_id"`
+	Kind      string  `db:"kind" json:"kind"` // 'design' or 'feature_spec'
+	Title     string  `db:"title" json:"title"`
+	Ref       string  `db:"ref" json:"ref"`
 	Commit    *string `db:"commit" json:"commit"` // nullable
-	CreatedAt string `db:"created_at" json:"created_at"`
-	UpdatedAt string `db:"updated_at" json:"updated_at"`
+	CreatedAt string  `db:"created_at" json:"created_at"`
+	UpdatedAt string  `db:"updated_at" json:"updated_at"`
 }
 
 // Task represents a task on the board.
 type Task struct {
-	ID            string `db:"id" json:"id"`
-	ProjectID     string `db:"project_id" json:"project_id"`
-	DocumentID    string `db:"document_id" json:"document_id"`
-	Title         string `db:"title" json:"title"`
-	Spec          string `db:"spec" json:"spec"`
-	State         string `db:"state" json:"state"`
-	Assignee      *string `db:"assignee" json:"assignee"` // nullable
+	ID             string  `db:"id" json:"id"`
+	ProjectID      string  `db:"project_id" json:"project_id"`
+	DocumentID     string  `db:"document_id" json:"document_id"`
+	Title          string  `db:"title" json:"title"`
+	Spec           string  `db:"spec" json:"spec"`
+	State          string  `db:"state" json:"state"`
+	Assignee       *string `db:"assignee" json:"assignee"`                 // nullable
 	LeaseExpiresAt *string `db:"lease_expires_at" json:"lease_expires_at"` // nullable
-	Result        *string `db:"result" json:"result"` // nullable
-	CreatedAt     string `db:"created_at" json:"created_at"`
-	UpdatedAt     string `db:"updated_at" json:"updated_at"`
+	Result         *string `db:"result" json:"result"`                     // nullable
+	CreatedAt      string  `db:"created_at" json:"created_at"`
+	UpdatedAt      string  `db:"updated_at" json:"updated_at"`
 }
 
 // TaskLink represents a link from a task to external resources (PR, branch, commit, CI).
@@ -383,7 +383,7 @@ type TaskLink struct {
 
 // TaskInput is the input format for bulk task creation.
 type TaskInput struct {
-	Key        string   `json:"key"`        // optional client-provided key for intra-batch deps
+	Key        string   `json:"key"` // optional client-provided key for intra-batch deps
 	Title      string   `json:"title"`
 	Spec       string   `json:"spec"`
 	DocumentID string   `json:"document_id"`
@@ -392,25 +392,25 @@ type TaskInput struct {
 
 // LinkInput is the input format for task links during submission.
 type LinkInput struct {
-	Kind  string `json:"kind"`  // 'pr', 'branch', 'commit', or 'ci'
+	Kind  string `json:"kind"` // 'pr', 'branch', 'commit', or 'ci'
 	Value string `json:"value"`
 }
 
 // TaskWithDepsAndLinks combines a Task with its dependencies and links.
 type TaskWithDepsAndLinks struct {
-	ID            string      `json:"id"`
-	ProjectID     string      `json:"project_id"`
-	DocumentID    string      `json:"document_id"`
-	Title         string      `json:"title"`
-	Spec          string      `json:"spec"`
-	State         string      `json:"state"`
-	Assignee      *string     `json:"assignee"`
-	LeaseExpiresAt *string     `json:"lease_expires_at"`
-	Result        *string     `json:"result"`
-	CreatedAt     string      `json:"created_at"`
-	UpdatedAt     string      `json:"updated_at"`
-	DependsOn     []string    `json:"depends_on"`
-	Links         []TaskLink  `json:"links"`
+	ID             string     `json:"id"`
+	ProjectID      string     `json:"project_id"`
+	DocumentID     string     `json:"document_id"`
+	Title          string     `json:"title"`
+	Spec           string     `json:"spec"`
+	State          string     `json:"state"`
+	Assignee       *string    `json:"assignee"`
+	LeaseExpiresAt *string    `json:"lease_expires_at"`
+	Result         *string    `json:"result"`
+	CreatedAt      string     `json:"created_at"`
+	UpdatedAt      string     `json:"updated_at"`
+	DependsOn      []string   `json:"depends_on"`
+	Links          []TaskLink `json:"links"`
 }
 
 // TaskListFilter contains filters for listing tasks.
@@ -422,13 +422,13 @@ type TaskListFilter struct {
 
 // Event represents an audit/event log entry.
 type Event struct {
-	ID        string `db:"id" json:"id"`
-	TaskID    string `db:"task_id" json:"task_id"`
-	Actor     string `db:"actor" json:"actor"`
-	Kind      string `db:"kind" json:"kind"`
+	ID        string  `db:"id" json:"id"`
+	TaskID    string  `db:"task_id" json:"task_id"`
+	Actor     string  `db:"actor" json:"actor"`
+	Kind      string  `db:"kind" json:"kind"`
 	Verdict   *string `db:"verdict" json:"verdict"` // nullable
-	Note      *string `db:"note" json:"note"` // nullable
-	CreatedAt string `db:"created_at" json:"created_at"`
+	Note      *string `db:"note" json:"note"`       // nullable
+	CreatedAt string  `db:"created_at" json:"created_at"`
 }
 
 // ErrNotFound is returned when a resource is not found.
@@ -680,14 +680,14 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 		keyToID[input.Key] = taskID
 
 		task := Task{
-			ID:        taskID,
-			ProjectID: projectID,
+			ID:         taskID,
+			ProjectID:  projectID,
 			DocumentID: input.DocumentID,
-			Title:     input.Title,
-			Spec:      input.Spec,
-			State:     "backlog",
-			CreatedAt: now,
-			UpdatedAt: now,
+			Title:      input.Title,
+			Spec:       input.Spec,
+			State:      "backlog",
+			CreatedAt:  now,
+			UpdatedAt:  now,
 		}
 
 		// Insert task
@@ -814,19 +814,19 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLi
 	}
 
 	return TaskWithDepsAndLinks{
-		ID:            t.ID,
-		ProjectID:     t.ProjectID,
-		DocumentID:    t.DocumentID,
-		Title:         t.Title,
-		Spec:          t.Spec,
-		State:         t.State,
-		Assignee:      t.Assignee,
+		ID:             t.ID,
+		ProjectID:      t.ProjectID,
+		DocumentID:     t.DocumentID,
+		Title:          t.Title,
+		Spec:           t.Spec,
+		State:          t.State,
+		Assignee:       t.Assignee,
 		LeaseExpiresAt: t.LeaseExpiresAt,
-		Result:        t.Result,
-		CreatedAt:     t.CreatedAt,
-		UpdatedAt:     t.UpdatedAt,
-		DependsOn:     dependsOn,
-		Links:         links,
+		Result:         t.Result,
+		CreatedAt:      t.CreatedAt,
+		UpdatedAt:      t.UpdatedAt,
+		DependsOn:      dependsOn,
+		Links:          links,
 	}, nil
 }
 
@@ -1227,19 +1227,19 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 		}
 
 		return TaskWithDepsAndLinks{
-			ID:            t.ID,
-			ProjectID:     t.ProjectID,
-			DocumentID:    t.DocumentID,
-			Title:         t.Title,
-			Spec:          t.Spec,
-			State:         t.State,
-			Assignee:      t.Assignee,
+			ID:             t.ID,
+			ProjectID:      t.ProjectID,
+			DocumentID:     t.DocumentID,
+			Title:          t.Title,
+			Spec:           t.Spec,
+			State:          t.State,
+			Assignee:       t.Assignee,
 			LeaseExpiresAt: t.LeaseExpiresAt,
-			Result:        t.Result,
-			CreatedAt:     t.CreatedAt,
-			UpdatedAt:     t.UpdatedAt,
-			DependsOn:     dependsOn,
-			Links:         fetchedLinks,
+			Result:         t.Result,
+			CreatedAt:      t.CreatedAt,
+			UpdatedAt:      t.UpdatedAt,
+			DependsOn:      dependsOn,
+			Links:          fetchedLinks,
 		}, nil
 	}
 

@@ -437,8 +437,8 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 
 	var payload struct {
-		AgentID string           `json:"agent_id"`
-		Result  string           `json:"result"`
+		AgentID string            `json:"agent_id"`
+		Result  string            `json:"result"`
 		Links   []store.LinkInput `json:"links"`
 	}
 
@@ -481,9 +481,9 @@ func (s *Server) handleReview(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 
 	var payload struct {
-		Actor  string `json:"actor"`
-		Verdict string `json:"verdict"`
-		Note   *string `json:"note"`
+		Actor   string  `json:"actor"`
+		Verdict string  `json:"verdict"`
+		Note    *string `json:"note"`
 	}
 
 	if err := s.decodeJSON(w, r, &payload); err != nil {
@@ -525,7 +525,7 @@ func (s *Server) handleTransition(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 
 	var payload struct {
-		To   string `json:"to"`
+		To   string  `json:"to"`
 		Note *string `json:"note"`
 	}
 
