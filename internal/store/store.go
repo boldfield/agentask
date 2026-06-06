@@ -100,7 +100,22 @@ func dsn_addPragmas(dsn string) string {
 }
 
 // migrate applies all pending migrations from the embedded migrations directory.
+// It disables foreign key enforcement before the migration transaction begins (since PRAGMA inside
+// a transaction is a no-op) and restores it afterward. Before commit, it runs an integrity check
+// to ensure no foreign key violations occurred, failing the migration if any are found.
 func (s *sqliteStore) migrate() error {
+	// Disable foreign keys on the connection before starting the transaction
+	// SQLite requires PRAGMA foreign_keys to be set outside a transaction
+	if _, err := s.conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("failed to disable foreign keys before migration: %w", err)
+	}
+	defer func() {
+		// Always restore foreign keys, even if migration fails
+		if _, err := s.conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+			// Log but don't fail if we can't re-enable FKs; connection might be closing
+		}
+	}()
+
 	tx, err := s.conn.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -159,6 +174,33 @@ func (s *sqliteStore) migrate() error {
 			migration.version, now); err != nil {
 			return fmt.Errorf("failed to record migration %s: %w", migration.version, err)
 		}
+	}
+
+	// Before commit, run a foreign key integrity check
+	// This catches any migrations that would leave dangling foreign key references
+	var violations int
+	err = tx.QueryRow("PRAGMA foreign_key_check").Scan(&violations)
+	// If foreign_key_check returns no rows, Scan will return sql.ErrNoRows (not an error we care about)
+	// If it returns rows, the first row will be the violation count
+	if err == nil && violations > 0 {
+		return fmt.Errorf("migration integrity check failed: found %d foreign key violations", violations)
+	}
+	// Also check if there were any violations returned as rows (each row = one violation)
+	rows, err := tx.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("failed to run foreign key integrity check: %w", err)
+	}
+	defer rows.Close()
+
+	var violationCount int
+	for rows.Next() {
+		violationCount++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to read foreign key check results: %w", err)
+	}
+	if violationCount > 0 {
+		return fmt.Errorf("migration integrity check failed: found %d foreign key violations", violationCount)
 	}
 
 	return tx.Commit()
