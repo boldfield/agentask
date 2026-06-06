@@ -27,7 +27,9 @@ type BoardModel struct {
 	width          int
 	height         int
 	lastRefresh    time.Time
-	pollGen        int // generation counter for polling; gates ticks
+	// newTickCmd is the function used to arm the next poll tick.
+	// Overridable in tests to avoid real timers and to introspect arming.
+	newTickCmd func() tea.Cmd
 }
 
 const (
@@ -49,7 +51,7 @@ var stateColors = map[string]lipgloss.Color{
 
 // NewBoardModel creates a new board model and starts the initial fetch.
 func NewBoardModel(client tuiclient.Client, config *tuiconfig.Config, project tuiclient.Project) *BoardModel {
-	return &BoardModel{
+	m := &BoardModel{
 		client:         client,
 		config:         config,
 		project:        project,
@@ -57,22 +59,24 @@ func NewBoardModel(client tuiclient.Client, config *tuiconfig.Config, project tu
 		selectedColumn: 2, // in_progress by default
 		loading:        true,
 	}
+	m.newTickCmd = m.defaultTickCmd
+	return m
+}
+
+// defaultTickCmd is the production tick: fires after PollInterval.
+func (m *BoardModel) defaultTickCmd() tea.Cmd {
+	return tea.Tick(m.config.PollInterval, func(t time.Time) tea.Msg {
+		return tickMsg{}
+	})
 }
 
 // Init starts the initial fetch and the polling loop.
+// Exactly one tick chain is started here; it perpetuates itself in the tickMsg handler.
 func (m *BoardModel) Init() tea.Cmd {
-	m.pollGen = 1
 	return tea.Batch(
 		m.fetchTasks(),
-		m.tickCmd(1),
+		m.newTickCmd(),
 	)
-}
-
-// tickCmd creates a tick command for the given generation.
-func (m *BoardModel) tickCmd(gen int) tea.Cmd {
-	return tea.Tick(m.config.PollInterval, func(t time.Time) tea.Msg {
-		return tickMsg{gen: gen}
-	})
 }
 
 // fetchTasks creates a command that fetches tasks and returns them.
@@ -118,9 +122,8 @@ type tasksFetchedMsg struct {
 	err   error
 }
 
-type tickMsg struct {
-	gen int // generation counter; ignore if stale
-}
+// tickMsg is sent by the poll tick to trigger a fetch and re-arm the next tick.
+type tickMsg struct{}
 
 // Update handles messages from Bubble Tea.
 func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -191,7 +194,8 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 
-		// Refresh: issue one-shot fetch, do not arm a new tick
+		// Refresh: issue one-shot fetch; do NOT arm a new tick.
+		// The single perpetual tick chain started in Init re-arms itself from tickMsg.
 		case "r":
 			return m, m.fetchTasks()
 
@@ -203,7 +207,8 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tasksFetchedMsg:
 		if msg.err != nil {
 			m.error = fmt.Sprintf("Error: %v", msg.err)
-			// Return without arming a tick; the generation-guarded tick chain continues
+			// Return without arming a tick; the single tick chain in tickMsg handles
+			// re-arming itself independently.
 			return m, nil
 		}
 
@@ -214,20 +219,15 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.ensureSelectionInColumn()
 
 		// Just update data; do NOT arm a tick. The single tick chain in tickMsg handles
-		// rearming itself.
+		// re-arming itself.
 		return m, nil
 
 	case tickMsg:
-		// Only process if this tick's generation matches our current generation.
-		// This prevents stale ticks from starting new fetch/tick chains.
-		if msg.gen != m.pollGen {
-			return m, nil
-		}
-
-		// Issue both a fetch AND the next tick in the chain.
+		// Re-arm exactly one next tick and issue a fetch.
+		// This is the ONLY place (besides Init) where a new tick is armed.
 		return m, tea.Batch(
 			m.fetchTasks(),
-			m.tickCmd(m.pollGen),
+			m.newTickCmd(),
 		)
 	}
 

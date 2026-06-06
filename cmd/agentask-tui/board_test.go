@@ -372,11 +372,93 @@ func TestBoardModel_DisappearedTaskSelection(t *testing.T) {
 	}
 }
 
-// TestBoardModel_TickGeneration tests that manual refresh (r) does not fork polling loops.
-// Pressing 'r' multiple times should issue fetch commands but NOT increase pending ticks.
+// tickSentinel is returned by the test tick command to identify that a tick was armed.
+type tickSentinel struct{}
+
+// countTickCmds installs a counting tick function on the model and returns a pointer to the counter.
+// Each time the model arms a new tick (via newTickCmd), the counter increments by 1
+// and returns a tea.Cmd that immediately sends tickSentinel{} when executed.
+func countTickCmds(model *BoardModel) *int {
+	count := 0
+	model.newTickCmd = func() tea.Cmd {
+		count++
+		return func() tea.Msg { return tickSentinel{} }
+	}
+	return &count
+}
+
+// runCmd executes a tea.Cmd synchronously and collects all leaf messages it produces.
+// tea.Batch returns a BatchMsg ([]tea.Cmd); this function recursively executes those sub-cmds
+// and collects their results, so callers can inspect the full set of messages produced.
+func runCmd(cmd tea.Cmd) []tea.Msg {
+	if cmd == nil {
+		return nil
+	}
+
+	resultChan := make(chan tea.Msg, 64)
+	var execCmd func(tea.Cmd)
+	execCmd = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		go func() {
+			msg := c()
+			if msg == nil {
+				resultChan <- nil
+				return
+			}
+			// tea.Batch returns a BatchMsg; recurse into each sub-cmd.
+			if batch, ok := msg.(tea.BatchMsg); ok {
+				for _, subCmd := range batch {
+					execCmd(subCmd)
+				}
+			} else {
+				resultChan <- msg
+			}
+		}()
+	}
+
+	execCmd(cmd)
+
+	// Collect results with a timeout to handle the async tick sentinel.
+	var messages []tea.Msg
+	timer := time.NewTimer(500 * time.Millisecond)
+	defer timer.Stop()
+
+	// We need to know how many goroutines to expect. Since we don't track that precisely,
+	// use a small fixed wait after the first message arrives.
+	firstArrived := false
+	drainTimer := time.NewTimer(24 * time.Hour) // starts stopped effectively
+	defer drainTimer.Stop()
+
+	for {
+		select {
+		case msg := <-resultChan:
+			if msg != nil {
+				messages = append(messages, msg)
+			}
+			if !firstArrived {
+				firstArrived = true
+				drainTimer.Reset(50 * time.Millisecond)
+			}
+		case <-drainTimer.C:
+			return messages
+		case <-timer.C:
+			return messages
+		}
+	}
+}
+
+// TestBoardModel_TickGeneration verifies the no-fork invariant:
+//   - Init arms exactly ONE tick.
+//   - A tickMsg arms exactly ONE tick (the re-arm) and issues a fetch.
+//   - 'r' (manual refresh) arms ZERO ticks (issues a fetch only).
+//   - tasksFetchedMsg arms ZERO ticks.
+//
+// The test uses an injectable newTickCmd that counts arming calls instead of using real timers.
+// This test WILL FAIL if a tick is re-armed from the 'r' handler or from tasksFetchedMsg.
 func TestBoardModel_TickGeneration(t *testing.T) {
 	mockClient := &tuiclient.MockClient{}
-
 	config := &tuiconfig.Config{
 		URL:          "http://test",
 		Token:        "test",
@@ -385,62 +467,115 @@ func TestBoardModel_TickGeneration(t *testing.T) {
 	}
 	project := tuiclient.Project{ID: "project-1", Name: "Test"}
 
+	// --- Init arms exactly one tick ---
 	model := NewBoardModel(mockClient, config, project)
-	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
-	model = m.(*BoardModel)
+	tickCount := countTickCmds(model)
 
-	// Init should set pollGen=1 and issue one fetch + one tick
 	_ = model.Init()
-	if model.pollGen != 1 {
-		t.Errorf("Expected pollGen=1 after Init, got %d", model.pollGen)
+	if *tickCount != 1 {
+		t.Errorf("Init: expected exactly 1 tick armed, got %d", *tickCount)
 	}
 
-	// Simulate successful fetch
+	// --- tasksFetchedMsg arms ZERO ticks ---
+	*tickCount = 0
 	bucketed := make(map[string][]tuiclient.Task)
 	for _, state := range []string{"backlog", "ready", "in_progress", "review", "done"} {
 		bucketed[state] = []tuiclient.Task{}
 	}
-	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	m, fetchedCmd := model.Update(tasksFetchedMsg{tasks: bucketed})
 	model = m.(*BoardModel)
 
-	// Process the single tick that was returned by Init (tickMsg{gen: 1})
-	m, cmd := model.Update(tickMsg{gen: 1})
-	model = m.(*BoardModel)
-
-	// After one valid tick, cmd should batch a fetch + next tick (same gen)
-	if model.pollGen != 1 {
-		t.Errorf("Expected pollGen to remain 1, got %d", model.pollGen)
+	if *tickCount != 0 {
+		t.Errorf("tasksFetchedMsg: expected 0 ticks armed, got %d (tick fork regression)", *tickCount)
 	}
 
-	// Now press 'r' (manual refresh) multiple times
-	m, cmd = model.Update(tea.KeyMsg{Runes: []rune{'r'}})
-	model = m.(*BoardModel)
-	// Pressing 'r' should return a fetch command but NOT arm a tick
-	// Check pollGen unchanged
-	if model.pollGen != 1 {
-		t.Errorf("Expected pollGen unchanged after 'r', got %d", model.pollGen)
+	// fetchedCmd should be nil (tasksFetchedMsg returns no command)
+	if fetchedCmd != nil {
+		// Run it and check that no tickSentinel is produced
+		msgs := runCmd(fetchedCmd)
+		for _, msg := range msgs {
+			if _, isTickSentinel := msg.(tickSentinel); isTickSentinel {
+				t.Errorf("tasksFetchedMsg returned a cmd that produced a tick (tick fork regression)")
+			}
+		}
 	}
 
-	// Press 'r' again
-	m, cmd = model.Update(tea.KeyMsg{Runes: []rune{'r'}})
+	// --- 'r' (manual refresh) arms ZERO ticks ---
+	*tickCount = 0
+	m, refreshCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
 	model = m.(*BoardModel)
-	if model.pollGen != 1 {
-		t.Errorf("Expected pollGen unchanged after second 'r', got %d", model.pollGen)
+
+	if *tickCount != 0 {
+		t.Errorf("'r' key: expected 0 ticks armed, got %d (tick fork regression)", *tickCount)
+	}
+	if refreshCmd == nil {
+		t.Errorf("'r' key: expected a fetch cmd (non-nil), got nil")
 	}
 
-	// Test that stale ticks are dropped
-	m, cmd = model.Update(tickMsg{gen: 0})
-	model = m.(*BoardModel)
-	// gen=0 is stale, should return nil command
-	if cmd != nil {
-		t.Errorf("Expected nil command for stale tick, got non-nil")
+	// Execute the refreshCmd and confirm it produces tasksFetchedMsg, NOT a tickSentinel.
+	refreshMsgs := runCmd(refreshCmd)
+	hasTasksFetched := false
+	hasTick := false
+	for _, msg := range refreshMsgs {
+		switch msg.(type) {
+		case tasksFetchedMsg:
+			hasTasksFetched = true
+		case tickSentinel:
+			hasTick = true
+		}
+	}
+	if !hasTasksFetched {
+		t.Errorf("'r' key cmd: expected a tasksFetchedMsg, got none (msgs: %v)", refreshMsgs)
+	}
+	if hasTick {
+		t.Errorf("'r' key cmd: produced a tick (tick fork regression)")
 	}
 
-	// Test that current-gen ticks are processed
-	m, cmd = model.Update(tickMsg{gen: 1})
+	// --- tickMsg arms exactly ONE tick and issues a fetch ---
+	*tickCount = 0
+	m, tickCmdResult := model.Update(tickMsg{})
 	model = m.(*BoardModel)
-	// gen=1 is current, should process (return batch with fetch + next tick)
-	if cmd == nil {
-		t.Errorf("Expected non-nil command for current-gen tick")
+
+	if *tickCount != 1 {
+		t.Errorf("tickMsg: expected exactly 1 tick armed, got %d", *tickCount)
+	}
+	if tickCmdResult == nil {
+		t.Errorf("tickMsg: expected a non-nil batch cmd (fetch + tick), got nil")
+	}
+
+	// Execute the batch from tickMsg and confirm it produces BOTH a tasksFetchedMsg AND a tickSentinel.
+	tickMsgs := runCmd(tickCmdResult)
+	hasTasksFetchedFromTick := false
+	hasTickFromTick := false
+	for _, msg := range tickMsgs {
+		switch msg.(type) {
+		case tasksFetchedMsg:
+			hasTasksFetchedFromTick = true
+		case tickSentinel:
+			hasTickFromTick = true
+		}
+	}
+	if !hasTasksFetchedFromTick {
+		t.Errorf("tickMsg batch: expected a tasksFetchedMsg, got none (msgs: %v)", tickMsgs)
+	}
+	if !hasTickFromTick {
+		t.Errorf("tickMsg batch: expected a tickSentinel (re-armed tick), got none (msgs: %v)", tickMsgs)
+	}
+
+	// --- tasksFetchedMsg with error arms ZERO ticks ---
+	*tickCount = 0
+	m, errFetchedCmd := model.Update(tasksFetchedMsg{err: errors.New("network error")})
+	_ = m
+
+	if *tickCount != 0 {
+		t.Errorf("tasksFetchedMsg(error): expected 0 ticks armed, got %d (tick fork regression)", *tickCount)
+	}
+	if errFetchedCmd != nil {
+		msgs := runCmd(errFetchedCmd)
+		for _, msg := range msgs {
+			if _, isTickSentinel := msg.(tickSentinel); isTickSentinel {
+				t.Errorf("tasksFetchedMsg(error) returned a cmd that produced a tick (tick fork regression)")
+			}
+		}
 	}
 }
