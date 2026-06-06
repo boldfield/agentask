@@ -21,6 +21,7 @@ jobs:
 
       - name: Check gofmt
         run: |
+          set +e
           out=$(gofmt -e -l . 2>&1); rc=$?
           if [ "$rc" -ne 0 ] || [ -n "$out" ]; then echo "gofmt issues:"; echo "$out"; exit 1; fi
 
