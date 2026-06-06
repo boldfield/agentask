@@ -318,11 +318,11 @@ func TestListEvents(t *testing.T) {
 	// Insert events in separate transactions with explicit timestamps to ensure ordering
 	// Use progressively later timestamps to guarantee order
 	events := []struct {
-		actor      string
-		kind       string
-		verdict    *string
-		note       *string
-		offset     time.Duration
+		actor   string
+		kind    string
+		verdict *string
+		note    *string
+		offset  time.Duration
 	}{
 		{"agent-1", "claim", nil, nil, 0 * time.Millisecond},
 		{"agent-1", "heartbeat", nil, nil, 10 * time.Millisecond},
