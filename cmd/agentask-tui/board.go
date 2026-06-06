@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -87,9 +89,10 @@ func (m *BoardModel) promoteTask(taskID string) tea.Cmd {
 
 		err := m.client.PromoteTask(ctx, taskID)
 		if err != nil {
-			// Check if it's a 409 (not in backlog)
-			errStr := err.Error()
-			if strings.Contains(errStr, "409") {
+			// Use typed error inspection so the friendly branch is reached even when the
+			// server returns a structured body (e.g. code=CONFLICT) rather than a raw "409".
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
 				return promoteErrorMsg{
 					taskID: taskID,
 					err:    "not in backlog (already moved?)",

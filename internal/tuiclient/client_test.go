@@ -3,6 +3,7 @@ package tuiclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -398,5 +399,77 @@ func TestTransitionTaskWithoutNote(t *testing.T) {
 	err := client.TransitionTask(context.Background(), "task123", "blocked", nil)
 	if err != nil {
 		t.Fatalf("TransitionTask failed: %v", err)
+	}
+}
+
+// TestAPIError_StructuredBody verifies that do() returns *APIError with the correct StatusCode,
+// Code, and Message when the server returns a non-2xx with a structured JSON error body.
+func TestAPIError_StructuredBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "CONFLICT",
+				"message": "Task is not in backlog",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.PromoteTask(context.Background(), "task123")
+	if err == nil {
+		t.Fatal("Expected error from 409 response, got nil")
+	}
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("Expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusConflict {
+		t.Errorf("Expected StatusCode 409, got %d", apiErr.StatusCode)
+	}
+	if apiErr.Code != "CONFLICT" {
+		t.Errorf("Expected Code CONFLICT, got %q", apiErr.Code)
+	}
+	if apiErr.Message != "Task is not in backlog" {
+		t.Errorf("Expected Message 'Task is not in backlog', got %q", apiErr.Message)
+	}
+	// Error() string must remain human-readable (used in generic error display).
+	if !strings.Contains(err.Error(), "CONFLICT") || !strings.Contains(err.Error(), "Task is not in backlog") {
+		t.Errorf("APIError.Error() does not include server code/message: %q", err.Error())
+	}
+}
+
+// TestAPIError_UndecodableBody verifies that do() returns *APIError with only StatusCode set
+// when the server returns a non-2xx with a non-JSON body.
+func TestAPIError_UndecodableBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		w.Write([]byte("internal server error"))
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.PromoteTask(context.Background(), "task123")
+	if err == nil {
+		t.Fatal("Expected error from 500 response, got nil")
+	}
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("Expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("Expected StatusCode 500, got %d", apiErr.StatusCode)
+	}
+	// Code and Message should be empty when body is not structured JSON.
+	if apiErr.Code != "" {
+		t.Errorf("Expected empty Code for undecodable body, got %q", apiErr.Code)
+	}
+	// Error() must still be useful.
+	if !strings.Contains(err.Error(), "500") {
+		t.Errorf("APIError.Error() for fallback should include status code, got: %q", err.Error())
 	}
 }

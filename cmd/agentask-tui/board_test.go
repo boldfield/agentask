@@ -537,11 +537,15 @@ func TestBoardModel_PromoteTask(t *testing.T) {
 	}
 }
 
-// TestBoardModel_PromoteTask409 tests handling of 409 error when promoting fails.
-func TestBoardModel_PromoteTask409(t *testing.T) {
+// promoteWithError is a helper that runs a promote action against a model
+// already positioned in the backlog column with a task selected.
+// It returns the model after the promote command has been executed.
+func promoteWithError(t *testing.T, returnedErr error) *BoardModel {
+	t.Helper()
+
 	mockClient := &tuiclient.MockClient{
 		PromoteTaskFunc: func(ctx context.Context, id string) error {
-			return errors.New("server error (conflict): task not in backlog")
+			return returnedErr
 		},
 	}
 
@@ -557,20 +561,18 @@ func TestBoardModel_PromoteTask409(t *testing.T) {
 	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	model = m.(*BoardModel)
 
-	// Set up initial backlog
 	bucketed := make(map[string][]tuiclient.Task)
 	bucketed["backlog"] = []tuiclient.Task{
 		{ID: "task-1", Title: "Task 1", State: "backlog"},
 	}
-	bucketed["ready"] = []tuiclient.Task{}
-	bucketed["in_progress"] = []tuiclient.Task{}
-	bucketed["review"] = []tuiclient.Task{}
-	bucketed["done"] = []tuiclient.Task{}
+	for _, state := range []string{"ready", "in_progress", "review", "done"} {
+		bucketed[state] = []tuiclient.Task{}
+	}
 
 	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
 	model = m.(*BoardModel)
 
-	// Move to backlog column
+	// Navigate from in_progress (index 2) to backlog (index 0): two lefts
 	for i := 0; i < 2; i++ {
 		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
 		model = m.(*BoardModel)
@@ -580,25 +582,64 @@ func TestBoardModel_PromoteTask409(t *testing.T) {
 	m, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
 	model = m.(*BoardModel)
 
-	// Execute the promote command (should produce a promoteErrorMsg)
 	if cmd != nil {
 		msg := cmd()
 		m, _ = model.Update(msg)
 		model = m.(*BoardModel)
 	}
 
-	// Verify error is surfaced
-	if model.error == "" {
-		t.Errorf("Expected error to be set after 409")
+	return model
+}
+
+// TestBoardModel_PromoteTask409 verifies that a real *tuiclient.APIError with StatusCode 409
+// produces the friendly "not in backlog (already moved?)" message, not the generic branch.
+// This test exercises the typed-error detection path (errors.As + StatusCode check), so it
+// WILL FAIL if the StatusCode detection is broken (e.g. if someone reverts to strings.Contains).
+func TestBoardModel_PromoteTask409(t *testing.T) {
+	// Use the exact error the real HTTPClient returns for a server 409 + structured body.
+	conflictErr := &tuiclient.APIError{
+		StatusCode: 409,
+		Code:       "CONFLICT",
+		Message:    "Task is not in backlog",
 	}
-	if !strings.Contains(model.error, "not in backlog") {
-		t.Errorf("Expected error to mention 'not in backlog', got: %s", model.error)
+
+	model := promoteWithError(t, conflictErr)
+
+	// The FRIENDLY branch must be taken — not just "not in backlog" from the generic path.
+	// The generic path would produce "promote failed: server error (CONFLICT): Task is not in backlog".
+	// The friendly path produces exactly "not in backlog (already moved?)".
+	const friendlyMsg = "not in backlog (already moved?)"
+	if model.error != friendlyMsg {
+		t.Errorf("Expected friendly 409 message %q, got: %q", friendlyMsg, model.error)
 	}
 
 	// Verify we didn't crash and the model is still usable
 	output := model.View()
 	if !strings.Contains(output, "backlog(1)") {
 		t.Errorf("Expected board to still be functional, got:\n%s", output)
+	}
+}
+
+// TestBoardModel_PromoteTask500 verifies that a non-409 APIError (e.g. 500) takes the
+// generic branch and does NOT produce the friendly conflict message.
+func TestBoardModel_PromoteTask500(t *testing.T) {
+	serverErr := &tuiclient.APIError{
+		StatusCode: 500,
+		Code:       "INTERNAL_ERROR",
+		Message:    "something went wrong",
+	}
+
+	model := promoteWithError(t, serverErr)
+
+	// Must show the generic error, not the friendly conflict message.
+	if model.error == "not in backlog (already moved?)" {
+		t.Errorf("Expected generic error for 500, but got the friendly 409 message")
+	}
+	if !strings.Contains(model.error, "promote failed:") {
+		t.Errorf("Expected 'promote failed:' prefix for generic error, got: %q", model.error)
+	}
+	if !strings.Contains(model.error, "something went wrong") {
+		t.Errorf("Expected server message in generic error, got: %q", model.error)
 	}
 }
 
