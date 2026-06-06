@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io/fs"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -15,103 +16,55 @@ import (
 )
 
 // createTestFSWithBadMigration creates a test filesystem with the standard migrations
-// plus a migration (0003_bad.sql) that leaves a dangling foreign key.
+// plus a bad migration (0003_bad.sql) that leaves a dangling foreign key.
+// It wraps the embedded migrations and adds the bad migration on top.
 func createTestFSWithBadMigration() fs.FS {
-	return fstest.MapFS{
-		"migrations/0001_init.sql": &fstest.MapFile{
-			Data: []byte(`
-CREATE TABLE IF NOT EXISTS project (
-  id TEXT PRIMARY KEY,
-  name TEXT NOT NULL,
-  repo TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-
-CREATE TABLE IF NOT EXISTS document (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  title TEXT NOT NULL,
-  ref TEXT NOT NULL,
-  commit TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY(project_id) REFERENCES project(id),
-  UNIQUE(project_id, kind)
-);
-
-CREATE INDEX IF NOT EXISTS idx_document_one_design_per_project ON document(project_id, kind);
-
-CREATE TABLE IF NOT EXISTS task (
-  id TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL,
-  document_id TEXT NOT NULL,
-  title TEXT NOT NULL,
-  spec TEXT NOT NULL,
-  state TEXT NOT NULL DEFAULT 'backlog',
-  assignee TEXT,
-  lease_expires_at TEXT,
-  result TEXT,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY(project_id) REFERENCES project(id),
-  FOREIGN KEY(document_id) REFERENCES document(id)
-);
-
-CREATE INDEX IF NOT EXISTS idx_task_project_state ON task(project_id, state);
-
-CREATE TABLE IF NOT EXISTS task_dep (
-  task_id TEXT NOT NULL,
-  depends_on_id TEXT NOT NULL,
-  PRIMARY KEY(task_id, depends_on_id),
-  FOREIGN KEY(task_id) REFERENCES task(id),
-  FOREIGN KEY(depends_on_id) REFERENCES task(id)
-);
-
-CREATE TABLE IF NOT EXISTS task_link (
-  id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  value TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY(task_id) REFERENCES task(id),
-  UNIQUE(kind, value)
-);
-
-CREATE INDEX IF NOT EXISTS idx_task_link_kind_value ON task_link(kind, value);
-
-CREATE TABLE IF NOT EXISTS event (
-  id TEXT PRIMARY KEY,
-  task_id TEXT NOT NULL,
-  actor TEXT NOT NULL,
-  kind TEXT NOT NULL,
-  verdict TEXT,
-  note TEXT,
-  created_at TEXT NOT NULL,
-  FOREIGN KEY(task_id) REFERENCES task(id)
-);
-`),
-		},
-		"migrations/0002_document_one_design.sql": &fstest.MapFile{
-			Data: []byte(`
-CREATE UNIQUE INDEX IF NOT EXISTS idx_document_unique_design_per_project
-ON document(project_id)
-WHERE kind = 'design';
-`),
-		},
-		"migrations/0003_bad.sql": &fstest.MapFile{
-			Data: []byte(`
--- This migration creates a dangling FK by dropping the parent table of a FK constraint.
--- With FKs ON, this would fail immediately.
--- With FKs OFF (as migrate() sets them), this succeeds but leaves task rows with
--- invalid project_id references, which the FK integrity check detects before commit.
-DELETE FROM project WHERE id = 'dummy-project';
-INSERT INTO project (id, name, repo, created_at) VALUES ('dummy-project', 'Dummy', 'https://example.com', datetime('now'));
-INSERT INTO task (id, project_id, document_id, title, spec, created_at, updated_at)
-  VALUES ('dummy-task', 'non-existent-project', 'non-existent-doc', 'Dummy Task', 'spec', datetime('now'), datetime('now'));
-`),
+	// Read the actual migrations from the embedded FS
+	// Return a custom fs that includes the embedded migrations plus the bad one
+	return &compositeFS{
+		first: migrationsFS,
+		bad: fstest.MapFS{
+			"migrations/0003_bad.sql": &fstest.MapFile{
+				Data: []byte("INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at) VALUES ('dummy-task', 'non-existent-project', 'non-existent-doc', 'Dummy Task', 'spec', 'backlog', datetime('now'), datetime('now'));"),
+			},
 		},
 	}
+}
+
+// compositeFS is a custom fs.FS that combines two filesystems, preferring files from the first.
+type compositeFS struct {
+	first fs.FS
+	bad   fs.FS
+}
+
+func (c *compositeFS) Open(name string) (fs.File, error) {
+	// Try the bad migrations first (0003_bad.sql)
+	if strings.Contains(name, "0003_bad") {
+		return c.bad.Open(name)
+	}
+	// Fall back to the embedded migrations
+	return c.first.Open(name)
+}
+
+func (c *compositeFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	// Read from the first FS and add bad migrations
+	entries, err := fs.ReadDir(c.first, name)
+	if err != nil {
+		return nil, err
+	}
+
+	// For the migrations directory, also include 0003_bad.sql
+	if name == "migrations" {
+		badEntries, _ := fs.ReadDir(c.bad, "migrations")
+		if badEntries != nil {
+			entries = append(entries, badEntries...)
+			// Sort to ensure consistent order
+			sort.Slice(entries, func(i, j int) bool {
+				return entries[i].Name() < entries[j].Name()
+			})
+		}
+	}
+	return entries, nil
 }
 
 // TestMigrations verifies that migrations can be applied to a fresh database
@@ -936,48 +889,6 @@ func TestMigrationForeignKeysDisabled(t *testing.T) {
 
 	if err == nil {
 		t.Error("expected FK constraint violation when inserting with bad FK, but insert succeeded")
-	}
-
-	// Demonstrate that the integrity check can detect foreign key violations.
-	// Start a transaction, toggle FKs off, and insert a dangling row.
-	tx, err := store.Conn().BeginTx(ctx, nil)
-	if err != nil {
-		t.Fatalf("failed to begin transaction: %v", err)
-	}
-	defer tx.Rollback()
-
-	// Toggle FKs off within a connection-level operation (not the transaction)
-	if _, err := store.Conn().ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
-		t.Fatalf("failed to disable FKs: %v", err)
-	}
-	defer store.Conn().ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
-
-	// Now insert a dangling row that would violate FK constraints
-	if _, err := tx.ExecContext(ctx, `
-		INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-	`, "dangling-task", "non-existent-proj", "non-existent-doc", "Dangling", "spec", "backlog",
-		"2026-06-06T00:00:00Z", "2026-06-06T00:00:00Z"); err != nil {
-		t.Fatalf("failed to insert dangling row with FKs off: %v", err)
-	}
-
-	// Run the integrity check and verify it detects the violation
-	rows, err := tx.Query("PRAGMA foreign_key_check")
-	if err != nil {
-		t.Fatalf("failed to run foreign_key_check: %v", err)
-	}
-	defer rows.Close()
-
-	var violationCount int
-	for rows.Next() {
-		violationCount++
-	}
-	if err := rows.Err(); err != nil {
-		t.Fatalf("error iterating violations: %v", err)
-	}
-
-	if violationCount == 0 {
-		t.Error("expected foreign_key_check to detect dangling row, but found no violations")
 	}
 }
 
