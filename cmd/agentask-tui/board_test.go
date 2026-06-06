@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -446,6 +447,259 @@ func runCmd(cmd tea.Cmd) []tea.Msg {
 		case <-timer.C:
 			return messages
 		}
+	}
+}
+
+// TestBoardModel_PromoteTask tests promoting a backlog task to ready.
+func TestBoardModel_PromoteTask(t *testing.T) {
+	promoteWasCalled := false
+	var promoteTaskID string
+
+	mockClient := &tuiclient.MockClient{
+		PromoteTaskFunc: func(ctx context.Context, id string) error {
+			promoteWasCalled = true
+			promoteTaskID = id
+			return nil
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			// On refetch after promotion, task-1 should be in ready
+			return []tuiclient.Task{
+				{ID: "task-1", Title: "Task 1", State: "ready"},
+				{ID: "task-2", Title: "Task 2", State: "backlog"},
+			}, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Set up initial backlog with two tasks
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{
+		{ID: "task-1", Title: "Task 1", State: "backlog"},
+		{ID: "task-2", Title: "Task 2", State: "backlog"},
+	}
+	bucketed["ready"] = []tuiclient.Task{}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Move to backlog column (it starts at in_progress)
+	for i := 0; i < 2; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		model = m.(*BoardModel)
+	}
+
+	// Verify we're in backlog and task-1 is selected
+	if model.selectedColumn != 0 {
+		t.Errorf("Expected selectedColumn 0 (backlog), got %d", model.selectedColumn)
+	}
+	if model.selectedTaskID != "task-1" {
+		t.Errorf("Expected selected task task-1, got %s", model.selectedTaskID)
+	}
+
+	// Press 'p' to promote
+	m, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model = m.(*BoardModel)
+
+	// Execute the promote command
+	if cmd != nil {
+		msg := cmd()
+		m, _ = model.Update(msg)
+		model = m.(*BoardModel)
+	}
+
+	// Verify promote was called on task-1
+	if !promoteWasCalled {
+		t.Errorf("Expected PromoteTask to be called")
+	}
+	if promoteTaskID != "task-1" {
+		t.Errorf("Expected PromoteTask called on task-1, got %s", promoteTaskID)
+	}
+
+	// After refetch, task-1 should now be in ready column
+	// and the board should show updated state
+	output := model.View()
+	if !strings.Contains(output, "ready(1)") {
+		t.Errorf("Expected 'ready(1)' after promotion, got:\n%s", output)
+	}
+}
+
+// promoteWithError is a helper that runs a promote action against a model
+// already positioned in the backlog column with a task selected.
+// It returns the model after the promote command has been executed.
+func promoteWithError(t *testing.T, returnedErr error) *BoardModel {
+	t.Helper()
+
+	mockClient := &tuiclient.MockClient{
+		PromoteTaskFunc: func(ctx context.Context, id string) error {
+			return returnedErr
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{
+		{ID: "task-1", Title: "Task 1", State: "backlog"},
+	}
+	for _, state := range []string{"ready", "in_progress", "review", "done"} {
+		bucketed[state] = []tuiclient.Task{}
+	}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Navigate from in_progress (index 2) to backlog (index 0): two lefts
+	for i := 0; i < 2; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+		model = m.(*BoardModel)
+	}
+
+	// Press 'p' to promote
+	m, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model = m.(*BoardModel)
+
+	if cmd != nil {
+		msg := cmd()
+		m, _ = model.Update(msg)
+		model = m.(*BoardModel)
+	}
+
+	return model
+}
+
+// TestBoardModel_PromoteTask409 verifies that a real *tuiclient.APIError with StatusCode 409
+// produces the friendly "not in backlog (already moved?)" message, not the generic branch.
+// This test exercises the typed-error detection path (errors.As + StatusCode check), so it
+// WILL FAIL if the StatusCode detection is broken (e.g. if someone reverts to strings.Contains).
+func TestBoardModel_PromoteTask409(t *testing.T) {
+	// Use the exact error the real HTTPClient returns for a server 409 + structured body.
+	conflictErr := &tuiclient.APIError{
+		StatusCode: 409,
+		Code:       "CONFLICT",
+		Message:    "Task is not in backlog",
+	}
+
+	model := promoteWithError(t, conflictErr)
+
+	// The FRIENDLY branch must be taken — not just "not in backlog" from the generic path.
+	// The generic path would produce "promote failed: server error (CONFLICT): Task is not in backlog".
+	// The friendly path produces exactly "not in backlog (already moved?)".
+	const friendlyMsg = "not in backlog (already moved?)"
+	if model.error != friendlyMsg {
+		t.Errorf("Expected friendly 409 message %q, got: %q", friendlyMsg, model.error)
+	}
+
+	// Verify we didn't crash and the model is still usable
+	output := model.View()
+	if !strings.Contains(output, "backlog(1)") {
+		t.Errorf("Expected board to still be functional, got:\n%s", output)
+	}
+}
+
+// TestBoardModel_PromoteTask500 verifies that a non-409 APIError (e.g. 500) takes the
+// generic branch and does NOT produce the friendly conflict message.
+func TestBoardModel_PromoteTask500(t *testing.T) {
+	serverErr := &tuiclient.APIError{
+		StatusCode: 500,
+		Code:       "INTERNAL_ERROR",
+		Message:    "something went wrong",
+	}
+
+	model := promoteWithError(t, serverErr)
+
+	// Must show the generic error, not the friendly conflict message.
+	if model.error == "not in backlog (already moved?)" {
+		t.Errorf("Expected generic error for 500, but got the friendly 409 message")
+	}
+	if !strings.Contains(model.error, "promote failed:") {
+		t.Errorf("Expected 'promote failed:' prefix for generic error, got: %q", model.error)
+	}
+	if !strings.Contains(model.error, "something went wrong") {
+		t.Errorf("Expected server message in generic error, got: %q", model.error)
+	}
+}
+
+// TestBoardModel_PromoteOnNonBacklogIsNoOp tests that pressing 'p' on non-backlog column does nothing.
+func TestBoardModel_PromoteOnNonBacklogIsNoOp(t *testing.T) {
+	promoteWasCalled := false
+
+	mockClient := &tuiclient.MockClient{
+		PromoteTaskFunc: func(ctx context.Context, id string) error {
+			promoteWasCalled = true
+			return nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Set up initial state with ready column having a task
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{
+		{ID: "task-2", Title: "Task 2", State: "ready"},
+	}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Move to ready column (from in_progress at index 2)
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = m.(*BoardModel)
+
+	// Verify we're in ready column
+	if model.selectedColumn != 1 {
+		t.Errorf("Expected selectedColumn 1 (ready), got %d", model.selectedColumn)
+	}
+
+	// Press 'p' on ready column (should be no-op)
+	m, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'p'}})
+	model = m.(*BoardModel)
+
+	// Verify promote was NOT called
+	if promoteWasCalled {
+		t.Errorf("Expected PromoteTask NOT to be called when on ready column")
+	}
+
+	// Command should be nil
+	if cmd != nil {
+		t.Errorf("Expected nil command when promoting on non-backlog column")
 	}
 }
 

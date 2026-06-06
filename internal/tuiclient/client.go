@@ -96,6 +96,23 @@ func NewHTTPClient(baseURL, token string) *HTTPClient {
 	}
 }
 
+// APIError is returned by do() for non-2xx responses. It carries the HTTP status code
+// and the server's structured error code and message (when available). Callers can use
+// errors.As to inspect the status code and take action — for example, detecting a 409
+// conflict without string-matching on the error message.
+type APIError struct {
+	StatusCode int
+	Code       string
+	Message    string
+}
+
+func (e *APIError) Error() string {
+	if e.Code != "" || e.Message != "" {
+		return fmt.Sprintf("server error (%s): %s", e.Code, e.Message)
+	}
+	return fmt.Sprintf("unexpected status %d", e.StatusCode)
+}
+
 // errorResponse represents the structured error response from the server.
 type errorResponse struct {
 	Error struct {
@@ -105,7 +122,8 @@ type errorResponse struct {
 }
 
 // do performs an HTTP request with bearer token authentication.
-// On non-2xx status, it reads and returns the server's structured error if available.
+// On non-2xx status, it reads the response body, decodes the structured error if possible,
+// and returns an *APIError carrying the HTTP status code plus server code/message.
 func (c *HTTPClient) do(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
 	url := c.baseURL + path
 	var req *http.Request
@@ -134,21 +152,24 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body interface
 		return resp, err
 	}
 
-	// On non-2xx status, try to read and decode the structured error body
+	// On non-2xx status, read the body and return a typed *APIError so callers can
+	// inspect StatusCode directly (e.g. via errors.As) without string-matching.
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		bodyBytes, readErr := io.ReadAll(resp.Body)
 		resp.Body.Close()
 
-		// Try to decode the error response
+		apiErr := &APIError{StatusCode: resp.StatusCode}
+
+		// Try to decode the structured error envelope; fall back to status-only if we can't.
 		var errResp errorResponse
 		if readErr == nil && len(bodyBytes) > 0 {
 			if unmarshalErr := json.Unmarshal(bodyBytes, &errResp); unmarshalErr == nil && errResp.Error.Message != "" {
-				return nil, fmt.Errorf("server error (%s): %s", errResp.Error.Code, errResp.Error.Message)
+				apiErr.Code = errResp.Error.Code
+				apiErr.Message = errResp.Error.Message
 			}
 		}
 
-		// Fallback to generic error if we couldn't decode the body
-		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+		return nil, apiErr
 	}
 
 	return resp, nil

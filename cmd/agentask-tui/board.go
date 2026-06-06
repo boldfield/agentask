@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
 	"sort"
 	"strings"
 	"time"
@@ -77,6 +79,41 @@ func (m *BoardModel) Init() tea.Cmd {
 		m.fetchTasks(),
 		m.newTickCmd(),
 	)
+}
+
+// promoteTask creates a command that promotes a task and then refetches.
+func (m *BoardModel) promoteTask(taskID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		err := m.client.PromoteTask(ctx, taskID)
+		if err != nil {
+			// Use typed error inspection so the friendly branch is reached even when the
+			// server returns a structured body (e.g. code=CONFLICT) rather than a raw "409".
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+				return promoteErrorMsg{
+					taskID: taskID,
+					err:    "not in backlog (already moved?)",
+				}
+			}
+			return promoteErrorMsg{
+				taskID: taskID,
+				err:    fmt.Sprintf("promote failed: %v", err),
+			}
+		}
+
+		// Promotion succeeded; refetch to get updated board state
+		// Issue a new fetch command and return its result
+		return m.fetchTasks()()
+	}
+}
+
+// promoteErrorMsg carries an error from a promote action.
+type promoteErrorMsg struct {
+	taskID string
+	err    string
 }
 
 // fetchTasks creates a command that fetches tasks and returns them.
@@ -199,10 +236,20 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "r":
 			return m, m.fetchTasks()
 
+		// Promote: only on backlog tasks
+		case "p":
+			if m.selectedColumn == 0 && m.selectedTaskID != "" {
+				return m, m.promoteTask(m.selectedTaskID)
+			}
+
 		// Help (stub for TUI-3+)
 		case "?":
 			// TODO: show help overlay
 		}
+
+	case promoteErrorMsg:
+		m.error = msg.err
+		return m, nil
 
 	case tasksFetchedMsg:
 		if msg.err != nil {
@@ -416,7 +463,13 @@ func (m *BoardModel) formatTime(timestamp string) string {
 }
 
 // renderHelpBar renders the bottom help bar.
-// Only advertise keys that have handlers in TUI-2; p/a/x are TUI-3/4.
+// Show promote action only when in backlog column.
 func (m *BoardModel) renderHelpBar() string {
-	return "←/→ column   ↑/↓ select   r refresh   q quit"
+	var bar string
+	if m.selectedColumn == 0 {
+		bar = "←/→ column   ↑/↓ select   p promote   r refresh   q quit"
+	} else {
+		bar = "←/→ column   ↑/↓ select   r refresh   q quit"
+	}
+	return bar
 }
