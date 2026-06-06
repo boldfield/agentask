@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"time"
 )
 
 // Client is the interface for TUI interactions with the Agentask API.
@@ -88,11 +90,22 @@ func NewHTTPClient(baseURL, token string) *HTTPClient {
 	return &HTTPClient{
 		baseURL: baseURL,
 		token:   token,
-		http:    &http.Client{},
+		http: &http.Client{
+			Timeout: 30 * time.Second,
+		},
 	}
 }
 
+// errorResponse represents the structured error response from the server.
+type errorResponse struct {
+	Error struct {
+		Code    string `json:"code"`
+		Message string `json:"message"`
+	} `json:"error"`
+}
+
 // do performs an HTTP request with bearer token authentication.
+// On non-2xx status, it reads and returns the server's structured error if available.
 func (c *HTTPClient) do(ctx context.Context, method, path string, body interface{}) (*http.Response, error) {
 	url := c.baseURL + path
 	var req *http.Request
@@ -116,20 +129,38 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body interface
 	}
 
 	req.Header.Set("Authorization", "Bearer "+c.token)
-	return c.http.Do(req)
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return resp, err
+	}
+
+	// On non-2xx status, try to read and decode the structured error body
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		bodyBytes, readErr := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
+		// Try to decode the error response
+		var errResp errorResponse
+		if readErr == nil && len(bodyBytes) > 0 {
+			if unmarshalErr := json.Unmarshal(bodyBytes, &errResp); unmarshalErr == nil && errResp.Error.Message != "" {
+				return nil, fmt.Errorf("server error (%s): %s", errResp.Error.Code, errResp.Error.Message)
+			}
+		}
+
+		// Fallback to generic error if we couldn't decode the body
+		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
+	}
+
+	return resp, nil
 }
 
 // ListProjects fetches all projects.
 func (c *HTTPClient) ListProjects(ctx context.Context) ([]Project, error) {
 	resp, err := c.do(ctx, "GET", "/projects", nil)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
 
 	var projects []Project
 	if err := json.NewDecoder(resp.Body).Decode(&projects); err != nil {
@@ -143,13 +174,9 @@ func (c *HTTPClient) ListProjects(ctx context.Context) ([]Project, error) {
 func (c *HTTPClient) ListTasks(ctx context.Context, projectID string) ([]Task, error) {
 	resp, err := c.do(ctx, "GET", fmt.Sprintf("/projects/%s/tasks", projectID), nil)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
 
 	var tasks []Task
 	if err := json.NewDecoder(resp.Body).Decode(&tasks); err != nil {
@@ -163,13 +190,9 @@ func (c *HTTPClient) ListTasks(ctx context.Context, projectID string) ([]Task, e
 func (c *HTTPClient) GetTask(ctx context.Context, id string) (TaskDetail, error) {
 	resp, err := c.do(ctx, "GET", fmt.Sprintf("/tasks/%s", id), nil)
 	if err != nil {
-		return TaskDetail{}, fmt.Errorf("request failed: %w", err)
+		return TaskDetail{}, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return TaskDetail{}, fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
 
 	var task TaskDetail
 	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
@@ -183,13 +206,9 @@ func (c *HTTPClient) GetTask(ctx context.Context, id string) (TaskDetail, error)
 func (c *HTTPClient) ListDocuments(ctx context.Context, projectID string) ([]Document, error) {
 	resp, err := c.do(ctx, "GET", fmt.Sprintf("/projects/%s/documents", projectID), nil)
 	if err != nil {
-		return nil, fmt.Errorf("request failed: %w", err)
+		return nil, err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
 
 	var docs []Document
 	if err := json.NewDecoder(resp.Body).Decode(&docs); err != nil {
@@ -203,58 +222,55 @@ func (c *HTTPClient) ListDocuments(ctx context.Context, projectID string) ([]Doc
 func (c *HTTPClient) PromoteTask(ctx context.Context, id string) error {
 	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/promote", id), nil)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
-
 	return nil
+}
+
+// reviewTaskRequest is the request body for ReviewTask.
+type reviewTaskRequest struct {
+	Actor   string  `json:"actor"`
+	Verdict string  `json:"verdict"`
+	Note    *string `json:"note,omitempty"`
 }
 
 // ReviewTask posts a review verdict on a task.
 func (c *HTTPClient) ReviewTask(ctx context.Context, id, actor, verdict string, note *string) error {
-	body := map[string]interface{}{
-		"actor":   actor,
-		"verdict": verdict,
-	}
-	if note != nil {
-		body["note"] = *note
+	body := reviewTaskRequest{
+		Actor:   actor,
+		Verdict: verdict,
+		Note:    note,
 	}
 
 	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/review", id), body)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
 
 	return nil
 }
 
+// transitionTaskRequest is the request body for TransitionTask.
+type transitionTaskRequest struct {
+	To   string  `json:"to"`
+	Note *string `json:"note,omitempty"`
+}
+
 // TransitionTask moves a task to a new state.
 func (c *HTTPClient) TransitionTask(ctx context.Context, id, to string, note *string) error {
-	body := map[string]interface{}{
-		"to": to,
-	}
-	if note != nil {
-		body["note"] = *note
+	body := transitionTaskRequest{
+		To:   to,
+		Note: note,
 	}
 
 	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/transition", id), body)
 	if err != nil {
-		return fmt.Errorf("request failed: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("unexpected status %d", resp.StatusCode)
-	}
 
 	return nil
 }

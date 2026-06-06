@@ -1,6 +1,7 @@
 package main
 
 import (
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -89,24 +90,15 @@ func TestProjectPickerView(t *testing.T) {
 	view := m.View()
 
 	// Check that both projects are in the view
-	if !contains(view, "Project 1") {
+	if !strings.Contains(view, "Project 1") {
 		t.Error("expected 'Project 1' in view")
 	}
-	if !contains(view, "Project 2") {
+	if !strings.Contains(view, "Project 2") {
 		t.Error("expected 'Project 2' in view")
 	}
 
 	// Check that cursor is on first project
-	if !contains(view, "> Project 1") {
+	if !strings.Contains(view, "> Project 1") {
 		t.Error("expected '> Project 1' in view")
 	}
-}
-
-func contains(s, substring string) bool {
-	for i := 0; i <= len(s)-len(substring); i++ {
-		if s[i:i+len(substring)] == substring {
-			return true
-		}
-	}
-	return false
 }

@@ -188,3 +188,189 @@ func TestListDocuments(t *testing.T) {
 		t.Errorf("expected ID doc1, got %s", docs[0].ID)
 	}
 }
+
+func TestPromoteTask(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/promote" {
+			t.Errorf("expected /tasks/task123/promote, got %s", r.URL.Path)
+		}
+
+		// Check authorization header
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		// Write response
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test
+	err := client.PromoteTask(context.Background(), "task123")
+	if err != nil {
+		t.Fatalf("PromoteTask failed: %v", err)
+	}
+}
+
+func TestReviewTask(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/review" {
+			t.Errorf("expected /tasks/task123/review, got %s", r.URL.Path)
+		}
+
+		// Check authorization header
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		// Verify request body
+		var req reviewTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.Actor != "test-actor" {
+			t.Errorf("expected actor test-actor, got %s", req.Actor)
+		}
+
+		if req.Verdict != "approve" {
+			t.Errorf("expected verdict approve, got %s", req.Verdict)
+		}
+
+		if req.Note == nil || *req.Note != "looks good" {
+			t.Errorf("expected note 'looks good', got %v", req.Note)
+		}
+
+		// Write response
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test with note
+	note := "looks good"
+	err := client.ReviewTask(context.Background(), "task123", "test-actor", "approve", &note)
+	if err != nil {
+		t.Fatalf("ReviewTask failed: %v", err)
+	}
+}
+
+func TestReviewTaskWithoutNote(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request body
+		var req reviewTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.Note != nil {
+			t.Errorf("expected note to be omitted (nil), got %v", req.Note)
+		}
+
+		// Write response
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test without note (nil)
+	err := client.ReviewTask(context.Background(), "task123", "test-actor", "approve", nil)
+	if err != nil {
+		t.Fatalf("ReviewTask failed: %v", err)
+	}
+}
+
+func TestTransitionTask(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/transition" {
+			t.Errorf("expected /tasks/task123/transition, got %s", r.URL.Path)
+		}
+
+		// Check authorization header
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		// Verify request body
+		var req transitionTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.To != "done" {
+			t.Errorf("expected to=done, got %s", req.To)
+		}
+
+		if req.Note == nil || *req.Note != "completed" {
+			t.Errorf("expected note 'completed', got %v", req.Note)
+		}
+
+		// Write response
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test with note
+	note := "completed"
+	err := client.TransitionTask(context.Background(), "task123", "done", &note)
+	if err != nil {
+		t.Fatalf("TransitionTask failed: %v", err)
+	}
+}
+
+func TestTransitionTaskWithoutNote(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request body
+		var req transitionTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.Note != nil {
+			t.Errorf("expected note to be omitted (nil), got %v", req.Note)
+		}
+
+		// Write response
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test without note (nil)
+	err := client.TransitionTask(context.Background(), "task123", "blocked", nil)
+	if err != nil {
+		t.Fatalf("TransitionTask failed: %v", err)
+	}
+}

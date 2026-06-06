@@ -138,7 +138,9 @@ func loadFromFile(cfg *Config) error {
 	}
 	if fileCfg.PollInterval != "" {
 		d, err := time.ParseDuration(fileCfg.PollInterval)
-		if err == nil {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "Warning: failed to parse poll_interval %q: %v; using default 2s\n", fileCfg.PollInterval, err)
+		} else {
 			cfg.PollInterval = d
 		}
 	}
@@ -146,7 +148,7 @@ func loadFromFile(cfg *Config) error {
 	return nil
 }
 
-// checkTokenFilePermissions warns if the config file is world-readable.
+// checkTokenFilePermissions warns if the config file is world-readable or group-readable.
 func checkTokenFilePermissions(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -154,9 +156,9 @@ func checkTokenFilePermissions(path string) error {
 	}
 
 	mode := info.Mode()
-	// Check if others can read the file (mode & 0o004)
-	if mode&0o004 != 0 {
-		return fmt.Errorf("token found in world-readable file %s (mode %o) — consider 'chmod 600 %s'", path, mode.Perm(), path)
+	// Check if others or group can read the file (mode & 0o077)
+	if mode&0o077 != 0 {
+		return fmt.Errorf("token found in world-readable or group-readable file %s (mode %o) — consider 'chmod 600 %s'", path, mode.Perm(), path)
 	}
 
 	return nil
