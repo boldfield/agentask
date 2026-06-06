@@ -11,8 +11,24 @@ import (
 
 	"github.com/boldfield/agentask/internal/tuiclient"
 	"github.com/boldfield/agentask/internal/tuiconfig"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+)
+
+// boardMode identifies the current interaction mode of the board.
+// In any mode other than modeNormal, regular navigation keys are suppressed.
+type boardMode int
+
+const (
+	// modeNormal is the default navigation mode.
+	modeNormal boardMode = iota
+	// modeApproveNote is the optional note input step for an approve action.
+	modeApproveNote
+	// modeApproveConfirm is the "Approve → done? [y/N]" confirmation step.
+	modeApproveConfirm
+	// modeRejectReason is the required reason input step for a reject action.
+	modeRejectReason
 )
 
 // BoardModel is the Bubble Tea model for the task board view.
@@ -32,6 +48,13 @@ type BoardModel struct {
 	// newTickCmd is the function used to arm the next poll tick.
 	// Overridable in tests to avoid real timers and to introspect arming.
 	newTickCmd func() tea.Cmd
+
+	// Review action state
+	mode          boardMode
+	reviewInput   textinput.Model // shared textinput for note/reason
+	pendingNote   *string         // captured note (nil = omitted) when in modeApproveConfirm
+	pendingTaskID string          // ID of the task being reviewed
+	inputHint     string          // hint displayed below the input (e.g. "reason required")
 }
 
 const (
@@ -53,6 +76,9 @@ var stateColors = map[string]lipgloss.Color{
 
 // NewBoardModel creates a new board model and starts the initial fetch.
 func NewBoardModel(client tuiclient.Client, config *tuiconfig.Config, project tuiclient.Project) *BoardModel {
+	inputWidget := textinput.New()
+	inputWidget.CharLimit = 512
+
 	m := &BoardModel{
 		client:         client,
 		config:         config,
@@ -60,6 +86,7 @@ func NewBoardModel(client tuiclient.Client, config *tuiconfig.Config, project tu
 		tasks:          make(map[string][]tuiclient.Task),
 		selectedColumn: 2, // in_progress by default
 		loading:        true,
+		reviewInput:    inputWidget,
 	}
 	m.newTickCmd = m.defaultTickCmd
 	return m
@@ -114,6 +141,108 @@ func (m *BoardModel) promoteTask(taskID string) tea.Cmd {
 type promoteErrorMsg struct {
 	taskID string
 	err    string
+}
+
+// reviewActionMsg is returned when a review action (approve/reject) completes.
+// It carries either a successful refetch (tasks != nil) or an error string.
+type reviewActionMsg struct {
+	// tasks is non-nil on success; it holds the refreshed board data.
+	tasks map[string][]tuiclient.Task
+	err   string
+}
+
+// reviewApprove creates a command that calls ReviewTask(approve) then TransitionTask(done),
+// in that order. If ReviewTask fails, TransitionTask is not called. Both calls use note,
+// which may be nil. On success, the command triggers a refetch.
+func (m *BoardModel) reviewApprove(taskID string, note *string) tea.Cmd {
+	actor := m.config.Actor
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Step 1: record the review verdict.
+		if err := m.client.ReviewTask(ctx, taskID, actor, "approve", note); err != nil {
+			return reviewActionMsg{err: fmt.Sprintf("approve review failed: %v", err)}
+		}
+
+		// Step 2: transition to done (terminal state).
+		if err := m.client.TransitionTask(ctx, taskID, "done", note); err != nil {
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+				// 409: the task already moved (race). Refetch so the board reflects reality.
+				return m.fetchTasksInline(ctx, fmt.Sprintf("approve transition 409: %s", apiErr.Message))
+			}
+			return reviewActionMsg{err: fmt.Sprintf("approve transition failed: %v", err)}
+		}
+
+		// Success: refetch to reflect the updated board.
+		return m.fetchTasksInline(ctx, "")
+	}
+}
+
+// reviewReject creates a command that calls ReviewTask(reject) then TransitionTask(ready),
+// in that order. If ReviewTask fails, TransitionTask is not called. reason is required and
+// must not be empty (the caller must enforce this before invoking). On success, the command
+// triggers a refetch.
+func (m *BoardModel) reviewReject(taskID string, reason string) tea.Cmd {
+	actor := m.config.Actor
+	reasonPtr := &reason
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Step 1: record the review verdict.
+		if err := m.client.ReviewTask(ctx, taskID, actor, "reject", reasonPtr); err != nil {
+			return reviewActionMsg{err: fmt.Sprintf("reject review failed: %v", err)}
+		}
+
+		// Step 2: transition back to ready so the task can be reworked.
+		if err := m.client.TransitionTask(ctx, taskID, "ready", reasonPtr); err != nil {
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+				return m.fetchTasksInline(ctx, fmt.Sprintf("reject transition 409: %s", apiErr.Message))
+			}
+			return reviewActionMsg{err: fmt.Sprintf("reject transition failed: %v", err)}
+		}
+
+		return m.fetchTasksInline(ctx, "")
+	}
+}
+
+// fetchTasksInline performs a synchronous ListTasks call within an already-running command
+// closure (i.e. uses an already-created context) and returns a reviewActionMsg so the
+// result surfaces through the reviewActionMsg handler instead of tasksFetchedMsg. This
+// avoids starting a second tea.Cmd goroutine from within the first.
+func (m *BoardModel) fetchTasksInline(ctx context.Context, errPrefix string) reviewActionMsg {
+	tasks, fetchErr := m.client.ListTasks(ctx, m.project.ID)
+	if fetchErr != nil {
+		errMsg := fmt.Sprintf("refetch failed: %v", fetchErr)
+		if errPrefix != "" {
+			errMsg = errPrefix + "; " + errMsg
+		}
+		return reviewActionMsg{err: errMsg}
+	}
+
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range stateOrder {
+		bucketed[state] = []tuiclient.Task{}
+	}
+	for _, task := range tasks {
+		if _, exists := bucketed[task.State]; exists {
+			bucketed[task.State] = append(bucketed[task.State], task)
+		}
+	}
+	for _, taskList := range bucketed {
+		sort.Slice(taskList, func(i, j int) bool {
+			return taskList[i].UpdatedAt > taskList[j].UpdatedAt
+		})
+	}
+
+	msg := reviewActionMsg{tasks: bucketed}
+	if errPrefix != "" {
+		msg.err = errPrefix
+	}
+	return msg
 }
 
 // fetchTasks creates a command that fetches tasks and returns them.
@@ -171,6 +300,12 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.KeyMsg:
+		// When a text-input or confirm mode is active, route keys to the review flow
+		// instead of the normal navigation handlers.
+		if m.mode != modeNormal {
+			return m.updateReviewMode(msg)
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
@@ -242,6 +377,34 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, m.promoteTask(m.selectedTaskID)
 			}
 
+		// Approve: only on review column tasks
+		case "a":
+			if m.selectedColumn == 3 && m.selectedTaskID != "" {
+				m.pendingTaskID = m.selectedTaskID
+				m.reviewInput.Placeholder = "optional note (enter to skip)"
+				m.reviewInput.SetValue("")
+				m.reviewInput.Focus()
+				m.inputHint = ""
+				m.mode = modeApproveNote
+				var cmd tea.Cmd
+				m.reviewInput, cmd = m.reviewInput.Update(nil)
+				return m, cmd
+			}
+
+		// Reject: only on review column tasks
+		case "x":
+			if m.selectedColumn == 3 && m.selectedTaskID != "" {
+				m.pendingTaskID = m.selectedTaskID
+				m.reviewInput.Placeholder = "rejection reason (required)"
+				m.reviewInput.SetValue("")
+				m.reviewInput.Focus()
+				m.inputHint = ""
+				m.mode = modeRejectReason
+				var cmd tea.Cmd
+				m.reviewInput, cmd = m.reviewInput.Update(nil)
+				return m, cmd
+			}
+
 		// Help (stub for TUI-3+)
 		case "?":
 			// TODO: show help overlay
@@ -249,6 +412,20 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case promoteErrorMsg:
 		m.error = msg.err
+		return m, nil
+
+	case reviewActionMsg:
+		if msg.err != "" {
+			m.error = msg.err
+		} else {
+			m.error = ""
+		}
+		if msg.tasks != nil {
+			m.loading = false
+			m.tasks = msg.tasks
+			m.lastRefresh = time.Now()
+			m.ensureSelectionInColumn()
+		}
 		return m, nil
 
 	case tasksFetchedMsg:
@@ -279,6 +456,85 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return m, nil
+}
+
+// updateReviewMode handles key events when the model is in one of the review input modes.
+// It returns the updated model and any command to run. Normal navigation is suppressed.
+func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch m.mode {
+	case modeApproveNote:
+		switch msg.String() {
+		case "esc":
+			// Cancel the approve action entirely.
+			m.cancelReviewMode()
+			return m, nil
+		case "enter":
+			// Capture the note (nil if empty), then move to confirm step.
+			noteValue := strings.TrimSpace(m.reviewInput.Value())
+			if noteValue == "" {
+				m.pendingNote = nil
+			} else {
+				m.pendingNote = &noteValue
+			}
+			m.mode = modeApproveConfirm
+			return m, nil
+		default:
+			// Pass the key to the text input.
+			var cmd tea.Cmd
+			m.reviewInput, cmd = m.reviewInput.Update(msg)
+			return m, cmd
+		}
+
+	case modeApproveConfirm:
+		switch msg.String() {
+		case "esc", "n", "N":
+			// User declined or pressed escape — cancel.
+			m.cancelReviewMode()
+			return m, nil
+		case "y", "Y":
+			// User confirmed — fire the approve command.
+			taskID := m.pendingTaskID
+			note := m.pendingNote
+			m.cancelReviewMode()
+			return m, m.reviewApprove(taskID, note)
+		}
+		// Ignore all other keys in confirm mode.
+		return m, nil
+
+	case modeRejectReason:
+		switch msg.String() {
+		case "esc":
+			m.cancelReviewMode()
+			return m, nil
+		case "enter":
+			reasonValue := strings.TrimSpace(m.reviewInput.Value())
+			if reasonValue == "" {
+				// Empty reason is not allowed — show hint and stay in mode.
+				m.inputHint = "reason is required"
+				return m, nil
+			}
+			// Submit: fire the reject command.
+			taskID := m.pendingTaskID
+			m.cancelReviewMode()
+			return m, m.reviewReject(taskID, reasonValue)
+		default:
+			var cmd tea.Cmd
+			m.reviewInput, cmd = m.reviewInput.Update(msg)
+			return m, cmd
+		}
+	}
+
+	return m, nil
+}
+
+// cancelReviewMode resets all review-mode state and returns to normal navigation.
+func (m *BoardModel) cancelReviewMode() {
+	m.mode = modeNormal
+	m.pendingNote = nil
+	m.pendingTaskID = ""
+	m.inputHint = ""
+	m.reviewInput.SetValue("")
+	m.reviewInput.Blur()
 }
 
 // getTasksInSelectedColumn returns the tasks in the currently selected column.
@@ -333,8 +589,12 @@ func (m *BoardModel) View() string {
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
-	// Render the active column's tasks
-	b.WriteString(m.renderColumnTasks())
+	// When a review mode is active, overlay the input/confirm prompt instead of the task list.
+	if m.mode != modeNormal {
+		b.WriteString(m.renderReviewOverlay())
+	} else {
+		b.WriteString(m.renderColumnTasks())
+	}
 
 	// Help bar
 	b.WriteString("\n")
@@ -342,6 +602,35 @@ func (m *BoardModel) View() string {
 	b.WriteString("\n")
 	b.WriteString(m.renderHelpBar())
 
+	return b.String()
+}
+
+// renderReviewOverlay renders the text input or confirm prompt used during review actions.
+func (m *BoardModel) renderReviewOverlay() string {
+	var b strings.Builder
+	switch m.mode {
+	case modeApproveNote:
+		b.WriteString("Approve — add an optional note:\n")
+		b.WriteString(m.reviewInput.View())
+		b.WriteString("\n")
+		b.WriteString("(enter to continue, esc to cancel)\n")
+	case modeApproveConfirm:
+		taskID := m.pendingTaskID
+		if len(taskID) > 8 {
+			taskID = taskID[:8]
+		}
+		b.WriteString(fmt.Sprintf("Approve %s → done? [y/N] ", taskID))
+		b.WriteString("(done is terminal and cannot be undone)\n")
+		b.WriteString("(y to confirm, n/esc to cancel)\n")
+	case modeRejectReason:
+		b.WriteString("Reject — reason (required):\n")
+		b.WriteString(m.reviewInput.View())
+		b.WriteString("\n")
+		if m.inputHint != "" {
+			b.WriteString("hint: " + m.inputHint + "\n")
+		}
+		b.WriteString("(enter to submit, esc to cancel)\n")
+	}
 	return b.String()
 }
 
@@ -463,13 +752,18 @@ func (m *BoardModel) formatTime(timestamp string) string {
 }
 
 // renderHelpBar renders the bottom help bar.
-// Show promote action only when in backlog column.
+// Show column-specific actions: `p promote` on backlog, `a approve` / `x reject` on review.
 func (m *BoardModel) renderHelpBar() string {
-	var bar string
-	if m.selectedColumn == 0 {
-		bar = "←/→ column   ↑/↓ select   p promote   r refresh   q quit"
-	} else {
-		bar = "←/→ column   ↑/↓ select   r refresh   q quit"
+	// While in a review input mode, show mode-specific hints.
+	if m.mode != modeNormal {
+		return "esc cancel"
 	}
-	return bar
+	switch m.selectedColumn {
+	case 0: // backlog
+		return "←/→ column   ↑/↓ select   p promote   r refresh   q quit"
+	case 3: // review
+		return "←/→ column   ↑/↓ select   a approve   x reject   r refresh   q quit"
+	default:
+		return "←/→ column   ↑/↓ select   r refresh   q quit"
+	}
 }
