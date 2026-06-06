@@ -2136,6 +2136,129 @@ func TestDetail_ReviewApproveFromDetail(t *testing.T) {
 	if callLog[1] != "transition:done" {
 		t.Errorf("Expected second call transition:done, got %q", callLog[1])
 	}
+
+	// After the command completes, the model must be back in modeNormal (the board),
+	// not stuck in detail showing stale state.
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after from-detail approve cmd, got %d", model.mode)
+	}
+
+	// The board should show the task in its new state (done(1)).
+	output := model.View()
+	if !strings.Contains(output, "done(1)") {
+		t.Errorf("Expected done(1) in board view after from-detail approve, got:\n%s", output)
+	}
+}
+
+// TestDetail_ReviewApproveFromDetail_409Visible verifies that when a 409 is returned during
+// a from-detail approve, the error is visible in the board view (modeNormal), not swallowed
+// in the detail view which does not render m.error.
+func TestDetail_ReviewApproveFromDetail_409Visible(t *testing.T) {
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "review-detail-409",
+		Title:     "Detail 409 Task",
+		Spec:      "spec",
+		State:     "review",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-01T00:00:00Z",
+	}
+
+	boardTasks := make(map[string][]tuiclient.Task)
+	for _, state := range []string{"backlog", "ready", "in_progress", "done"} {
+		boardTasks[state] = []tuiclient.Task{}
+	}
+	boardTasks["review"] = []tuiclient.Task{
+		{ID: "review-detail-409", Title: "Detail 409 Task", State: "review"},
+	}
+
+	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			return taskDetail, nil
+		},
+		ListDocumentsFunc: func(ctx context.Context, projectID string) ([]tuiclient.Document, error) {
+			return nil, nil
+		},
+		ReviewTaskFunc: func(ctx context.Context, id, actor, verdict string, note *string) error {
+			return nil
+		},
+		TransitionTaskFunc: func(ctx context.Context, id, to string, note *string) error {
+			// Simulate a 409: task already transitioned (race).
+			return &tuiclient.APIError{
+				StatusCode: http.StatusConflict,
+				Code:       "CONFLICT",
+				Message:    "task already transitioned",
+			}
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			// Refetch after 409: task is already done.
+			return []tuiclient.Task{
+				{ID: "review-detail-409", Title: "Detail 409 Task", State: "done"},
+			}, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "reviewer-bot",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test", Repo: "https://github.com/example/repo"}
+
+	model := NewBoardModel(mockClient, config, project)
+	model.urlOpener = func(rawURL string) error { return nil }
+
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: boardTasks})
+	model = m.(*BoardModel)
+
+	// Navigate to review column and open detail.
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = m.(*BoardModel)
+	model.selectedTaskID = "review-detail-409"
+
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+	if detailCmd != nil {
+		m, _ = model.Update(detailCmd())
+		model = m.(*BoardModel)
+	}
+	if model.mode != modeDetail {
+		t.Fatalf("Expected modeDetail, got %d", model.mode)
+	}
+
+	// Start approve flow from detail.
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	model = m.(*BoardModel)
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter}) // skip note
+	model = m.(*BoardModel)
+	m, approveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}) // confirm
+	model = m.(*BoardModel)
+
+	// Execute the approve command (which triggers a 409 from TransitionTask).
+	model = executeReviewCmd(t, model, approveCmd)
+
+	// The model must be back in modeNormal so the error banner is visible.
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after from-detail 409, got %d — error is invisible in detail mode", model.mode)
+	}
+
+	// The error must be non-empty and visible in the board view.
+	if model.error == "" {
+		t.Errorf("Expected non-empty error after 409 from-detail action, got empty")
+	}
+
+	output := model.View()
+	if !strings.Contains(output, "409") && !strings.Contains(output, "task already transitioned") {
+		t.Errorf("Expected 409 error in board view output, got:\n%s", output)
+	}
+
+	// Board was refreshed: the task should now show as done(1).
+	if !strings.Contains(output, "done(1)") {
+		t.Errorf("Expected done(1) in board view after refetch, got:\n%s", output)
+	}
 }
 
 // TestDetail_SpecViewportScrolls verifies that the spec viewport scrolls when up/down are pressed.
@@ -2181,6 +2304,55 @@ func TestDetail_SpecViewportScrolls(t *testing.T) {
 
 	if model.detailViewport.YOffset != 0 {
 		t.Errorf("Expected YOffset=0 after up, got %d", model.detailViewport.YOffset)
+	}
+}
+
+// TestResolveDocURL_GitSuffix verifies that a project.repo ending in ".git" is normalized
+// before building the blob URL, so the result is "…/repo/blob/main/<ref>" not "…/repo.git/blob/…".
+func TestResolveDocURL_GitSuffix(t *testing.T) {
+	doc := tuiclient.Document{
+		ID:     "doc-git-suffix",
+		Ref:    "docs/spec.md",
+		Commit: nil, // no pin → defaults to "main"
+	}
+
+	tests := []struct {
+		name        string
+		projectRepo string
+		expectedURL string
+	}{
+		{
+			name:        "trailing .git stripped",
+			projectRepo: "https://github.com/owner/repo.git",
+			expectedURL: "https://github.com/owner/repo/blob/main/docs/spec.md",
+		},
+		{
+			name:        "trailing slash then .git both stripped",
+			projectRepo: "https://github.com/owner/repo.git/",
+			expectedURL: "https://github.com/owner/repo/blob/main/docs/spec.md",
+		},
+		{
+			name:        "clean repo unaffected",
+			projectRepo: "https://github.com/owner/repo",
+			expectedURL: "https://github.com/owner/repo/blob/main/docs/spec.md",
+		},
+		{
+			name:        "trailing slash only stripped",
+			projectRepo: "https://github.com/owner/repo/",
+			expectedURL: "https://github.com/owner/repo/blob/main/docs/spec.md",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			gotURL, errMsg := resolveDocURL(doc.Ref, doc, tc.projectRepo)
+			if errMsg != "" {
+				t.Errorf("resolveDocURL returned error: %q", errMsg)
+			}
+			if gotURL != tc.expectedURL {
+				t.Errorf("resolveDocURL: expected %q, got %q", tc.expectedURL, gotURL)
+			}
+		})
 	}
 }
 

@@ -159,16 +159,21 @@ type promoteErrorMsg struct {
 
 // reviewActionMsg is returned when a review action (approve/reject) completes.
 // It carries either a successful refetch (tasks != nil) or an error string.
+// fromDetail is true when the action was initiated from the full-screen detail view;
+// the handler uses this to return to modeNormal (the board) so the result is visible.
 type reviewActionMsg struct {
 	// tasks is non-nil on success; it holds the refreshed board data.
-	tasks map[string][]tuiclient.Task
-	err   string
+	tasks      map[string][]tuiclient.Task
+	err        string
+	fromDetail bool
 }
 
 // reviewApprove creates a command that calls ReviewTask(approve) then TransitionTask(done),
 // in that order. If ReviewTask fails, TransitionTask is not called. Both calls use note,
-// which may be nil. On success, the command triggers a refetch.
-func (m *BoardModel) reviewApprove(taskID string, note *string) tea.Cmd {
+// which may be nil. fromDetail records whether the action was initiated from the detail view
+// so the handler can return the user to the board where the result is visible.
+// On success, the command triggers a refetch.
+func (m *BoardModel) reviewApprove(taskID string, note *string, fromDetail bool) tea.Cmd {
 	actor := m.config.Actor
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -176,7 +181,9 @@ func (m *BoardModel) reviewApprove(taskID string, note *string) tea.Cmd {
 
 		// Step 1: record the review verdict.
 		if err := m.client.ReviewTask(ctx, taskID, actor, "approve", note); err != nil {
-			return reviewActionMsg{err: fmt.Sprintf("approve review failed: %v", err)}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("approve review failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
 		}
 
 		// Step 2: transition to done (terminal state).
@@ -184,21 +191,28 @@ func (m *BoardModel) reviewApprove(taskID string, note *string) tea.Cmd {
 			var apiErr *tuiclient.APIError
 			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
 				// 409: the task already moved (race). Refetch so the board reflects reality.
-				return m.fetchTasksInline(ctx, fmt.Sprintf("approve transition 409: %s", apiErr.Message))
+				msg := m.fetchTasksInline(ctx, fmt.Sprintf("approve transition 409: %s", apiErr.Message))
+				msg.fromDetail = fromDetail
+				return msg
 			}
-			return reviewActionMsg{err: fmt.Sprintf("approve transition failed: %v", err)}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("approve transition failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
 		}
 
 		// Success: refetch to reflect the updated board.
-		return m.fetchTasksInline(ctx, "")
+		msg := m.fetchTasksInline(ctx, "")
+		msg.fromDetail = fromDetail
+		return msg
 	}
 }
 
 // reviewReject creates a command that calls ReviewTask(reject) then TransitionTask(ready),
 // in that order. If ReviewTask fails, TransitionTask is not called. reason is required and
-// must not be empty (the caller must enforce this before invoking). On success, the command
-// triggers a refetch.
-func (m *BoardModel) reviewReject(taskID string, reason string) tea.Cmd {
+// must not be empty (the caller must enforce this before invoking). fromDetail records whether
+// the action was initiated from the detail view so the handler can return the user to the board.
+// On success, the command triggers a refetch.
+func (m *BoardModel) reviewReject(taskID string, reason string, fromDetail bool) tea.Cmd {
 	actor := m.config.Actor
 	reasonPtr := &reason
 	return func() tea.Msg {
@@ -207,19 +221,27 @@ func (m *BoardModel) reviewReject(taskID string, reason string) tea.Cmd {
 
 		// Step 1: record the review verdict.
 		if err := m.client.ReviewTask(ctx, taskID, actor, "reject", reasonPtr); err != nil {
-			return reviewActionMsg{err: fmt.Sprintf("reject review failed: %v", err)}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("reject review failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
 		}
 
 		// Step 2: transition back to ready so the task can be reworked.
 		if err := m.client.TransitionTask(ctx, taskID, "ready", reasonPtr); err != nil {
 			var apiErr *tuiclient.APIError
 			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
-				return m.fetchTasksInline(ctx, fmt.Sprintf("reject transition 409: %s", apiErr.Message))
+				msg := m.fetchTasksInline(ctx, fmt.Sprintf("reject transition 409: %s", apiErr.Message))
+				msg.fromDetail = fromDetail
+				return msg
 			}
-			return reviewActionMsg{err: fmt.Sprintf("reject transition failed: %v", err)}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("reject transition failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
 		}
 
-		return m.fetchTasksInline(ctx, "")
+		msg := m.fetchTasksInline(ctx, "")
+		msg.fromDetail = fromDetail
+		return msg
 	}
 }
 
@@ -474,6 +496,12 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.lastRefresh = time.Now()
 			m.ensureSelectionInColumn()
 		}
+		// When the action originated from the detail view, the task has left "review"
+		// (or a race was detected). Return to the board so m.error and the refreshed
+		// state are both visible — the board view renders m.error; the detail view does not.
+		if msg.fromDetail {
+			m.mode = modeNormal
+		}
 		return m, nil
 
 	case tasksFetchedMsg:
@@ -609,11 +637,12 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cancelReviewMode()
 			return m, nil
 		case "y", "Y":
-			// User confirmed — fire the approve command.
+			// Capture origin before cancelReviewMode clears it.
 			taskID := m.pendingTaskID
 			note := m.pendingNote
+			originFromDetail := m.reviewFromDetail
 			m.cancelReviewMode()
-			return m, m.reviewApprove(taskID, note)
+			return m, m.reviewApprove(taskID, note, originFromDetail)
 		}
 		// Ignore all other keys in confirm mode.
 		return m, nil
@@ -630,10 +659,11 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.inputHint = "reason is required"
 				return m, nil
 			}
-			// Submit: fire the reject command.
+			// Capture origin before cancelReviewMode clears it.
 			taskID := m.pendingTaskID
+			originFromDetail := m.reviewFromDetail
 			m.cancelReviewMode()
-			return m, m.reviewReject(taskID, reasonValue)
+			return m, m.reviewReject(taskID, reasonValue, originFromDetail)
 		default:
 			var cmd tea.Cmd
 			m.reviewInput, cmd = m.reviewInput.Update(msg)

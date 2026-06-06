@@ -52,6 +52,9 @@ func (m *BoardModel) fetchDetailCmd(taskID string) tea.Cmd {
 // If ref is already a URL (has a scheme), it is returned directly.
 // Otherwise: <repo>/blob/<commit-or-main>/<ref>.
 // Returns ("", errMsg) when the URL cannot be built.
+//
+// Note: only https-form repos (e.g. "https://github.com/owner/repo") are supported.
+// SSH-form repos (e.g. "git@github.com:owner/repo") are out of scope.
 func resolveDocURL(ref string, doc tuiclient.Document, projectRepo string) (string, string) {
 	if ref == "" {
 		return "", "document has no ref"
@@ -67,12 +70,17 @@ func resolveDocURL(ref string, doc tuiclient.Document, projectRepo string) (stri
 		return "", "project has no repo configured"
 	}
 
+	// Normalize the repo: strip trailing slash then trailing ".git" to avoid
+	// producing a path like "…/repo.git/blob/…" which results in a 404 on GitHub.
+	normalizedRepo := strings.TrimRight(projectRepo, "/")
+	normalizedRepo = strings.TrimSuffix(normalizedRepo, ".git")
+
 	branch := "main"
 	if doc.Commit != nil && *doc.Commit != "" {
 		branch = *doc.Commit
 	}
 
-	builtURL := strings.TrimRight(projectRepo, "/") + "/blob/" + branch + "/" + strings.TrimLeft(ref, "/")
+	builtURL := normalizedRepo + "/blob/" + branch + "/" + strings.TrimLeft(ref, "/")
 	return builtURL, ""
 }
 
