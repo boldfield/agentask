@@ -112,18 +112,17 @@ not `ADD COLUMN`):
   `idx_task_claimable ON task(project_id, state, model)` (the existing
   `idx_task_project_state` can be dropped or kept; the claim predicate also filters `kind`
   via the spawned review task's own row, so `(project_id, state, model)` covers the hot path).
-- **Migration mechanics:** SQLite cannot alter a `CHECK` constraint (the `state` CHECK must
-  widen for `approved`). 0003 must do the standard table rebuild: `PRAGMA foreign_keys=OFF` →
-  `CREATE TABLE task_new (...full new schema...)` → `INSERT INTO task_new SELECT *,
-  'haiku','implement',NULL,0,NULL FROM task` (existing rows get the new-column defaults —
-  `model='haiku'`, `kind='implement'`, `review_models=NULL`, `review_round=0`,
-  `target_task_id=NULL`) → drop dependent indexes →
-  `DROP TABLE task` → `ALTER TABLE task_new RENAME TO task` → recreate indexes → re-validate
-  FKs. The migration runner wraps each file in a transaction (`store.go:104`); confirm
-  `foreign_keys=OFF` survives inside that tx (it's a connection pragma, set on the single
-  pooled conn) or set it via the migration. **This is the riskiest single change in the
-  feature and gets its own task with a dedicated round-trip test (migrate a populated DB,
-  assert every row preserved + defaults applied + FKs intact).**
+- **Migration mechanics:** The new `state` value `approved` requires widening the `state` CHECK,
+  and SQLite cannot alter a CHECK in place — so it needs a **table rebuild** (new table → copy
+  rows → drop old → rename → recreate indexes). The catch that blocked the first attempt: a
+  rebuild dropping a table referenced by foreign keys needs FK enforcement OFF, and
+  `PRAGMA foreign_keys` is a **no-op inside a transaction** — but the runner (`migrate()`,
+  ~`store.go:103`) applies every migration inside one transaction with FKs forced ON by the DSN.
+  **Resolution (re-scoped 2026-06-06):** task **MR-1a** changes the runner to disable FK
+  enforcement around migration application (`foreign_keys=OFF` before the tx, `foreign_key_check`
+  before commit, `ON` after); then the rebuild migration **MR-1b** follows the standard procedure
+  with a round-trip test. The new columns are added separately by `ALTER TABLE ADD COLUMN`
+  (no rebuild) in **MR-2**.
 
 ### Struct / input changes
 
@@ -278,7 +277,7 @@ to draining `approved` regardless. Not a blocker for this feature.
 - **Transition gate**: `approved → done` and `approved → ready` allowed; `review → done`
   rejected (must go through `approved`).
 
-## Task breakdown (final — 11 tasks, all Haiku)
+## Task breakdown (final — 12 tasks, all Haiku)
 
 Sized so a Haiku worker completes each in one pass with review catching only nits. **Specs
 carry no code or SQL** — intent, constraints, the gotchas, pointers to existing patterns, and
@@ -287,30 +286,61 @@ run **serially** even where the dependency graph allows branching. Settled sub-d
 in: verdicts are stored in the `verdict` column (not re-derived from events); the legacy
 `/review` endpoint stays as a human-only override (no task removes it).
 
-### MR-1 — Migration 0003: allow the `approved` state *(deps: none)*
+> **Re-scope note (2026-06-06).** The original single MR-1 ("do the rebuild in migration SQL")
+> was blocked: a SQLite table rebuild needs foreign keys OFF, and `PRAGMA foreign_keys` is a
+> no-op inside a transaction — but the runner applies every migration inside one transaction
+> with FKs forced on, so the rebuild cannot work from migration SQL alone. Re-scoped into
+> **MR-1a** (runner change) + **MR-1b** (the rebuild). Downstream tasks re-point at MR-1b.
+
+### MR-1a — Migration runner: disable foreign keys during migration application *(deps: none)*
+
+**Intent.** Let migrations perform SQLite table rebuilds (which require foreign-key enforcement
+off) without each migration managing it, and without leaving enforcement off afterward.
+
+**Build.** Change the migration runner so foreign-key enforcement is turned OFF before the
+migration transaction begins and restored to ON after it commits, with a foreign-key integrity
+check before the commit that fails the run if any violation is found. (A `foreign_keys` pragma
+issued inside a transaction is a no-op, and the runner currently applies all migrations inside
+one transaction with FKs forced on by the DSN — which is why a rebuild that drops a referenced
+table cannot work today.)
+
+**Constraints / gotchas.** The runner is `migrate()` in `internal/store/store.go` (~`store.go:103`);
+it opens a single transaction and execs each migration file. `PRAGMA foreign_keys` must be toggled
+on the connection BEFORE `BEGIN`, not inside the tx. The store uses one connection
+(`SetMaxOpenConns(1)`, `store.go:66`) with `foreign_keys` ON from the DSN — enforcement must end
+ON for normal operation. Run SQLite's foreign-key integrity check just before commit and fail the
+migration on any violation, so a bad rebuild can't silently corrupt referential integrity. This
+task changes ONLY the runner — no migration files, no domain code.
+
+**Acceptance.** All existing migrations still apply cleanly on a fresh and a populated DB. A test
+shows foreign-key enforcement is OFF while migrations apply and ON again afterward, and that a
+migration which would leave a dangling foreign-key reference is rejected by the integrity check
+(the run fails) rather than committing corruption.
+
+### MR-1b — Migration 0003: allow the `approved` state *(deps: MR-1a)*
 
 **Intent.** Let a task's `state` hold the new value `approved` (the "review-approved, awaiting
 human merge" lane).
 
 **Build.** Add a migration that recreates the `task` table with a definition identical to its
-current one, except the `state` CHECK constraint also permits `approved`. Because SQLite cannot
-alter a CHECK constraint in place, this must be a table rebuild: create the new table, copy
-every existing row across, drop the old table, rename the new one into place, and recreate the
-table's indexes. All existing rows, columns, and foreign keys must survive unchanged.
+current one, except the `state` CHECK constraint also permits `approved`. SQLite cannot alter a
+CHECK in place, so this is a table rebuild: create the new table, copy every existing row, drop
+the old table, rename the new one into place, recreate the table's indexes. All existing rows,
+columns, and foreign keys must survive unchanged.
 
 **Constraints / gotchas.** The full current table definition (and its two indexes) is in
 `internal/store/migrations/0001_init.sql` — use it as the exact template and change only the
-`state` CHECK. Foreign keys from other tables point at `task(id)`; the rebuild must not orphan
-them (mind SQLite's foreign-key enforcement during the swap). Match the existing migration file
-naming/format; the runner that applies them is `internal/store/migrate` in `store.go:103`. This
-task touches **only** the migration; no Go structs change here.
+`state` CHECK. The rebuild relies on the MR-1a runner change (foreign-key enforcement is off
+during migration application and integrity-checked before commit), so dropping/renaming a table
+referenced by `task_dep`/`task_link`/`event` works — do NOT manage the `foreign_keys` pragma in
+the migration itself. Match the existing migration file naming/format. No Go structs change.
 
-**Acceptance.** Applies cleanly on both an empty DB and one populated with tasks in several
-states (with deps, links, events). After it runs, every prior row is intact, foreign keys still
-resolve, and a task can be set to `approved` where before it was rejected. A round-trip test
-proves row/FK preservation and that `approved` is now accepted.
+**Acceptance.** Applies cleanly on an empty DB and one populated with tasks in several states
+(with deps, links, events). After it runs, every prior row is intact, foreign keys still resolve,
+and a task can be set to `approved`. A round-trip test proves row/FK preservation and that
+`approved` is now accepted.
 
-### MR-2 — Migration 0004: add the new task columns *(deps: MR-1)*
+### MR-2 — Migration 0004: add the new task columns *(deps: MR-1b)*
 
 **Intent.** Add the columns the rest of the feature needs.
 
