@@ -68,7 +68,7 @@ func Open(dbPath string) (Store, error) {
 	store := &sqliteStore{conn: conn}
 
 	// Apply migrations in a transaction
-	if err := store.migrate(); err != nil {
+	if err := store.migrate(migrationsFS); err != nil {
 		conn.Close()
 		return nil, fmt.Errorf("failed to apply migrations: %w", err)
 	}
@@ -99,8 +99,22 @@ func dsn_addPragmas(dsn string) string {
 	return dsn + separator + "_pragma=journal_mode(WAL)&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)"
 }
 
-// migrate applies all pending migrations from the embedded migrations directory.
-func (s *sqliteStore) migrate() error {
+// migrate applies all pending migrations from the given filesystem.
+// It disables foreign key enforcement before the migration transaction begins (since PRAGMA inside
+// a transaction is a no-op) and restores it afterward. Before commit, it runs an integrity check
+// to ensure no foreign key violations occurred, failing the migration if any are found.
+func (s *sqliteStore) migrate(fsys fs.FS) error {
+	// Disable foreign keys on the connection before starting the transaction
+	// SQLite requires PRAGMA foreign_keys to be set outside a transaction
+	if _, err := s.conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		return fmt.Errorf("failed to disable foreign keys before migration: %w", err)
+	}
+	defer func() {
+		if _, err := s.conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+			panic(fmt.Sprintf("failed to restore foreign keys after migration: %v", err))
+		}
+	}()
+
 	tx, err := s.conn.Begin()
 	if err != nil {
 		return fmt.Errorf("failed to begin transaction: %w", err)
@@ -118,7 +132,7 @@ func (s *sqliteStore) migrate() error {
 	}
 
 	// Get list of all migration files
-	migrations, err := listMigrations()
+	migrations, err := listMigrations(fsys)
 	if err != nil {
 		return err
 	}
@@ -137,7 +151,7 @@ func (s *sqliteStore) migrate() error {
 		}
 
 		// Read the migration file
-		data, err := fs.ReadFile(migrationsFS, migration.path)
+		data, err := fs.ReadFile(fsys, migration.path)
 		if err != nil {
 			return fmt.Errorf("failed to read migration file %s: %w", migration.path, err)
 		}
@@ -161,6 +175,26 @@ func (s *sqliteStore) migrate() error {
 		}
 	}
 
+	// Before commit, run a foreign key integrity check
+	// This catches any migrations that would leave dangling foreign key references.
+	// PRAGMA foreign_key_check returns 4 columns (table, rowid, parent, fkid) per violation.
+	rows, err := tx.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		return fmt.Errorf("failed to run foreign key integrity check: %w", err)
+	}
+	defer rows.Close()
+
+	var violationCount int
+	for rows.Next() {
+		violationCount++
+	}
+	if err := rows.Err(); err != nil {
+		return fmt.Errorf("failed to read foreign key check results: %w", err)
+	}
+	if violationCount > 0 {
+		return fmt.Errorf("migration integrity check failed: found %d foreign key violations", violationCount)
+	}
+
 	return tx.Commit()
 }
 
@@ -169,12 +203,12 @@ type migration struct {
 	path    string
 }
 
-// listMigrations returns all migration files sorted by version.
-func listMigrations() ([]migration, error) {
+// listMigrations returns all migration files sorted by version from the given filesystem.
+func listMigrations(fsys fs.FS) ([]migration, error) {
 	var migrations []migration
 
 	// Read all files in the migrations directory
-	entries, err := fs.ReadDir(migrationsFS, "migrations")
+	entries, err := fs.ReadDir(fsys, "migrations")
 	if err != nil {
 		return nil, fmt.Errorf("failed to read migrations directory: %w", err)
 	}

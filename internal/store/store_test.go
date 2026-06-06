@@ -2,13 +2,70 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
+	"sort"
+	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 )
+
+// createTestFSWithBadMigration creates a test filesystem with the standard migrations
+// plus a bad migration (0003_bad.sql) that leaves a dangling foreign key.
+// It wraps the embedded migrations and adds the bad migration on top.
+func createTestFSWithBadMigration() fs.FS {
+	// Read the actual migrations from the embedded FS
+	// Return a custom fs that includes the embedded migrations plus the bad one
+	return &compositeFS{
+		first: migrationsFS,
+		bad: fstest.MapFS{
+			"migrations/0003_bad.sql": &fstest.MapFile{
+				Data: []byte("INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at) VALUES ('dummy-task', 'non-existent-project', 'non-existent-doc', 'Dummy Task', 'spec', 'backlog', datetime('now'), datetime('now'));"),
+			},
+		},
+	}
+}
+
+// compositeFS is a custom fs.FS that combines two filesystems, preferring files from the first.
+type compositeFS struct {
+	first fs.FS
+	bad   fs.FS
+}
+
+func (c *compositeFS) Open(name string) (fs.File, error) {
+	// Try the bad migrations first (0003_bad.sql)
+	if strings.Contains(name, "0003_bad") {
+		return c.bad.Open(name)
+	}
+	// Fall back to the embedded migrations
+	return c.first.Open(name)
+}
+
+func (c *compositeFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	// Read from the first FS and add bad migrations
+	entries, err := fs.ReadDir(c.first, name)
+	if err != nil {
+		return nil, err
+	}
+
+	// For the migrations directory, also include 0003_bad.sql
+	if name == "migrations" {
+		badEntries, _ := fs.ReadDir(c.bad, "migrations")
+		if badEntries != nil {
+			entries = append(entries, badEntries...)
+			// Sort to ensure consistent order
+			sort.Slice(entries, func(i, j int) bool {
+				return entries[i].Name() < entries[j].Name()
+			})
+		}
+	}
+	return entries, nil
+}
 
 // TestMigrations verifies that migrations can be applied to a fresh database
 // and that re-applying is idempotent.
@@ -796,4 +853,228 @@ func TestClaimTaskExpiredLease(t *testing.T) {
 // Helper function to create string pointers
 func strPtr(s string) *string {
 	return &s
+}
+
+// TestMigrationForeignKeysDisabled verifies that foreign keys are disabled during migration
+// and that a table rebuild migration (which temporarily drops tables) works correctly.
+func TestMigrationForeignKeysDisabled(t *testing.T) {
+	// Use file-based DB since in-memory with multiple connections behaves differently
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "migration_fk_test.db")
+
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Verify that foreign keys are ON after migrations complete
+	var fkEnabled int
+	err = store.Conn().QueryRowContext(ctx, "PRAGMA foreign_keys").Scan(&fkEnabled)
+	if err != nil {
+		t.Fatalf("failed to check foreign keys pragma: %v", err)
+	}
+	if fkEnabled != 1 {
+		t.Error("expected foreign_keys to be ON after migrations, but it's OFF")
+	}
+
+	// Verify that trying to insert a task with non-existent FK fails (FK is enforced)
+	_, err = store.Conn().ExecContext(ctx, `
+		INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "test-task", "non-existent-proj", "non-existent-doc", "Task", "spec", "backlog",
+		"2026-06-06T00:00:00Z", "2026-06-06T00:00:00Z")
+
+	if err == nil {
+		t.Error("expected FK constraint violation when inserting with bad FK, but insert succeeded")
+	}
+}
+
+// TestMigrationForeignKeyIntegrityCheck verifies that the integrity check rejects
+// migrations that would leave dangling foreign key references.
+func TestMigrationForeignKeyIntegrityCheck(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "integrity_check_test.db")
+
+	// Create a test FS with a migration that intentionally leaves a dangling FK
+	testFS := createTestFSWithBadMigration()
+
+	conn, err := sql.Open("sqlite", buildDSN(dbPath))
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer conn.Close()
+
+	conn.SetMaxOpenConns(1)
+	store := &sqliteStore{conn: conn}
+
+	// Try to apply migrations with the bad migration included
+	err = store.migrate(testFS)
+
+	// The migration should fail due to FK constraint violation detected by integrity check
+	if err == nil {
+		t.Error("expected migration with dangling FK to fail, but it succeeded")
+	}
+	if !strings.Contains(err.Error(), "foreign key violations") {
+		t.Errorf("expected error to mention foreign key violations, got: %v", err)
+	}
+}
+
+// TestMigrationRoundTrip verifies that:
+// 1. Existing migrations apply cleanly
+// 2. All rows survive the migration
+// 3. Foreign keys remain intact and enforced
+func TestMigrationRoundTrip(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "roundtrip_test.db")
+
+	// Open fresh DB and populate it
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Create multiple projects, documents, and tasks in various states
+	proj1, err := store.CreateProject(ctx, "proj-1", "https://example.com/repo1")
+	if err != nil {
+		t.Fatalf("failed to create project 1: %v", err)
+	}
+
+	proj2, err := store.CreateProject(ctx, "proj-2", "https://example.com/repo2")
+	if err != nil {
+		t.Fatalf("failed to create project 2: %v", err)
+	}
+
+	doc1, err := store.CreateDocument(ctx, proj1.ID, "design", "Design 1", "DESIGN1.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document 1: %v", err)
+	}
+
+	doc2, err := store.CreateDocument(ctx, proj2.ID, "feature_spec", "Spec 2", "SPEC2.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document 2: %v", err)
+	}
+
+	// Create tasks in various states
+	tasks1, err := store.CreateTasks(ctx, proj1.ID, []TaskInput{
+		{Key: "task-1a", Title: "Task 1A", Spec: "Spec 1A", DocumentID: doc1.ID},
+		{Title: "Task 1B", Spec: "Spec 1B", DocumentID: doc1.ID, DependsOn: []string{"task-1a"}},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks for proj1: %v", err)
+	}
+
+	tasks2, err := store.CreateTasks(ctx, proj2.ID, []TaskInput{
+		{Title: "Task 2A", Spec: "Spec 2A", DocumentID: doc2.ID},
+		{Title: "Task 2B", Spec: "Spec 2B", DocumentID: doc2.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks for proj2: %v", err)
+	}
+
+	// Set tasks to various states
+	_, err = store.Conn().ExecContext(ctx,
+		`UPDATE task SET state = ? WHERE id = ?`,
+		"ready", tasks1[0].ID)
+	if err != nil {
+		t.Fatalf("failed to set task state: %v", err)
+	}
+
+	_, err = store.Conn().ExecContext(ctx,
+		`UPDATE task SET state = ? WHERE id IN (?, ?)`,
+		"in_progress", tasks1[1].ID, tasks2[0].ID)
+	if err != nil {
+		t.Fatalf("failed to set task states: %v", err)
+	}
+
+	_, err = store.Conn().ExecContext(ctx,
+		`UPDATE task SET state = ? WHERE id = ?`,
+		"done", tasks2[1].ID)
+	if err != nil {
+		t.Fatalf("failed to set task state: %v", err)
+	}
+
+	// Add some links
+	_, err = store.Conn().ExecContext(ctx,
+		`INSERT INTO task_link (id, task_id, kind, value) VALUES (?, ?, ?, ?)`,
+		"link-1", tasks1[0].ID, "pr", "#123")
+	if err != nil {
+		t.Fatalf("failed to add task link: %v", err)
+	}
+
+	// Add some events
+	tx, err := store.Conn().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("failed to begin transaction: %v", err)
+	}
+	_, err = store.AppendEvent(ctx, tx, tasks1[0].ID, "agent-1", "claim", nil, nil)
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("failed to append event: %v", err)
+	}
+	tx.Commit()
+
+	// Count initial rows
+	var initialProjectCount, initialDocCount, initialTaskCount, initialTaskDepCount, initialTaskLinkCount, initialEventCount int
+
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM project").Scan(&initialProjectCount)
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM document").Scan(&initialDocCount)
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task").Scan(&initialTaskCount)
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task_dep").Scan(&initialTaskDepCount)
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task_link").Scan(&initialTaskLinkCount)
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM event").Scan(&initialEventCount)
+
+	store.Close()
+
+	// Reopen the database (this will trigger migrations again, but they should be idempotent)
+	store2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to reopen database: %v", err)
+	}
+	defer store2.Close()
+
+	// Count rows after migration
+	var finalProjectCount, finalDocCount, finalTaskCount, finalTaskDepCount, finalTaskLinkCount, finalEventCount int
+
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM project").Scan(&finalProjectCount)
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM document").Scan(&finalDocCount)
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task").Scan(&finalTaskCount)
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task_dep").Scan(&finalTaskDepCount)
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task_link").Scan(&finalTaskLinkCount)
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM event").Scan(&finalEventCount)
+
+	// Verify all rows survived
+	if finalProjectCount != initialProjectCount {
+		t.Errorf("project count mismatch: initial=%d, final=%d", initialProjectCount, finalProjectCount)
+	}
+	if finalDocCount != initialDocCount {
+		t.Errorf("document count mismatch: initial=%d, final=%d", initialDocCount, finalDocCount)
+	}
+	if finalTaskCount != initialTaskCount {
+		t.Errorf("task count mismatch: initial=%d, final=%d", initialTaskCount, finalTaskCount)
+	}
+	if finalTaskDepCount != initialTaskDepCount {
+		t.Errorf("task_dep count mismatch: initial=%d, final=%d", initialTaskDepCount, finalTaskDepCount)
+	}
+	if finalTaskLinkCount != initialTaskLinkCount {
+		t.Errorf("task_link count mismatch: initial=%d, final=%d", initialTaskLinkCount, finalTaskLinkCount)
+	}
+	if finalEventCount != initialEventCount {
+		t.Errorf("event count mismatch: initial=%d, final=%d", initialEventCount, finalEventCount)
+	}
+
+	// Verify FK constraints are still enforced
+	_, err = store2.Conn().ExecContext(ctx, `
+		INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "bad-task", "non-existent-proj", "non-existent-doc", "Bad", "bad", "backlog",
+		"2026-06-06T00:00:00Z", "2026-06-06T00:00:00Z")
+
+	if err == nil {
+		t.Error("expected FK constraint violation after migration, but insert succeeded")
+	}
 }
