@@ -76,9 +76,13 @@ func main() {
 		selectedProject = projects[pickerModel.Selected]
 	}
 
-	// For now, just display the selected project
-	// Future tasks (TUI-2+) will implement the full board view
-	fmt.Printf("Selected project: %s (%s)\n", selectedProject.Name, selectedProject.ID)
+	// Create and run the board model for the selected project
+	boardModel := NewBoardModel(client, cfg, selectedProject)
+	p := tea.NewProgram(boardModel, tea.WithAltScreen())
+	if _, err := p.Run(); err != nil {
+		fmt.Fprintf(os.Stderr, "Error running board: %v\n", err)
+		os.Exit(1)
+	}
 }
 
 // ProjectPickerModel is the Bubble Tea model for selecting a project.
