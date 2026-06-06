@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"os"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/boldfield/agentask/internal/tuiclient"
 	"github.com/boldfield/agentask/internal/tuiconfig"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {

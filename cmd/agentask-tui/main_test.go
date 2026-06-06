@@ -4,8 +4,8 @@ import (
 	"strings"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"github.com/boldfield/agentask/internal/tuiclient"
+	tea "github.com/charmbracelet/bubbletea"
 )
 
 func TestProjectPickerModel(t *testing.T) {

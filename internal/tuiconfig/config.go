@@ -12,11 +12,11 @@ import (
 
 // Config represents the resolved TUI configuration.
 type Config struct {
-	URL           string
-	Token         string
-	Actor         string
+	URL            string
+	Token          string
+	Actor          string
 	DefaultProject string
-	PollInterval  time.Duration
+	PollInterval   time.Duration
 }
 
 // LoadConfig resolves configuration from file, environment, and flags.

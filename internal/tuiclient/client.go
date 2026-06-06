@@ -31,17 +31,17 @@ type Project struct {
 }
 
 type Task struct {
-	ID             string `json:"id"`
-	ProjectID      string `json:"project_id"`
-	DocumentID     string `json:"document_id"`
-	Title          string `json:"title"`
-	Spec           string `json:"spec"`
-	State          string `json:"state"`
+	ID             string  `json:"id"`
+	ProjectID      string  `json:"project_id"`
+	DocumentID     string  `json:"document_id"`
+	Title          string  `json:"title"`
+	Spec           string  `json:"spec"`
+	State          string  `json:"state"`
 	Assignee       *string `json:"assignee"`
 	LeaseExpiresAt *string `json:"lease_expires_at"`
 	Result         *string `json:"result"`
-	CreatedAt      string `json:"created_at"`
-	UpdatedAt      string `json:"updated_at"`
+	CreatedAt      string  `json:"created_at"`
+	UpdatedAt      string  `json:"updated_at"`
 }
 
 type TaskDetail struct {
@@ -68,14 +68,14 @@ type TaskLink struct {
 }
 
 type Document struct {
-	ID        string `json:"id"`
-	ProjectID string `json:"project_id"`
-	Kind      string `json:"kind"`
-	Title     string `json:"title"`
-	Ref       string `json:"ref"`
+	ID        string  `json:"id"`
+	ProjectID string  `json:"project_id"`
+	Kind      string  `json:"kind"`
+	Title     string  `json:"title"`
+	Ref       string  `json:"ref"`
 	Commit    *string `json:"commit"`
-	CreatedAt string `json:"created_at"`
-	UpdatedAt string `json:"updated_at"`
+	CreatedAt string  `json:"created_at"`
+	UpdatedAt string  `json:"updated_at"`
 }
 
 // HTTPClient implements the Client interface.
