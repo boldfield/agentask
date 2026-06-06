@@ -1,8 +1,12 @@
-.PHONY: build run test tidy check
+.PHONY: build run test tidy tui check
 
 build:
 	mkdir -p bin
 	go build -o bin/agentask ./cmd/agentask
+
+tui:
+	mkdir -p bin
+	go build -o bin/agentask-tui ./cmd/agentask-tui
 
 run: build
 	./bin/agentask
