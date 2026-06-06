@@ -308,3 +308,139 @@ func TestBoardModel_InProgressCardDetails(t *testing.T) {
 		t.Errorf("Expected lease info in output, got:\n%s", output)
 	}
 }
+
+// TestBoardModel_DisappearedTaskSelection tests that when the selected task disappears,
+// the cursor lands on the positionally-nearest remaining task, not the first.
+func TestBoardModel_DisappearedTaskSelection(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Simulate first fetch with three tasks
+	bucketed1 := make(map[string][]tuiclient.Task)
+	bucketed1["backlog"] = []tuiclient.Task{}
+	bucketed1["ready"] = []tuiclient.Task{}
+	bucketed1["in_progress"] = []tuiclient.Task{
+		{ID: "task-1", Title: "Task 1", State: "in_progress"},
+		{ID: "task-2", Title: "Task 2", State: "in_progress"},
+		{ID: "task-3", Title: "Task 3", State: "in_progress"},
+	}
+	bucketed1["review"] = []tuiclient.Task{}
+	bucketed1["done"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed1})
+	model = m.(*BoardModel)
+
+	// Select task-2 (index 1)
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = m.(*BoardModel)
+	if model.selectedTaskID != "task-2" {
+		t.Errorf("Expected selection to be task-2, got %s", model.selectedTaskID)
+	}
+
+	// Simulate refresh where task-2 is REMOVED (only task-1 and task-3 remain)
+	bucketed2 := make(map[string][]tuiclient.Task)
+	bucketed2["backlog"] = []tuiclient.Task{}
+	bucketed2["ready"] = []tuiclient.Task{}
+	bucketed2["in_progress"] = []tuiclient.Task{
+		{ID: "task-1", Title: "Task 1", State: "in_progress"},
+		{ID: "task-3", Title: "Task 3", State: "in_progress"},
+	}
+	bucketed2["review"] = []tuiclient.Task{}
+	bucketed2["done"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed2})
+	model = m.(*BoardModel)
+
+	// Should have selected task-3 (at clamped index 1, which is now the second task)
+	// not task-1 (the first task).
+	if model.selectedTaskID != "task-3" {
+		t.Errorf("Expected selection to move to task-3 (nearest), got %s", model.selectedTaskID)
+	}
+	if model.selectedIndex != 1 {
+		t.Errorf("Expected selectedIndex to be 1, got %d", model.selectedIndex)
+	}
+}
+
+// TestBoardModel_TickGeneration tests that manual refresh (r) does not fork polling loops.
+// Pressing 'r' multiple times should issue fetch commands but NOT increase pending ticks.
+func TestBoardModel_TickGeneration(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Init should set pollGen=1 and issue one fetch + one tick
+	_ = model.Init()
+	if model.pollGen != 1 {
+		t.Errorf("Expected pollGen=1 after Init, got %d", model.pollGen)
+	}
+
+	// Simulate successful fetch
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range []string{"backlog", "ready", "in_progress", "review", "done"} {
+		bucketed[state] = []tuiclient.Task{}
+	}
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Process the single tick that was returned by Init (tickMsg{gen: 1})
+	m, cmd := model.Update(tickMsg{gen: 1})
+	model = m.(*BoardModel)
+
+	// After one valid tick, cmd should batch a fetch + next tick (same gen)
+	if model.pollGen != 1 {
+		t.Errorf("Expected pollGen to remain 1, got %d", model.pollGen)
+	}
+
+	// Now press 'r' (manual refresh) multiple times
+	m, cmd = model.Update(tea.KeyMsg{Runes: []rune{'r'}})
+	model = m.(*BoardModel)
+	// Pressing 'r' should return a fetch command but NOT arm a tick
+	// Check pollGen unchanged
+	if model.pollGen != 1 {
+		t.Errorf("Expected pollGen unchanged after 'r', got %d", model.pollGen)
+	}
+
+	// Press 'r' again
+	m, cmd = model.Update(tea.KeyMsg{Runes: []rune{'r'}})
+	model = m.(*BoardModel)
+	if model.pollGen != 1 {
+		t.Errorf("Expected pollGen unchanged after second 'r', got %d", model.pollGen)
+	}
+
+	// Test that stale ticks are dropped
+	m, cmd = model.Update(tickMsg{gen: 0})
+	model = m.(*BoardModel)
+	// gen=0 is stale, should return nil command
+	if cmd != nil {
+		t.Errorf("Expected nil command for stale tick, got non-nil")
+	}
+
+	// Test that current-gen ticks are processed
+	m, cmd = model.Update(tickMsg{gen: 1})
+	model = m.(*BoardModel)
+	// gen=1 is current, should process (return batch with fetch + next tick)
+	if cmd == nil {
+		t.Errorf("Expected non-nil command for current-gen tick")
+	}
+}

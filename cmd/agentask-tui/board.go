@@ -20,12 +20,14 @@ type BoardModel struct {
 	project        tuiclient.Project
 	tasks          map[string][]tuiclient.Task // keyed by state
 	selectedTaskID string                      // current selection, keyed by ID
+	selectedIndex  int                         // index position within selected column, for nearest-selection on disappear
 	selectedColumn int                         // 0=backlog, 1=ready, 2=in_progress, 3=review, 4=done
 	loading        bool
 	error          string
 	width          int
 	height         int
 	lastRefresh    time.Time
+	pollGen        int // generation counter for polling; gates ticks
 }
 
 const (
@@ -57,9 +59,20 @@ func NewBoardModel(client tuiclient.Client, config *tuiconfig.Config, project tu
 	}
 }
 
-// Init starts the initial fetch.
+// Init starts the initial fetch and the polling loop.
 func (m *BoardModel) Init() tea.Cmd {
-	return m.fetchTasks()
+	m.pollGen = 1
+	return tea.Batch(
+		m.fetchTasks(),
+		m.tickCmd(1),
+	)
+}
+
+// tickCmd creates a tick command for the given generation.
+func (m *BoardModel) tickCmd(gen int) tea.Cmd {
+	return tea.Tick(m.config.PollInterval, func(t time.Time) tea.Msg {
+		return tickMsg{gen: gen}
+	})
 }
 
 // fetchTasks creates a command that fetches tasks and returns them.
@@ -105,7 +118,9 @@ type tasksFetchedMsg struct {
 	err   error
 }
 
-type tickMsg time.Time
+type tickMsg struct {
+	gen int // generation counter; ignore if stale
+}
 
 // Update handles messages from Bubble Tea.
 func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -124,12 +139,14 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "left", "h":
 			if m.selectedColumn > 0 {
 				m.selectedColumn--
+				m.selectedIndex = 0 // Reset to top when changing columns
 				m.ensureSelectionInColumn()
 			}
 
 		case "right", "l":
 			if m.selectedColumn < len(stateOrder)-1 {
 				m.selectedColumn++
+				m.selectedIndex = 0 // Reset to top when changing columns
 				m.ensureSelectionInColumn()
 			}
 
@@ -142,11 +159,13 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if m.selectedTaskID == "" {
 				m.selectedTaskID = tasksInColumn[0].ID
+				m.selectedIndex = 0
 			} else {
 				// Find current position
 				for i, t := range tasksInColumn {
 					if t.ID == m.selectedTaskID && i > 0 {
 						m.selectedTaskID = tasksInColumn[i-1].ID
+						m.selectedIndex = i - 1
 						break
 					}
 				}
@@ -160,17 +179,19 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 			if m.selectedTaskID == "" {
 				m.selectedTaskID = tasksInColumn[0].ID
+				m.selectedIndex = 0
 			} else {
 				// Find current position
 				for i, t := range tasksInColumn {
 					if t.ID == m.selectedTaskID && i < len(tasksInColumn)-1 {
 						m.selectedTaskID = tasksInColumn[i+1].ID
+						m.selectedIndex = i + 1
 						break
 					}
 				}
 			}
 
-		// Refresh
+		// Refresh: issue one-shot fetch, do not arm a new tick
 		case "r":
 			return m, m.fetchTasks()
 
@@ -182,10 +203,8 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tasksFetchedMsg:
 		if msg.err != nil {
 			m.error = fmt.Sprintf("Error: %v", msg.err)
-			// Retry after 2 seconds
-			return m, tea.Tick(2*time.Second, func(t time.Time) tea.Msg {
-				return tickMsg(t)
-			})
+			// Return without arming a tick; the generation-guarded tick chain continues
+			return m, nil
 		}
 
 		m.loading = false
@@ -194,14 +213,22 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.lastRefresh = time.Now()
 		m.ensureSelectionInColumn()
 
-		// Schedule next poll
-		return m, tea.Tick(m.config.PollInterval, func(t time.Time) tea.Msg {
-			return tickMsg(t)
-		})
+		// Just update data; do NOT arm a tick. The single tick chain in tickMsg handles
+		// rearming itself.
+		return m, nil
 
 	case tickMsg:
-		// Time to poll
-		return m, m.fetchTasks()
+		// Only process if this tick's generation matches our current generation.
+		// This prevents stale ticks from starting new fetch/tick chains.
+		if msg.gen != m.pollGen {
+			return m, nil
+		}
+
+		// Issue both a fetch AND the next tick in the chain.
+		return m, tea.Batch(
+			m.fetchTasks(),
+			m.tickCmd(m.pollGen),
+		)
 	}
 
 	return m, nil
@@ -214,24 +241,33 @@ func (m *BoardModel) getTasksInSelectedColumn() []tuiclient.Task {
 }
 
 // ensureSelectionInColumn ensures the selected task exists in the current column.
-// If not, select the first task; if no tasks, clear selection.
+// If the task is gone, select the nearest task at the prior index position (clamped to available).
+// If no tasks, clear selection.
 func (m *BoardModel) ensureSelectionInColumn() {
 	tasksInColumn := m.getTasksInSelectedColumn()
 
 	if len(tasksInColumn) == 0 {
 		m.selectedTaskID = ""
+		m.selectedIndex = 0
 		return
 	}
 
 	// Check if selected task is still in this column
-	for _, t := range tasksInColumn {
+	for i, t := range tasksInColumn {
 		if t.ID == m.selectedTaskID {
+			m.selectedIndex = i
 			return // Selection is valid
 		}
 	}
 
-	// Selection lost (task moved). Select the first task in this column.
-	m.selectedTaskID = tasksInColumn[0].ID
+	// Selection lost (task disappeared). Select at the same index position,
+	// clamped to the available range.
+	newIdx := m.selectedIndex
+	if newIdx >= len(tasksInColumn) {
+		newIdx = len(tasksInColumn) - 1
+	}
+	m.selectedIndex = newIdx
+	m.selectedTaskID = tasksInColumn[newIdx].ID
 }
 
 // View renders the board.
@@ -380,6 +416,7 @@ func (m *BoardModel) formatTime(timestamp string) string {
 }
 
 // renderHelpBar renders the bottom help bar.
+// Only advertise keys that have handlers in TUI-2; p/a/x are TUI-3/4.
 func (m *BoardModel) renderHelpBar() string {
-	return "←/→ column   ↑/↓ select   p promote   a approve   x reject   r refresh   ? help   q quit"
+	return "←/→ column   ↑/↓ select   r refresh   q quit"
 }
