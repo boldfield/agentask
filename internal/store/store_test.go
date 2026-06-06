@@ -1595,13 +1595,13 @@ func TestMigration0004AddTaskColumns(t *testing.T) {
 
 	// Step 5: Verify new columns exist with correct defaults
 	type TaskWithNewColumns struct {
-		id              string
-		model           string
-		kind            string
-		reviewModels    sql.NullString
-		reviewRound     int
-		targetTaskID    sql.NullString
-		verdict         sql.NullString
+		id           string
+		model        string
+		kind         string
+		reviewModels sql.NullString
+		reviewRound  int
+		targetTaskID sql.NullString
+		verdict      sql.NullString
 	}
 
 	rows, err := conn.Query(`
