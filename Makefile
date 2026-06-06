@@ -1,4 +1,4 @@
-.PHONY: build run test tidy
+.PHONY: build run test tidy check
 
 build:
 	mkdir -p bin
@@ -12,3 +12,9 @@ test:
 
 tidy:
 	go mod tidy
+
+check:
+	@echo "Running gofmt check..."
+	@gofmt -l . | tee /dev/stderr | (! read) || exit 1
+	@echo "Running go vet..."
+	@go vet ./...
