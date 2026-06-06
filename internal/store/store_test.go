@@ -2,13 +2,117 @@ package store
 
 import (
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
+	"io/fs"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 )
+
+// createTestFSWithBadMigration creates a test filesystem with the standard migrations
+// plus a migration (0003_bad.sql) that leaves a dangling foreign key.
+func createTestFSWithBadMigration() fs.FS {
+	return fstest.MapFS{
+		"migrations/0001_init.sql": &fstest.MapFile{
+			Data: []byte(`
+CREATE TABLE IF NOT EXISTS project (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  repo TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS document (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  title TEXT NOT NULL,
+  ref TEXT NOT NULL,
+  commit TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES project(id),
+  UNIQUE(project_id, kind)
+);
+
+CREATE INDEX IF NOT EXISTS idx_document_one_design_per_project ON document(project_id, kind);
+
+CREATE TABLE IF NOT EXISTS task (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  document_id TEXT NOT NULL,
+  title TEXT NOT NULL,
+  spec TEXT NOT NULL,
+  state TEXT NOT NULL DEFAULT 'backlog',
+  assignee TEXT,
+  lease_expires_at TEXT,
+  result TEXT,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  FOREIGN KEY(project_id) REFERENCES project(id),
+  FOREIGN KEY(document_id) REFERENCES document(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_project_state ON task(project_id, state);
+
+CREATE TABLE IF NOT EXISTS task_dep (
+  task_id TEXT NOT NULL,
+  depends_on_id TEXT NOT NULL,
+  PRIMARY KEY(task_id, depends_on_id),
+  FOREIGN KEY(task_id) REFERENCES task(id),
+  FOREIGN KEY(depends_on_id) REFERENCES task(id)
+);
+
+CREATE TABLE IF NOT EXISTS task_link (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  value TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(task_id) REFERENCES task(id),
+  UNIQUE(kind, value)
+);
+
+CREATE INDEX IF NOT EXISTS idx_task_link_kind_value ON task_link(kind, value);
+
+CREATE TABLE IF NOT EXISTS event (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  actor TEXT NOT NULL,
+  kind TEXT NOT NULL,
+  verdict TEXT,
+  note TEXT,
+  created_at TEXT NOT NULL,
+  FOREIGN KEY(task_id) REFERENCES task(id)
+);
+`),
+		},
+		"migrations/0002_document_one_design.sql": &fstest.MapFile{
+			Data: []byte(`
+CREATE UNIQUE INDEX IF NOT EXISTS idx_document_unique_design_per_project
+ON document(project_id)
+WHERE kind = 'design';
+`),
+		},
+		"migrations/0003_bad.sql": &fstest.MapFile{
+			Data: []byte(`
+-- This migration creates a dangling FK by dropping the parent table of a FK constraint.
+-- With FKs ON, this would fail immediately.
+-- With FKs OFF (as migrate() sets them), this succeeds but leaves task rows with
+-- invalid project_id references, which the FK integrity check detects before commit.
+DELETE FROM project WHERE id = 'dummy-project';
+INSERT INTO project (id, name, repo, created_at) VALUES ('dummy-project', 'Dummy', 'https://example.com', datetime('now'));
+INSERT INTO task (id, project_id, document_id, title, spec, created_at, updated_at)
+  VALUES ('dummy-task', 'non-existent-project', 'non-existent-doc', 'Dummy Task', 'spec', datetime('now'), datetime('now'));
+`),
+		},
+	}
+}
 
 // TestMigrations verifies that migrations can be applied to a fresh database
 // and that re-applying is idempotent.
@@ -809,6 +913,7 @@ func TestMigrationForeignKeysDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
+	defer store.Close()
 
 	ctx := context.Background()
 
@@ -833,18 +938,77 @@ func TestMigrationForeignKeysDisabled(t *testing.T) {
 		t.Error("expected FK constraint violation when inserting with bad FK, but insert succeeded")
 	}
 
-	store.Close()
+	// Demonstrate that the integrity check can detect foreign key violations.
+	// Start a transaction, toggle FKs off, and insert a dangling row.
+	tx, err := store.Conn().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	// Toggle FKs off within a connection-level operation (not the transaction)
+	if _, err := store.Conn().ExecContext(ctx, "PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("failed to disable FKs: %v", err)
+	}
+	defer store.Conn().ExecContext(context.Background(), "PRAGMA foreign_keys = ON")
+
+	// Now insert a dangling row that would violate FK constraints
+	if _, err := tx.ExecContext(ctx, `
+		INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "dangling-task", "non-existent-proj", "non-existent-doc", "Dangling", "spec", "backlog",
+		"2026-06-06T00:00:00Z", "2026-06-06T00:00:00Z"); err != nil {
+		t.Fatalf("failed to insert dangling row with FKs off: %v", err)
+	}
+
+	// Run the integrity check and verify it detects the violation
+	rows, err := tx.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatalf("failed to run foreign_key_check: %v", err)
+	}
+	defer rows.Close()
+
+	var violationCount int
+	for rows.Next() {
+		violationCount++
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("error iterating violations: %v", err)
+	}
+
+	if violationCount == 0 {
+		t.Error("expected foreign_key_check to detect dangling row, but found no violations")
+	}
 }
 
-// TestMigrationForeignKeyIntegrityCheck notes that the migration runner includes
-// a PRAGMA foreign_key_check before commit to catch any migrations that would
-// leave dangling foreign key references. Because migrations are embedded in the binary,
-// we can't dynamically test a deliberately-bad migration, but the check is present
-// in the code and would cause the migration to rollback if any violations are found.
+// TestMigrationForeignKeyIntegrityCheck verifies that the integrity check rejects
+// migrations that would leave dangling foreign key references.
 func TestMigrationForeignKeyIntegrityCheck(t *testing.T) {
-	// This is verified by code inspection: the migrate() function runs
-	// PRAGMA foreign_key_check before commit and fails the migration if violations exist
-	t.Log("FK integrity check in migrate() prevents bad migrations by rolling back on violation")
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "integrity_check_test.db")
+
+	// Create a test FS with a migration that intentionally leaves a dangling FK
+	testFS := createTestFSWithBadMigration()
+
+	conn, err := sql.Open("sqlite", buildDSN(dbPath))
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer conn.Close()
+
+	conn.SetMaxOpenConns(1)
+	store := &sqliteStore{conn: conn}
+
+	// Try to apply migrations with the bad migration included
+	err = store.migrate(testFS)
+
+	// The migration should fail due to FK constraint violation detected by integrity check
+	if err == nil {
+		t.Error("expected migration with dangling FK to fail, but it succeeded")
+	}
+	if !strings.Contains(err.Error(), "foreign key violations") {
+		t.Errorf("expected error to mention foreign key violations, got: %v", err)
+	}
 }
 
 // TestMigrationRoundTrip verifies that:
