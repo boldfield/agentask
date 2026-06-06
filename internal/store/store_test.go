@@ -1078,3 +1078,274 @@ func TestMigrationRoundTrip(t *testing.T) {
 		t.Error("expected FK constraint violation after migration, but insert succeeded")
 	}
 }
+
+// TestMigration0003ApprovedState verifies that migration 0003 (widening state CHECK to include 'approved'):
+// 1. Applies cleanly on an empty DB and one populated with tasks in several states (with deps, links, events)
+// 2. All existing rows remain intact with identical values
+// 3. Foreign keys still resolve and are enforced
+// 4. A task can now be set to 'approved' state
+// 5. Invalid states are still rejected by the CHECK constraint
+func TestMigration0003ApprovedState(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "migration_0003_test.db")
+
+	// Open fresh DB and populate it with tasks in various states before checking migration
+	store, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+
+	ctx := context.Background()
+
+	// Create multiple projects and documents
+	proj1, err := store.CreateProject(ctx, "proj-0003-1", "https://example.com/repo1")
+	if err != nil {
+		t.Fatalf("failed to create project 1: %v", err)
+	}
+
+	proj2, err := store.CreateProject(ctx, "proj-0003-2", "https://example.com/repo2")
+	if err != nil {
+		t.Fatalf("failed to create project 2: %v", err)
+	}
+
+	doc1, err := store.CreateDocument(ctx, proj1.ID, "design", "Design 1", "DESIGN1.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document 1: %v", err)
+	}
+
+	doc2, err := store.CreateDocument(ctx, proj2.ID, "feature_spec", "Spec 2", "SPEC2.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document 2: %v", err)
+	}
+
+	// Create tasks with dependencies
+	tasks1, err := store.CreateTasks(ctx, proj1.ID, []TaskInput{
+		{Key: "task-0003-1a", Title: "Task 0003-1A", Spec: "Spec 1A", DocumentID: doc1.ID},
+		{Key: "task-0003-1b", Title: "Task 0003-1B", Spec: "Spec 1B", DocumentID: doc1.ID, DependsOn: []string{"task-0003-1a"}},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks for proj1: %v", err)
+	}
+
+	tasks2, err := store.CreateTasks(ctx, proj2.ID, []TaskInput{
+		{Title: "Task 0003-2A", Spec: "Spec 2A", DocumentID: doc2.ID},
+		{Title: "Task 0003-2B", Spec: "Spec 2B", DocumentID: doc2.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks for proj2: %v", err)
+	}
+
+	// Set tasks to various existing states (not 'approved' which is new in migration 0003)
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", tasks1[0].ID)
+	if err != nil {
+		t.Fatalf("failed to set task state to ready: %v", err)
+	}
+
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id IN (?, ?)", "in_progress", tasks1[1].ID, tasks2[0].ID)
+	if err != nil {
+		t.Fatalf("failed to set task states to in_progress: %v", err)
+	}
+
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "done", tasks2[1].ID)
+	if err != nil {
+		t.Fatalf("failed to set task state to done: %v", err)
+	}
+
+	// Add task links
+	_, err = store.Conn().ExecContext(ctx, `
+		INSERT INTO task_link (id, task_id, kind, value) VALUES (?, ?, ?, ?)
+	`, "link-0003-1", tasks1[0].ID, "pr", "#456")
+	if err != nil {
+		t.Fatalf("failed to add task link 1: %v", err)
+	}
+
+	_, err = store.Conn().ExecContext(ctx, `
+		INSERT INTO task_link (id, task_id, kind, value) VALUES (?, ?, ?, ?)
+	`, "link-0003-2", tasks2[0].ID, "commit", "abc123def456")
+	if err != nil {
+		t.Fatalf("failed to add task link 2: %v", err)
+	}
+
+	// Add events
+	tx, err := store.Conn().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("failed to begin transaction for event 1: %v", err)
+	}
+	_, err = store.AppendEvent(ctx, tx, tasks1[0].ID, "agent-claim", "claim", nil, nil)
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("failed to append claim event: %v", err)
+	}
+	tx.Commit()
+
+	tx, err = store.Conn().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("failed to begin transaction for event 2: %v", err)
+	}
+	_, err = store.AppendEvent(ctx, tx, tasks2[1].ID, "human-reviewer", "review", strPtr("approve"), strPtr("looks good"))
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("failed to append review event: %v", err)
+	}
+	tx.Commit()
+
+	// Count initial rows in all tables
+	var initialProjectCount, initialDocCount, initialTaskCount, initialTaskDepCount, initialTaskLinkCount, initialEventCount int
+
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM project").Scan(&initialProjectCount)
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM document").Scan(&initialDocCount)
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task").Scan(&initialTaskCount)
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task_dep").Scan(&initialTaskDepCount)
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task_link").Scan(&initialTaskLinkCount)
+	store.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM event").Scan(&initialEventCount)
+
+	// Record initial task states for verification
+	initialTaskStates := make(map[string]string)
+	rows, err := store.Conn().QueryContext(ctx, "SELECT id, state FROM task ORDER BY id")
+	if err != nil {
+		t.Fatalf("failed to query task states: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, state string
+		if err := rows.Scan(&id, &state); err != nil {
+			t.Fatalf("failed to scan task state: %v", err)
+		}
+		initialTaskStates[id] = state
+	}
+
+	store.Close()
+
+	// Reopen the database (triggers migration 0003)
+	store2, err := Open(dbPath)
+	if err != nil {
+		t.Fatalf("failed to reopen database: %v", err)
+	}
+	defer store2.Close()
+
+	// Count rows after migration
+	var finalProjectCount, finalDocCount, finalTaskCount, finalTaskDepCount, finalTaskLinkCount, finalEventCount int
+
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM project").Scan(&finalProjectCount)
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM document").Scan(&finalDocCount)
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task").Scan(&finalTaskCount)
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task_dep").Scan(&finalTaskDepCount)
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task_link").Scan(&finalTaskLinkCount)
+	store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM event").Scan(&finalEventCount)
+
+	// Verify row counts (all rows should survive the migration)
+	if finalProjectCount != initialProjectCount {
+		t.Errorf("project count mismatch after 0003: initial=%d, final=%d", initialProjectCount, finalProjectCount)
+	}
+	if finalDocCount != initialDocCount {
+		t.Errorf("document count mismatch after 0003: initial=%d, final=%d", initialDocCount, finalDocCount)
+	}
+	if finalTaskCount != initialTaskCount {
+		t.Errorf("task count mismatch after 0003: initial=%d, final=%d", initialTaskCount, finalTaskCount)
+	}
+	if finalTaskDepCount != initialTaskDepCount {
+		t.Errorf("task_dep count mismatch after 0003: initial=%d, final=%d", initialTaskDepCount, finalTaskDepCount)
+	}
+	if finalTaskLinkCount != initialTaskLinkCount {
+		t.Errorf("task_link count mismatch after 0003: initial=%d, final=%d", initialTaskLinkCount, finalTaskLinkCount)
+	}
+	if finalEventCount != initialEventCount {
+		t.Errorf("event count mismatch after 0003: initial=%d, final=%d", initialEventCount, finalEventCount)
+	}
+
+	// Verify task states are unchanged (no data loss)
+	finalTaskStates := make(map[string]string)
+	rows, err = store2.Conn().QueryContext(ctx, "SELECT id, state FROM task ORDER BY id")
+	if err != nil {
+		t.Fatalf("failed to query final task states: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var id, state string
+		if err := rows.Scan(&id, &state); err != nil {
+			t.Fatalf("failed to scan final task state: %v", err)
+		}
+		finalTaskStates[id] = state
+	}
+
+	for taskID, initialState := range initialTaskStates {
+		finalState, exists := finalTaskStates[taskID]
+		if !exists {
+			t.Errorf("task %s missing after migration", taskID)
+		} else if initialState != finalState {
+			t.Errorf("task %s state changed: initial=%s, final=%s", taskID, initialState, finalState)
+		}
+	}
+
+	// Verify FK integrity check passes (PRAGMA foreign_key_check should return no violations)
+	var fkViolations int
+	err = store2.Conn().QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM (
+			SELECT 1 FROM pragma_foreign_key_check() LIMIT 1
+		)
+	`).Scan(&fkViolations)
+	if err == nil && fkViolations > 0 {
+		t.Errorf("found %d foreign key violations after migration 0003", fkViolations)
+	}
+
+	// Verify FK constraints are still enforced
+	_, err = store2.Conn().ExecContext(ctx, `
+		INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "bad-task-0003", "non-existent-proj", "non-existent-doc", "Bad", "bad", "backlog",
+		"2026-06-06T00:00:00Z", "2026-06-06T00:00:00Z")
+
+	if err == nil {
+		t.Error("expected FK constraint violation after 0003, but insert succeeded")
+	}
+
+	// TEST: Verify 'approved' state is now accepted by the CHECK constraint
+	testTaskID := tasks1[0].ID
+	_, err = store2.Conn().ExecContext(ctx, `
+		UPDATE task SET state = ? WHERE id = ?
+	`, "approved", testTaskID)
+
+	if err != nil {
+		t.Errorf("failed to update task state to 'approved' after migration 0003: %v", err)
+	}
+
+	// Verify the state was actually updated
+	var state string
+	err = store2.Conn().QueryRowContext(ctx, "SELECT state FROM task WHERE id = ?", testTaskID).Scan(&state)
+	if err != nil {
+		t.Fatalf("failed to query task state: %v", err)
+	}
+	if state != "approved" {
+		t.Errorf("expected task state to be 'approved', got '%s'", state)
+	}
+
+	// TEST: Verify that invalid states are still rejected by the CHECK constraint
+	_, err = store2.Conn().ExecContext(ctx, `
+		UPDATE task SET state = ? WHERE id = ?
+	`, "invalid-state", testTaskID)
+
+	if err == nil {
+		t.Error("expected CHECK constraint violation for invalid state, but update succeeded")
+	}
+
+	// TEST: Verify a new task can be inserted with 'approved' state
+	_, err = store2.Conn().ExecContext(ctx, `
+		INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "new-approved-task", proj1.ID, doc1.ID, "New Approved Task", "spec", "approved",
+		"2026-06-06T00:00:00Z", "2026-06-06T00:00:00Z")
+
+	if err != nil {
+		t.Errorf("failed to insert task with 'approved' state: %v", err)
+	}
+
+	// Verify the task was inserted
+	var count int
+	err = store2.Conn().QueryRowContext(ctx, "SELECT COUNT(*) FROM task WHERE state = ?", "approved").Scan(&count)
+	if err != nil {
+		t.Fatalf("failed to count approved tasks: %v", err)
+	}
+	if count != 2 {
+		t.Errorf("expected 2 approved tasks after insert, got %d", count)
+	}
+}

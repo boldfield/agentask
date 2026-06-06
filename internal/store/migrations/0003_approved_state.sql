@@ -23,10 +23,7 @@ INSERT INTO task_new
 SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, created_at, updated_at
 FROM task;
 
--- Drop the old indexes
-DROP INDEX IF EXISTS idx_task_project_state;
-
--- Drop the old table
+-- Drop the old table (indexes are automatically dropped with the table)
 DROP TABLE task;
 
 -- Rename the new table to task
