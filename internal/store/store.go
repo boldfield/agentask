@@ -1365,7 +1365,7 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append submit event: %w", err)
 		}
 
-		// SELECT the submitted task within the same transaction (reuse GetTask logic)
+		// Fetch the submitted task to check if it's an implement task
 		var t Task
 		var reviewModelsJSON *string
 		err = tx.QueryRowContext(ctx, `
@@ -1382,6 +1382,76 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			if err := json.Unmarshal([]byte(*reviewModelsJSON), &t.ReviewModels); err != nil {
 				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to unmarshal review_models: %w", err)
 			}
+		}
+
+		// If this is an implement task entering review, auto-spawn review tasks
+		if t.Kind == "implement" {
+			// Increment review_round
+			newReviewRound := t.ReviewRound + 1
+			_, err := tx.ExecContext(ctx, `
+				UPDATE task SET review_round = ? WHERE id = ?
+			`, newReviewRound, taskID)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to increment review_round: %w", err)
+			}
+
+			// Extract PR link from the submitted links
+			var prLink string
+			for _, link := range links {
+				if link.Kind == "pr" {
+					prLink = link.Value
+					break
+				}
+			}
+
+			// Determine reviewers (default to ["opus"] if empty)
+			reviewers := t.ReviewModels
+			if len(reviewers) == 0 {
+				reviewers = []string{"opus"}
+			}
+
+			// Create a review task for each reviewer
+			for _, reviewerModel := range reviewers {
+				reviewTaskID := GenerateID()
+				reviewTitle := "Review: " + t.Title + " [" + reviewerModel + "]"
+
+				// Build the spec for the review task: a strict-review brief pointing at the parent's PR link
+				reviewSpec := "Review the implementation:\n\n"
+				if prLink != "" {
+					reviewSpec += "Implementation PR: " + prLink + "\n\n"
+				}
+				reviewSpec += "Parent task: " + t.ID + "\n\n"
+				reviewSpec += "## Instructions\n\n"
+				reviewSpec += "Examine the submitted implementation and provide approval or rejection with written feedback.\n\n"
+				reviewSpec += "Approve if:\n"
+				reviewSpec += "- The implementation matches the specification\n"
+				reviewSpec += "- The code is correct and follows the project conventions\n"
+				reviewSpec += "- Tests pass and coverage is adequate\n\n"
+				reviewSpec += "Reject if:\n"
+				reviewSpec += "- The implementation has issues or does not match the specification\n"
+				reviewSpec += "- Further work is needed before merging\n\n"
+				reviewSpec += "Provide your verdict: approve or reject"
+
+				reviewModelsJSON := (*string)(nil) // review tasks don't have review_models
+				_, err := tx.ExecContext(ctx, `
+					INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, review_models, review_round, target_task_id, created_at, updated_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, reviewTaskID, t.ProjectID, t.DocumentID, reviewTitle, reviewSpec, "ready", reviewerModel, "review", reviewModelsJSON, newReviewRound, &t.ID, now, now)
+				if err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to create review task: %w", err)
+				}
+			}
+
+			// Append spawn_review event on the parent task
+			reviewersList, _ := json.Marshal(reviewers)
+			eventNote := "Round " + fmt.Sprintf("%d", newReviewRound) + " with models: " + string(reviewersList)
+			_, err = s.AppendEvent(ctx, tx, taskID, "system", "spawn_review", nil, &eventNote)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append spawn_review event: %w", err)
+			}
+
+			// Update t.ReviewRound for the response
+			t.ReviewRound = newReviewRound
 		}
 
 		// Fetch dependencies
