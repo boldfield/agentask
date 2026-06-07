@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/boldfield/agentask/internal/api"
@@ -41,8 +42,14 @@ func main() {
 		log.Fatalf("failed to parse AGENTASK_LEASE_TTL: %v", err)
 	}
 
+	// Parse model allowlist
+	allowedModels := parseAllowedModels(os.Getenv("AGENTASK_MODELS"))
+	if len(allowedModels) == 0 {
+		log.Fatal("AGENTASK_MODELS configuration resulted in empty allowlist")
+	}
+
 	// Open the store
-	s, err := store.Open(dbPath)
+	s, err := store.Open(dbPath, allowedModels)
 	if err != nil {
 		log.Fatalf("failed to open store: %v", err)
 	}
@@ -56,4 +63,22 @@ func main() {
 	if err := apiServer.ListenAndServe(addr); err != nil {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func parseAllowedModels(modelsStr string) []string {
+	const defaultModels = "haiku,sonnet,opus"
+	if modelsStr == "" {
+		modelsStr = defaultModels
+	}
+
+	seen := make(map[string]bool)
+	var result []string
+	for _, model := range strings.Split(modelsStr, ",") {
+		model = strings.TrimSpace(model)
+		if model != "" && !seen[model] {
+			seen[model] = true
+			result = append(result, model)
+		}
+	}
+	return result
 }

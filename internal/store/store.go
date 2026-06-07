@@ -46,14 +46,17 @@ type Store interface {
 
 // sqliteStore wraps a SQLite database connection and provides migration functionality.
 type sqliteStore struct {
-	conn *sql.DB
+	conn           *sql.DB
+	allowedModels  []string
+	allowedModelsM map[string]bool
 }
 
 // Open opens a database connection and applies all pending migrations.
 // The dbPath should be a file path (e.g., "agentask.db") or "file::memory:?cache=shared"
 // for an in-memory database.
 // It configures WAL mode, foreign keys, and busy timeout via DSN pragmas.
-func Open(dbPath string) (Store, error) {
+// allowedModels is the list of valid model identifiers for task creation.
+func Open(dbPath string, allowedModels []string) (Store, error) {
 	// Build the DSN with pragmas for WAL, foreign_keys, and busy_timeout.
 	// This ensures every connection from the pool has these pragmas applied.
 	dsn := buildDSN(dbPath)
@@ -66,7 +69,17 @@ func Open(dbPath string) (Store, error) {
 	// Set MaxOpenConns to 1 for single-writer SQLite (as per DESIGN.md §7)
 	conn.SetMaxOpenConns(1)
 
-	store := &sqliteStore{conn: conn}
+	// Build a map of allowed models for O(1) lookup
+	allowedModelsM := make(map[string]bool)
+	for _, m := range allowedModels {
+		allowedModelsM[m] = true
+	}
+
+	store := &sqliteStore{
+		conn:           conn,
+		allowedModels:  allowedModels,
+		allowedModelsM: allowedModelsM,
+	}
 
 	// Apply migrations in a transaction
 	if err := store.migrate(migrationsFS); err != nil {
@@ -523,6 +536,18 @@ func invalid(code, message string) error {
 	return &ValidationError{Code: code, Message: message}
 }
 
+// getDefaultModel returns the default model from the allowlist.
+// Prefers 'haiku' if available (backward compatibility), otherwise returns the first allowlisted model.
+func (s *sqliteStore) getDefaultModel() string {
+	if s.allowedModelsM["haiku"] {
+		return "haiku"
+	}
+	if len(s.allowedModels) > 0 {
+		return s.allowedModels[0]
+	}
+	return "haiku"
+}
+
 // CreateProject creates a new project with the given name and repo.
 // It generates the id and sets created_at automatically.
 func (s *sqliteStore) CreateProject(ctx context.Context, name, repo string) (Project, error) {
@@ -747,7 +772,19 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 
 		model := input.Model
 		if model == "" {
-			model = "haiku"
+			model = s.getDefaultModel()
+		}
+
+		// Validate model against allowlist
+		if !s.allowedModelsM[model] {
+			return nil, invalid("UNKNOWN_MODEL", fmt.Sprintf("unknown model: %s", model))
+		}
+
+		// Validate each review_models entry against allowlist
+		for _, reviewModel := range input.ReviewModels {
+			if !s.allowedModelsM[reviewModel] {
+				return nil, invalid("UNKNOWN_MODEL", fmt.Sprintf("unknown review model: %s", reviewModel))
+			}
 		}
 
 		var reviewModelsJSON *string
