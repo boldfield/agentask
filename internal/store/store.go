@@ -30,7 +30,7 @@ type Store interface {
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
 	CreateProject(ctx context.Context, name, repo string) (Project, error)
 	GetProject(ctx context.Context, id string) (Project, error)
-	ListProjects(ctx context.Context) ([]Project, error)
+	ListProjects(ctx context.Context, filter ProjectListFilter) ([]Project, error)
 	CreateDocument(ctx context.Context, projectID, kind, title, ref string, commit *string) (Document, error)
 	ListDocuments(ctx context.Context, projectID string, kind *string) ([]Document, error)
 	CreateTasks(ctx context.Context, projectID string, tasks []TaskInput) ([]Task, error)
@@ -487,6 +487,13 @@ type TaskListFilter struct {
 	Claimable bool
 }
 
+// ProjectListFilter contains filters for listing projects.
+type ProjectListFilter struct {
+	Model     *string
+	Kind      *string
+	Claimable bool
+}
+
 // Event represents an audit/event log entry.
 type Event struct {
 	ID        string  `db:"id" json:"id"`
@@ -594,15 +601,40 @@ func (s *sqliteStore) GetProject(ctx context.Context, id string) (Project, error
 	return p, nil
 }
 
-// ListProjects lists all projects ordered by created_at.
+// ListProjects lists projects with optional filters, ordered by created_at.
+// If filter.Claimable is true, returns only projects with at least one claimable task
+// matching the optional model and kind filters.
 // Returns an empty slice (not nil) when no projects exist.
-func (s *sqliteStore) ListProjects(ctx context.Context) ([]Project, error) {
+func (s *sqliteStore) ListProjects(ctx context.Context, filter ProjectListFilter) ([]Project, error) {
 	query := `
 		SELECT id, name, repo, created_at FROM project
-		ORDER BY created_at
 	`
+	args := []interface{}{}
 
-	rows, err := s.conn.QueryContext(ctx, query)
+	if filter.Claimable {
+		query += ` WHERE EXISTS (
+			SELECT 1 FROM task
+			WHERE task.project_id = project.id
+			AND ` + claimableSQL
+		args = append(args, nowTimestamp())
+
+		if filter.Model != nil {
+			query += ` AND model = ?`
+			args = append(args, *filter.Model)
+		}
+
+		if filter.Kind != nil {
+			query += ` AND kind = ?`
+			args = append(args, *filter.Kind)
+		}
+
+		query += `
+		)`
+	}
+
+	query += ` ORDER BY created_at`
+
+	rows, err := s.conn.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, fmt.Errorf("failed to query projects: %w", err)
 	}

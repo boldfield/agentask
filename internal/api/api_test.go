@@ -2816,6 +2816,264 @@ func TestListProjectsReturnsEmptyArray(t *testing.T) {
 	}
 }
 
+// TestListProjectsWithClaimableFilter verifies that GET /projects?claimable=true&model=haiku&kind=implement
+// returns only projects with at least one claimable haiku implement task.
+func TestListProjectsWithClaimableFilter(t *testing.T) {
+	tmpdb := t.TempDir() + "/test.db"
+	s, err := store.Open(tmpdb, defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test store: %v", err)
+	}
+	server := New(s, "test-token", 5*time.Minute)
+	authHeader := "Bearer test-token"
+
+	// Create project 1 with a claimable haiku implement task
+	proj1Payload := map[string]string{"name": "project-with-claimable", "repo": "https://github.com/example/repo1"}
+	proj1Body, _ := json.Marshal(proj1Payload)
+	proj1Req := httptest.NewRequest("POST", "/projects", bytes.NewReader(proj1Body))
+	proj1Req.Header.Set("Authorization", authHeader)
+	proj1Req.Header.Set("Content-Type", "application/json")
+	proj1W := httptest.NewRecorder()
+	server.mux.ServeHTTP(proj1W, proj1Req)
+	var proj1 store.Project
+	json.NewDecoder(proj1W.Body).Decode(&proj1)
+
+	// Create project 2 with only blocked tasks
+	proj2Payload := map[string]string{"name": "project-blocked-only", "repo": "https://github.com/example/repo2"}
+	proj2Body, _ := json.Marshal(proj2Payload)
+	proj2Req := httptest.NewRequest("POST", "/projects", bytes.NewReader(proj2Body))
+	proj2Req.Header.Set("Authorization", authHeader)
+	proj2Req.Header.Set("Content-Type", "application/json")
+	proj2W := httptest.NewRecorder()
+	server.mux.ServeHTTP(proj2W, proj2Req)
+	var proj2 store.Project
+	json.NewDecoder(proj2W.Body).Decode(&proj2)
+
+	// Create documents for both projects
+	for _, proj := range []store.Project{proj1, proj2} {
+		docPayload := map[string]string{
+			"kind":  "design",
+			"title": "DESIGN.md",
+			"ref":   "DESIGN.md",
+		}
+		docBody, _ := json.Marshal(docPayload)
+		docReq := httptest.NewRequest("POST", "/projects/"+proj.ID+"/documents", bytes.NewReader(docBody))
+		docReq.Header.Set("Authorization", authHeader)
+		docReq.Header.Set("Content-Type", "application/json")
+		docW := httptest.NewRecorder()
+		server.mux.ServeHTTP(docW, docReq)
+		var doc store.Document
+		json.NewDecoder(docW.Body).Decode(&doc)
+
+		// Create a task in each project
+		taskPayload := []store.TaskInput{
+			{
+				Title:      "test-task",
+				Spec:       "test spec",
+				DocumentID: doc.ID,
+				Model:      "haiku",
+			},
+		}
+		taskBody, _ := json.Marshal(taskPayload)
+		taskReq := httptest.NewRequest("POST", "/projects/"+proj.ID+"/tasks", bytes.NewReader(taskBody))
+		taskReq.Header.Set("Authorization", authHeader)
+		taskReq.Header.Set("Content-Type", "application/json")
+		taskW := httptest.NewRecorder()
+		server.mux.ServeHTTP(taskW, taskReq)
+		var tasks []store.Task
+		json.NewDecoder(taskW.Body).Decode(&tasks)
+
+		// Promote the task to ready (needed for claimable)
+		promoteReq := httptest.NewRequest("POST", "/tasks/"+tasks[0].ID+"/promote", nil)
+		promoteReq.Header.Set("Authorization", authHeader)
+		promoteW := httptest.NewRecorder()
+		server.mux.ServeHTTP(promoteW, promoteReq)
+
+		// For proj2, transition the task to blocked to exclude it from claimable filter
+		if proj.ID == proj2.ID {
+			blockReq := httptest.NewRequest("POST", "/tasks/"+tasks[0].ID+"/transition", bytes.NewReader([]byte(`{"to":"blocked"}`)))
+			blockReq.Header.Set("Authorization", authHeader)
+			blockReq.Header.Set("Content-Type", "application/json")
+			blockW := httptest.NewRecorder()
+			server.mux.ServeHTTP(blockW, blockReq)
+		}
+	}
+
+	// List projects with claimable filter
+	listReq := httptest.NewRequest("GET", "/projects?claimable=true&model=haiku&kind=implement", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var respProjects []store.Project
+	if err := json.NewDecoder(listW.Body).Decode(&respProjects); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify only proj1 is returned
+	if len(respProjects) != 1 {
+		t.Errorf("expected 1 project, got %d", len(respProjects))
+	}
+	if len(respProjects) > 0 && respProjects[0].ID != proj1.ID {
+		t.Errorf("expected project %q, got %q", proj1.ID, respProjects[0].ID)
+	}
+}
+
+// TestListProjectsClaimableWithMultipleFilters verifies that model and kind filters AND-compose.
+func TestListProjectsClaimableWithMultipleFilters(t *testing.T) {
+	tmpdb := t.TempDir() + "/test.db"
+	s, err := store.Open(tmpdb, defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test store: %v", err)
+	}
+	server := New(s, "test-token", 5*time.Minute)
+	authHeader := "Bearer test-token"
+
+	// Create a project with two tasks: one haiku, one sonnet
+	projPayload := map[string]string{"name": "multi-model-project", "repo": "https://github.com/example/repo"}
+	projBody, _ := json.Marshal(projPayload)
+	projReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(projBody))
+	projReq.Header.Set("Authorization", authHeader)
+	projReq.Header.Set("Content-Type", "application/json")
+	projW := httptest.NewRecorder()
+	server.mux.ServeHTTP(projW, projReq)
+	var proj store.Project
+	json.NewDecoder(projW.Body).Decode(&proj)
+
+	// Create document
+	docPayload := map[string]string{
+		"kind":  "design",
+		"title": "DESIGN.md",
+		"ref":   "DESIGN.md",
+	}
+	docBody, _ := json.Marshal(docPayload)
+	docReq := httptest.NewRequest("POST", "/projects/"+proj.ID+"/documents", bytes.NewReader(docBody))
+	docReq.Header.Set("Authorization", authHeader)
+	docReq.Header.Set("Content-Type", "application/json")
+	docW := httptest.NewRecorder()
+	server.mux.ServeHTTP(docW, docReq)
+	var doc store.Document
+	json.NewDecoder(docW.Body).Decode(&doc)
+
+	// Create haiku and sonnet tasks
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "haiku-task",
+			Spec:       "test spec",
+			DocumentID: doc.ID,
+			Model:      "haiku",
+		},
+		{
+			Title:      "sonnet-task",
+			Spec:       "test spec",
+			DocumentID: doc.ID,
+			Model:      "sonnet",
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	taskReq := httptest.NewRequest("POST", "/projects/"+proj.ID+"/tasks", bytes.NewReader(taskBody))
+	taskReq.Header.Set("Authorization", authHeader)
+	taskReq.Header.Set("Content-Type", "application/json")
+	taskW := httptest.NewRecorder()
+	server.mux.ServeHTTP(taskW, taskReq)
+	var tasks []store.Task
+	json.NewDecoder(taskW.Body).Decode(&tasks)
+
+	// Promote both to ready
+	for _, task := range tasks {
+		promoteReq := httptest.NewRequest("POST", "/tasks/"+task.ID+"/promote", nil)
+		promoteReq.Header.Set("Authorization", authHeader)
+		promoteW := httptest.NewRecorder()
+		server.mux.ServeHTTP(promoteW, promoteReq)
+	}
+
+	// Filter for haiku model - should return the project
+	haikuReq := httptest.NewRequest("GET", "/projects?claimable=true&model=haiku&kind=implement", nil)
+	haikuReq.Header.Set("Authorization", authHeader)
+	haikuW := httptest.NewRecorder()
+	server.mux.ServeHTTP(haikuW, haikuReq)
+
+	var haikuProjects []store.Project
+	json.NewDecoder(haikuW.Body).Decode(&haikuProjects)
+	if len(haikuProjects) != 1 {
+		t.Errorf("expected 1 project for haiku filter, got %d", len(haikuProjects))
+	}
+
+	// Filter for sonnet model - should also return the project
+	sonnetReq := httptest.NewRequest("GET", "/projects?claimable=true&model=sonnet&kind=implement", nil)
+	sonnetReq.Header.Set("Authorization", authHeader)
+	sonnetW := httptest.NewRecorder()
+	server.mux.ServeHTTP(sonnetW, sonnetReq)
+
+	var sonnetProjects []store.Project
+	json.NewDecoder(sonnetW.Body).Decode(&sonnetProjects)
+	if len(sonnetProjects) != 1 {
+		t.Errorf("expected 1 project for sonnet filter, got %d", len(sonnetProjects))
+	}
+
+	// Filter for both haiku and implement - should return the project (AND logic)
+	bothReq := httptest.NewRequest("GET", "/projects?claimable=true&model=haiku&kind=implement", nil)
+	bothReq.Header.Set("Authorization", authHeader)
+	bothW := httptest.NewRecorder()
+	server.mux.ServeHTTP(bothW, bothReq)
+
+	var bothProjects []store.Project
+	json.NewDecoder(bothW.Body).Decode(&bothProjects)
+	if len(bothProjects) != 1 {
+		t.Errorf("expected 1 project for both filters, got %d", len(bothProjects))
+	}
+}
+
+// TestListProjectsClaimableUnchangedWithoutFilters verifies backward compatibility:
+// GET /projects without filters returns all projects.
+func TestListProjectsClaimableUnchangedWithoutFilters(t *testing.T) {
+	tmpdb := t.TempDir() + "/test.db"
+	s, err := store.Open(tmpdb, defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test store: %v", err)
+	}
+	server := New(s, "test-token", 5*time.Minute)
+	authHeader := "Bearer test-token"
+
+	// Create two projects
+	for i := 0; i < 2; i++ {
+		projPayload := map[string]string{
+			"name": "test-project-" + string(rune('a'+i)),
+			"repo": "https://github.com/example/repo-" + string(rune('a'+i)),
+		}
+		projBody, _ := json.Marshal(projPayload)
+		projReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(projBody))
+		projReq.Header.Set("Authorization", authHeader)
+		projReq.Header.Set("Content-Type", "application/json")
+		projW := httptest.NewRecorder()
+		server.mux.ServeHTTP(projW, projReq)
+	}
+
+	// List without filters
+	listReq := httptest.NewRequest("GET", "/projects", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var respProjects []store.Project
+	if err := json.NewDecoder(listW.Body).Decode(&respProjects); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	// Verify both projects are returned (no filter applied)
+	if len(respProjects) != 2 {
+		t.Errorf("expected 2 projects without filters, got %d", len(respProjects))
+	}
+}
+
 // TestClaimTaskWithModelMismatchReturns409ModelMismatch tests that claiming a task
 // with a mismatched model returns HTTP 409 with error code MODEL_MISMATCH.
 func TestClaimTaskWithModelMismatchReturns409ModelMismatch(t *testing.T) {
