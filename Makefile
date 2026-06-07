@@ -1,21 +1,11 @@
-.PHONY: build run test tidy tui check
+.PHONY: build test check
 
 build:
 	mkdir -p bin
-	go build -o bin/agentask ./cmd/agentask
-
-tui:
-	mkdir -p bin
-	go build -o bin/agentask-tui ./cmd/agentask-tui
-
-run: build
-	./bin/agentask
+	go build -o bin/foreman ./cmd/foreman
 
 test:
 	go test ./...
-
-tidy:
-	go mod tidy
 
 check:
 	@echo "Running gofmt check..."

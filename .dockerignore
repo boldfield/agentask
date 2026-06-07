@@ -1,8 +1,0 @@
-.git
-.gitignore
-bin/
-*.db
-*.db-*
-*.md
-board/
-*.local.json

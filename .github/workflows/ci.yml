@@ -14,8 +14,6 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          # go.mod requires >= 1.25.6 (via modernc.org/sqlite). Pin to 1.25 so the
-          # job uses the real toolchain explicitly instead of silently auto-downloading.
           go-version: '1.25'
           cache: true
 
@@ -24,25 +22,3 @@ jobs:
       - run: make build
 
       - run: go test -count=1 ./...
-
-  docker:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Build image
-        run: docker build -t agentask:ci .
-
-      - name: Smoke test /healthz
-        run: |
-          docker run -d --name agentask_ci -e AGENTASK_TOKEN=citoken -p 8080:8080 agentask:ci
-          ok=
-          for i in $(seq 1 15); do
-            if [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/healthz)" = "200" ]; then
-              ok=1; break
-            fi
-            sleep 1
-          done
-          docker logs agentask_ci
-          docker rm -f agentask_ci
-          test -n "$ok" || { echo "healthz did not return 200"; exit 1; }
