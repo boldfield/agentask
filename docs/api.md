@@ -672,13 +672,13 @@ The response includes the review task's own `id` and the parent implement task's
 **Status Codes (both kinds):**
 - `200 OK`: Submit successful
 - `400 EMPTY_AGENT_ID`: agent_id cannot be empty
-- `400 INVALID_LINK_KIND`: One or more link kinds are invalid (must be pr, branch, commit, or ci) (implement only)
+- `400 INVALID_LINK_KIND`: One or more link kinds are invalid (must be pr, branch, commit, or ci)
 - `400 INVALID_VERDICT`: verdict must be "approve" or "reject" (review only)
 - `400 FORBIDDEN_VERDICT`: verdict must not be present for implement tasks
 - `400 MISSING_VERDICT`: verdict is required for review tasks
 - `400 JSON_DECODE_ERROR`: Invalid JSON in request body
 - `404 NOT_FOUND`: Task not found
-- `409 CONFLICT`: Task is not in_progress, is not assigned to the provided agent_id, or is not the expected kind
+- `409 CONFLICT`: Task is not in_progress or is not assigned to the provided agent_id
 - `500 SUBMIT_ERROR`: Server error submitting task
 
 **Note:** Links are indexed on `(kind, value)` to enable reverse lookup. Review verdicts are recorded as events on the parent implement task for audit purposes.
