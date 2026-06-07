@@ -333,9 +333,11 @@ func (m *BoardModel) initDetailViewport(task tuiclient.TaskDetail) {
 
 	vp := viewport.New(m.width, vpHeight)
 	vp.SetContent(content)
-	// Preserve scroll position on resize.
+	// Preserve scroll position on resize, but clamp to the new content's valid range.
 	if m.detailViewport.YOffset > 0 {
-		vp.YOffset = m.detailViewport.YOffset
+		maxOffset := max(0, vp.TotalLineCount()-vp.VisibleLineCount())
+		clampedOffset := min(m.detailViewport.YOffset, maxOffset)
+		vp.SetYOffset(clampedOffset)
 	}
 	m.detailViewport = vp
 }
