@@ -317,6 +317,11 @@ func (s *Server) handleGetTaskEvents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Ensure we return an empty array, not null
+	if events == nil {
+		events = make([]store.Event, 0)
+	}
+
 	s.encodeJSON(w, http.StatusOK, events)
 }
 

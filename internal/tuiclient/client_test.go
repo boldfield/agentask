@@ -473,3 +473,109 @@ func TestAPIError_UndecodableBody(t *testing.T) {
 		t.Errorf("APIError.Error() for fallback should include status code, got: %q", err.Error())
 	}
 }
+
+func TestListEvents(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/events" {
+			t.Errorf("expected /tasks/task123/events, got %s", r.URL.Path)
+		}
+
+		// Check authorization header
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		// Write response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		events := []Event{
+			{
+				ID:        "event1",
+				TaskID:    "task123",
+				Actor:     "system",
+				Kind:      "transition",
+				Verdict:   nil,
+				Note:      stringPtr("backlog->ready"),
+				CreatedAt: "2026-06-07T00:00:00Z",
+			},
+			{
+				ID:        "event2",
+				TaskID:    "task123",
+				Actor:     "agent-1",
+				Kind:      "claim",
+				Verdict:   nil,
+				Note:      nil,
+				CreatedAt: "2026-06-07T00:01:00Z",
+			},
+			{
+				ID:        "event3",
+				TaskID:    "task123",
+				Actor:     "agent-1",
+				Kind:      "submit",
+				Verdict:   nil,
+				Note:      nil,
+				CreatedAt: "2026-06-07T00:02:00Z",
+			},
+		}
+		json.NewEncoder(w).Encode(events)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test
+	events, err := client.ListEvents(context.Background(), "task123")
+	if err != nil {
+		t.Fatalf("ListEvents failed: %v", err)
+	}
+
+	if len(events) != 3 {
+		t.Errorf("expected 3 events, got %d", len(events))
+	}
+
+	if events[0].Kind != "transition" {
+		t.Errorf("expected first event kind 'transition', got %s", events[0].Kind)
+	}
+
+	if events[1].Kind != "claim" {
+		t.Errorf("expected second event kind 'claim', got %s", events[1].Kind)
+	}
+
+	if events[2].Kind != "submit" {
+		t.Errorf("expected third event kind 'submit', got %s", events[2].Kind)
+	}
+}
+
+func TestListEventsEmpty(t *testing.T) {
+	// Create a test server that returns an empty array
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("[]"))
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test
+	events, err := client.ListEvents(context.Background(), "task123")
+	if err != nil {
+		t.Fatalf("ListEvents failed: %v", err)
+	}
+
+	if len(events) != 0 {
+		t.Errorf("expected 0 events, got %d", len(events))
+	}
+}
+
+func stringPtr(s string) *string {
+	return &s
+}
