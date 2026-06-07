@@ -40,6 +40,10 @@ const (
 	modeApprovedRejectNote
 	// modeApprovedRejectConfirm is the "Send back to ready? [y/N]" confirmation step.
 	modeApprovedRejectConfirm
+	// modeUnblockNote is the optional note input step for an unblock action.
+	modeUnblockNote
+	// modeUnblockConfirm is the "Unblock → ready? [y/N]" confirmation step.
+	modeUnblockConfirm
 )
 
 // BoardModel is the Bubble Tea model for the task board view.
@@ -94,9 +98,10 @@ const (
 	stateReview     = "review"
 	stateApproved   = "approved"
 	stateDone       = "done"
+	stateBlocked    = "blocked"
 )
 
-var stateOrder = []string{stateBacklog, stateReady, stateInProgress, stateReview, stateApproved, stateDone}
+var stateOrder = []string{stateBacklog, stateReady, stateInProgress, stateReview, stateApproved, stateDone, stateBlocked}
 var stateColors = map[string]lipgloss.Color{
 	stateBacklog:    lipgloss.Color("8"),
 	stateReady:      lipgloss.Color("4"),
@@ -104,6 +109,7 @@ var stateColors = map[string]lipgloss.Color{
 	stateReview:     lipgloss.Color("5"),
 	stateApproved:   lipgloss.Color("6"),
 	stateDone:       lipgloss.Color("2"),
+	stateBlocked:    lipgloss.Color("1"),
 }
 
 // NewBoardModel creates a new board model and starts the initial fetch.
@@ -319,6 +325,31 @@ func (m *BoardModel) approvedRejectCmd(taskID string, note *string, fromDetail b
 				return msg
 			}
 			msg := m.fetchTasksInline(ctx, fmt.Sprintf("bounce transition failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
+		}
+
+		msg := m.fetchTasksInline(ctx, "")
+		msg.fromDetail = fromDetail
+		return msg
+	}
+}
+
+// unblockCmd creates a command that transitions a blocked task to ready with an optional note.
+func (m *BoardModel) unblockCmd(taskID string, note *string, fromDetail bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Transition directly without recording a review verdict.
+		if err := m.client.TransitionTask(ctx, taskID, "ready", note); err != nil {
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+				msg := m.fetchTasksInline(ctx, fmt.Sprintf("unblock transition 409: %s", apiErr.Message))
+				msg.fromDetail = fromDetail
+				return msg
+			}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("unblock transition failed: %v", err))
 			msg.fromDetail = fromDetail
 			return msg
 		}
@@ -639,6 +670,20 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.reviewInput.Focus()
 				m.inputHint = ""
 				m.mode = modeApprovedRejectNote
+				var cmd tea.Cmd
+				m.reviewInput, cmd = m.reviewInput.Update(nil)
+				return m, cmd
+			}
+
+		// Unblock: only on blocked column tasks
+		case "u":
+			if m.selectedColumn == 6 && m.selectedTaskID != "" {
+				m.pendingTaskID = m.selectedTaskID
+				m.reviewInput.Placeholder = "optional note (enter to skip)"
+				m.reviewInput.SetValue("")
+				m.reviewInput.Focus()
+				m.inputHint = ""
+				m.mode = modeUnblockNote
 				var cmd tea.Cmd
 				m.reviewInput, cmd = m.reviewInput.Update(nil)
 				return m, cmd
@@ -1014,6 +1059,46 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Ignore all other keys in confirm mode.
 		return m, nil
+
+	case modeUnblockNote:
+		switch msg.String() {
+		case "esc":
+			// Cancel the unblock action entirely.
+			m.cancelReviewMode()
+			return m, nil
+		case "enter":
+			// Capture the note (nil if empty), then move to confirm step.
+			noteValue := strings.TrimSpace(m.reviewInput.Value())
+			if noteValue == "" {
+				m.pendingNote = nil
+			} else {
+				m.pendingNote = &noteValue
+			}
+			m.mode = modeUnblockConfirm
+			return m, nil
+		default:
+			// Pass the key to the text input.
+			var cmd tea.Cmd
+			m.reviewInput, cmd = m.reviewInput.Update(msg)
+			return m, cmd
+		}
+
+	case modeUnblockConfirm:
+		switch msg.String() {
+		case "esc", "n", "N":
+			// User declined or pressed escape — cancel.
+			m.cancelReviewMode()
+			return m, nil
+		case "y", "Y":
+			// Capture origin before cancelReviewMode clears it.
+			taskID := m.pendingTaskID
+			note := m.pendingNote
+			originFromDetail := m.reviewFromDetail
+			m.cancelReviewMode()
+			return m, m.unblockCmd(taskID, note, originFromDetail)
+		}
+		// Ignore all other keys in confirm mode.
+		return m, nil
 	}
 
 	return m, nil
@@ -1175,6 +1260,18 @@ func (m *BoardModel) renderReviewOverlay() string {
 	case modeApprovedRejectConfirm:
 		b.WriteString("Send back to ready? [y/N] ")
 		b.WriteString("(y to confirm, n/esc to cancel)\n")
+	case modeUnblockNote:
+		b.WriteString("Unblock — add an optional note:\n")
+		b.WriteString(m.reviewInput.View())
+		b.WriteString("\n")
+		b.WriteString("(enter to continue, esc to cancel)\n")
+	case modeUnblockConfirm:
+		taskID := m.pendingTaskID
+		if len(taskID) > 8 {
+			taskID = taskID[:8]
+		}
+		b.WriteString(fmt.Sprintf("Unblock %s → ready? [y/N] ", taskID))
+		b.WriteString("(y to confirm, n/esc to cancel)\n")
 	}
 	return b.String()
 }
@@ -1335,6 +1432,8 @@ func (m *BoardModel) renderHelpBar() string {
 		return "←/→ column   ↑/↓ select   enter detail   a approve   x reject   P switch project   r refresh   q quit"
 	case 4: // approved
 		return "←/→ column   ↑/↓ select   enter detail   b bounce   P switch project   r refresh   q quit"
+	case 6: // blocked
+		return "←/→ column   ↑/↓ select   enter detail   u unblock   P switch project   r refresh   q quit"
 	default:
 		return "←/→ column   ↑/↓ select   enter detail   P switch project   r refresh   q quit"
 	}

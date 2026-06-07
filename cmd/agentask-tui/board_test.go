@@ -2775,3 +2775,143 @@ func TestBoardModel_ProjectNameInDetailView(t *testing.T) {
 		t.Errorf("Expected project name 'Detail Test Project' in detail view, got:\n%s", output)
 	}
 }
+
+// buildBlockedModel returns a board model set up in the blocked column with one blocked task selected.
+func buildBlockedModel(t *testing.T, blockedClient *tuiclient.MockClient) *BoardModel {
+	t.Helper()
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "tester",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(blockedClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Load a blocked task into the board.
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range stateOrder {
+		bucketed[state] = []tuiclient.Task{}
+	}
+	bucketed["blocked"] = []tuiclient.Task{
+		{ID: "blocked-task-1", Title: "Blocked Task", State: "blocked"},
+	}
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Navigate to the blocked column (index 6).
+	// Starting from in_progress (index 2), press right 4 times.
+	for i := 0; i < 4; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+		model = m.(*BoardModel)
+	}
+
+	if model.selectedColumn != 6 {
+		t.Fatalf("buildBlockedModel: expected selectedColumn 6 (blocked), got %d", model.selectedColumn)
+	}
+	if model.selectedTaskID != "blocked-task-1" {
+		t.Fatalf("buildBlockedModel: expected selectedTaskID blocked-task-1, got %q", model.selectedTaskID)
+	}
+
+	return model
+}
+
+// TestBoardModel_UnblockFlow tests the full unblock flow with an optional note.
+func TestBoardModel_UnblockFlow(t *testing.T) {
+	var callLog []string
+	var capturedTransitionID, capturedTransitionTo string
+	var capturedTransitionNote *string
+
+	mockClient := &tuiclient.MockClient{
+		TransitionTaskFunc: func(ctx context.Context, id, to string, note *string) error {
+			callLog = append(callLog, "transition")
+			capturedTransitionID = id
+			capturedTransitionTo = to
+			capturedTransitionNote = note
+			return nil
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			callLog = append(callLog, "refetch")
+			// After unblock, the task should be in ready.
+			return []tuiclient.Task{
+				{ID: "blocked-task-1", Title: "Blocked Task", State: "ready"},
+			}, nil
+		},
+	}
+
+	model := buildBlockedModel(t, mockClient)
+
+	// Press 'u' to start unblock flow.
+	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeUnblockNote {
+		t.Fatalf("Expected modeUnblockNote after 'u', got mode %d", model.mode)
+	}
+
+	// Type a note.
+	for _, ch := range "Dependency resolved" {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		model = m.(*BoardModel)
+	}
+
+	// Press enter to advance to confirm step.
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+
+	if model.mode != modeUnblockConfirm {
+		t.Fatalf("Expected modeUnblockConfirm after enter, got mode %d", model.mode)
+	}
+
+	// Verify the render output contains the confirm prompt (non-empty).
+	output := model.View()
+	if output == "" {
+		t.Errorf("Expected non-empty render output in modeUnblockConfirm, got blank")
+	}
+	if !strings.Contains(output, "→ ready?") {
+		t.Errorf("Expected confirm prompt in view, got:\n%s", output)
+	}
+
+	// Press 'y' to confirm.
+	m, unblockCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after confirm, got mode %d", model.mode)
+	}
+
+	// Execute the unblock command (runs TransitionTask then refetch inline).
+	model = executeReviewCmd(t, model, unblockCmd)
+
+	// Verify call order: transition → refetch.
+	if len(callLog) != 2 {
+		t.Fatalf("Expected 2 calls (transition, refetch), got %d: %v", len(callLog), callLog)
+	}
+	if callLog[0] != "transition" {
+		t.Errorf("Expected first call to be 'transition', got %q", callLog[0])
+	}
+	if callLog[1] != "refetch" {
+		t.Errorf("Expected second call to be 'refetch', got %q", callLog[1])
+	}
+
+	// Verify TransitionTask arguments.
+	if capturedTransitionID != "blocked-task-1" {
+		t.Errorf("TransitionTask: expected task ID blocked-task-1, got %q", capturedTransitionID)
+	}
+	if capturedTransitionTo != "ready" {
+		t.Errorf("TransitionTask: expected to=ready, got %q", capturedTransitionTo)
+	}
+	if capturedTransitionNote == nil || *capturedTransitionNote != "Dependency resolved" {
+		t.Errorf("TransitionTask: expected note 'Dependency resolved', got %v", capturedTransitionNote)
+	}
+
+	// Board should now show the task in ready.
+	output = model.View()
+	if !strings.Contains(output, "ready(1)") {
+		t.Errorf("Expected ready(1) after unblock, got:\n%s", output)
+	}
+}
