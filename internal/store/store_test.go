@@ -2152,6 +2152,8 @@ func TestCreateTasksWithConfiguredAllowlist(t *testing.T) {
 	}
 }
 
+// TestSubmitImplementTaskAutoSpawnsReviewTasks_MultiReviewer tests that submitting an implement task
+// with multiple required reviewers creates exactly that many review tasks.
 func TestSubmitImplementTaskAutoSpawnsReviewTasks_MultiReviewer(t *testing.T) {
 	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
