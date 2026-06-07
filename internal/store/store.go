@@ -1529,6 +1529,67 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			if err != nil {
 				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append review event on parent: %w", err)
 			}
+
+			// Wait-for-all aggregation: tally the parent's review tasks for the current round
+			var parentReviewRound int
+			var parentState string
+			err = tx.QueryRowContext(ctx, `
+				SELECT review_round, state FROM task WHERE id = ?
+			`, *targetTaskID).Scan(&parentReviewRound, &parentState)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to fetch parent task review_round: %w", err)
+			}
+
+			// Count total, done, and approve verdict review tasks for the parent in the current round
+			var totalReviewTasks int
+			var doneReviewTasks int
+			var approveReviewTasks int
+			err = tx.QueryRowContext(ctx, `
+				SELECT
+					COUNT(*) as total,
+					SUM(CASE WHEN state='done' THEN 1 ELSE 0 END) as done,
+					SUM(CASE WHEN state='done' AND verdict='approve' THEN 1 ELSE 0 END) as approve
+				FROM task
+				WHERE target_task_id = ? AND review_round = ?
+			`, *targetTaskID, parentReviewRound).Scan(&totalReviewTasks, &doneReviewTasks, &approveReviewTasks)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to tally review tasks: %w", err)
+			}
+
+			// Determine the new parent state based on the tally
+			var newParentState string
+			if doneReviewTasks < totalReviewTasks {
+				// Not all done yet; parent stays in review
+				newParentState = ""
+			} else if doneReviewTasks == totalReviewTasks && approveReviewTasks == totalReviewTasks {
+				// All done and all approved; move to approved
+				newParentState = "approved"
+			} else if doneReviewTasks == totalReviewTasks && approveReviewTasks < totalReviewTasks {
+				// All done but at least one rejected; move to ready for rework
+				newParentState = "ready"
+			}
+
+			// Update parent state if needed
+			if newParentState != "" && newParentState != parentState {
+				_, err := tx.ExecContext(ctx, `
+					UPDATE task SET state = ?, updated_at = ? WHERE id = ?
+				`, newParentState, now, *targetTaskID)
+				if err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to update parent task state: %w", err)
+				}
+
+				// Append transition event for audit trail
+				var eventNote string
+				if newParentState == "approved" {
+					eventNote = "Aggregation: all reviewers approved"
+				} else if newParentState == "ready" {
+					eventNote = "Aggregation: at least one reviewer rejected"
+				}
+				_, err = s.AppendEvent(ctx, tx, *targetTaskID, "system", "transition", nil, &eventNote)
+				if err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append transition event: %w", err)
+				}
+			}
 		}
 
 		// Fetch dependencies
