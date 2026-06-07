@@ -78,6 +78,25 @@ trap request_stop INT TERM
 norm_repo() { echo "$1" | sed -E 's#^(https://|git@)github\.com[:/]##; s#\.git$##'; }   # -> owner/repo
 repo_slug() { norm_repo "$1" | tr '/' '-'; }                                            # -> owner-repo
 
+# --- per-owner GitHub auth ---
+# ~/.agentask/forge-tokens optionally pairs a repo OWNER with a PAT (lines: "owner=token"; # comments
+# ok). The worker uses the matching token to clone/push/gh for that owner's repos; with no entry it
+# falls back to the operator's default gh auth. Git creds stay in the worker, never in Agentask.
+# (chmod 600 it — it holds tokens.)
+FORGE_TOKENS="$AGENTASK_HOME/forge-tokens"
+token_for_owner() {
+  [ -f "$FORGE_TOKENS" ] || return 0
+  # case-insensitive owner match — GitHub owners are case-insensitive (fAIctory == faictory), and the
+  # owner derived from the repo URL may differ in case from the forge-tokens entry.
+  sed -E 's/[[:space:]]*#.*$//' "$FORGE_TOKENS" 2>/dev/null \
+    | grep -iE "^[[:space:]]*$1[[:space:]]*=" | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//'
+}
+# Set GH_TOKEN for a repo owner from the map, or fall back to the operator's default gh auth.
+apply_owner_token() {
+  local tok; tok="$(token_for_owner "$1")"
+  if [ -n "$tok" ]; then export GH_TOKEN="$tok"; else unset GH_TOKEN 2>/dev/null || true; fi
+}
+
 # Ensure a local clone of a repo (clone on first sight, fetch otherwise); echo the clone dir.
 ensure_clone() {
   local repo="$1" owner_repo slug clone
@@ -89,6 +108,11 @@ ensure_clone() {
       || { echo "[$AGENT_ID] clone failed: $owner_repo" >&2; return 1; }
   fi
   git -C "$clone" fetch origin --quiet 2>/dev/null || true
+  # If a per-owner token is set, tokenize the remote so the worker's git push/fetch authenticate as
+  # that owner (gh commands read GH_TOKEN from the env). No token -> leave the plain remote (default auth).
+  if [ -n "${GH_TOKEN:-}" ]; then
+    git -C "$clone" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/$owner_repo.git" 2>/dev/null || true
+  fi
   echo "$clone"
 }
 
@@ -143,6 +167,7 @@ if [ "$MULTI" = 0 ]; then
     echo "[$AGENT_ID] REFUSING: project $AGENTASK_PROJECT repo is '$(norm_repo "$_proj_repo")' but AGENTASK_REPO ($MAIN_REPO) points at '$(norm_repo "$_origin")'." >&2
     exit 1
   fi
+  [ -n "$_proj_repo" ] && apply_owner_token "$(norm_repo "$_proj_repo" | cut -d/ -f1)"   # gh auth for the pinned project's owner
   git -C "$MAIN_REPO" fetch origin --quiet || true
   git -C "$MAIN_REPO" worktree prune
   [ -e "$WT" ] && { git -C "$MAIN_REPO" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"; }
@@ -191,6 +216,7 @@ while true; do
     in_allow "$pid" || continue
     # Re-check claimable (the listing can race another worker); skip if it emptied out.
     [ "$(claimable_count "$pid")" -gt 0 ] || continue
+    apply_owner_token "$(norm_repo "$prepo" | cut -d/ -f1)"   # auth as the repo's owner (default auth if unmapped)
     clone="$(ensure_clone "$prepo")" || continue
     wt="$(ensure_worktree "$clone")" || continue
     export AGENTASK_PROJECT="$pid" AGENTASK_REPO="$wt"

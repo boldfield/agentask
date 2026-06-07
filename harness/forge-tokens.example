@@ -1,0 +1,9 @@
+# Per-owner GitHub auth for the fleet. Pair a repo OWNER with a Personal Access Token: the worker
+# uses the matching token to clone/push/gh for that owner's repos. Owners with NO entry fall back to
+# your default `gh` auth — so single-identity setups need nothing here.
+#
+# Copy to ~/.agentask/forge-tokens and `chmod 600` it (it holds secrets, and is NOT versioned).
+# One "owner=token" per line; whitespace and "# comments" are ignored.
+#
+# fAIctory=ghp_xxxxxxxxxxxxxxxxxxxxxxxx
+# boldfield=ghp_yyyyyyyyyyyyyyyyyyyyyyyy   # optional — omit to use your logged-in gh account
