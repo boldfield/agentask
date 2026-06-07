@@ -12,9 +12,10 @@
 #                      worktree can't span repositories). Optional $AGENTASK_PROJECTS (comma-sep
 #                      ids) restricts which projects multi-mode will touch.
 #
-# Code + prompts live next to this script (resolved through symlinks); the prompt is read FRESH each
-# dispatch. STATE — env, agent ids, repo clones, worktrees — lives under $AGENTASK_HOME (~/.agentask)
-# and is NOT versioned. Ctrl-C is a GRACEFUL stop (finishes the in-flight task; again to force-quit).
+# Run it straight from the repo's harness/ dir. Code + prompts live next to this script (the dir is
+# resolved from this script's own path, and still works if invoked via a symlink); the prompt is read
+# FRESH each dispatch. STATE — env, agent ids, repo clones, worktrees — lives under $AGENTASK_HOME
+# (~/.agentask) and is NOT versioned. Ctrl-C is a GRACEFUL stop (in-flight task finishes; again = force-quit).
 #
 # NOTE: assumes each repo's default branch is `main` (matches worker-prompt.md). master-default repos
 # need the prompt parameterized — not supported yet.
@@ -54,7 +55,7 @@ fi
 [ -f "$PROMPT_FILE" ] || { echo "prompt not found: $PROMPT_FILE" >&2; exit 1; }
 
 ID_DIR="$AGENTASK_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
-REPOS_DIR="$AGENTASK_HOME/repos"     # per-repo clones (multi-mode)
+REPOS_DIR="$AGENTASK_HOME/repos"     # per-repo clones (multi-mode); intentional unbounded cache — prune by hand if it grows
 mkdir -p "$ID_DIR"
 [ -s "$ID_FILE" ] || echo "$SLOT-$(hostname -s)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' ')" > "$ID_FILE"
 export AGENT_ID="$(cat "$ID_FILE")"
