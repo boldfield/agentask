@@ -1962,7 +1962,7 @@ func TestTransitionToDoneAfterApproveSucceeds(t *testing.T) {
 	}
 }
 
-// TestTransitionToDoneFromReviewReturns409 verifies that transition to done from review state is no longer allowed.
+// TestTransitionFromReviewToDoneReturns409 verifies that transition to done from review state is no longer allowed.
 func TestTransitionFromReviewToDoneReturns409(t *testing.T) {
 	server := setupTestServer(t, "test-token")
 	authHeader := "Bearer test-token"
