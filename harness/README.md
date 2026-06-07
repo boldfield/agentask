@@ -12,6 +12,7 @@ work, run it via `claude -p`, and submit — Haiku implements, Opus reviews, the
 | `worker-haiku.sh [slot]`  | Haiku implementer | `model=haiku, kind=implement` |
 | `worker-opus.sh [slot]`   | Opus implementer (e.g. prompt-authoring) | `model=opus, kind=implement` |
 | `reviewer-opus.sh [slot]` | Opus reviewer | `model=opus, kind=review` |
+| `reviewer-sonnet.sh [slot]` | Sonnet reviewer | `model=sonnet, kind=review` |
 
 Run a few in separate terminals, each with a **distinct slot**:
 
