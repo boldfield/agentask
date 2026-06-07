@@ -3026,13 +3026,26 @@ func TestWaitForAllAggregation_FirstApproveSecondApprove(t *testing.T) {
 		t.Fatalf("expected 2 review tasks, got %d", len(reviewTasks))
 	}
 
+	// Find which review task is opus and which is sonnet
+	var opusTask, sonnetTask *Task
+	for i := range reviewTasks {
+		if reviewTasks[i].Model == "opus" {
+			opusTask = reviewTasks[i]
+		} else if reviewTasks[i].Model == "sonnet" {
+			sonnetTask = reviewTasks[i]
+		}
+	}
+	if opusTask == nil || sonnetTask == nil {
+		t.Fatalf("could not find both opus and sonnet review tasks")
+	}
+
 	// First reviewer (opus) approves
-	_, err = store.ClaimTask(ctx, reviewTasks[0].ID, "opus-reviewer", "opus", 5*time.Minute)
+	_, err = store.ClaimTask(ctx, opusTask.ID, "opus-reviewer", "opus", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("failed to claim first review task: %v", err)
 	}
 	approve := "approve"
-	_, err = store.SubmitTask(ctx, reviewTasks[0].ID, "opus-reviewer", "Looks good", &approve, []LinkInput{})
+	_, err = store.SubmitTask(ctx, opusTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{})
 	if err != nil {
 		t.Fatalf("failed to submit first review task: %v", err)
 	}
@@ -3047,11 +3060,11 @@ func TestWaitForAllAggregation_FirstApproveSecondApprove(t *testing.T) {
 	}
 
 	// Second reviewer (sonnet) approves
-	_, err = store.ClaimTask(ctx, reviewTasks[1].ID, "sonnet-reviewer", "sonnet", 5*time.Minute)
+	_, err = store.ClaimTask(ctx, sonnetTask.ID, "sonnet-reviewer", "sonnet", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("failed to claim second review task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, reviewTasks[1].ID, "sonnet-reviewer", "Looks good", &approve, []LinkInput{})
+	_, err = store.SubmitTask(ctx, sonnetTask.ID, "sonnet-reviewer", "Looks good", &approve, []LinkInput{})
 	if err != nil {
 		t.Fatalf("failed to submit second review task: %v", err)
 	}

@@ -1577,6 +1577,18 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 				if err != nil {
 					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to update parent task state: %w", err)
 				}
+
+				// Append transition event for audit trail
+				var eventNote string
+				if newParentState == "approved" {
+					eventNote = "Aggregation: all reviewers approved"
+				} else if newParentState == "ready" {
+					eventNote = "Aggregation: at least one reviewer rejected"
+				}
+				_, err = s.AppendEvent(ctx, tx, *targetTaskID, "system", "transition", nil, &eventNote)
+				if err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append transition event: %w", err)
+				}
 			}
 		}
 
