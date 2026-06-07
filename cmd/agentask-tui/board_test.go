@@ -2409,6 +2409,57 @@ func TestBoardModel_ReviewHelpBar(t *testing.T) {
 	}
 }
 
+// TestBucketTasksByState tests that review-kind tasks are excluded from the done column.
+func TestBucketTasksByState(t *testing.T) {
+	// Create a mixed set of tasks with both implement and review kinds
+	tasks := []tuiclient.Task{
+		{ID: "backlog-1", Title: "Task 1", State: "backlog", Kind: "implement"},
+		{ID: "ready-1", Title: "Task 2", State: "ready", Kind: "implement"},
+		{ID: "review-1", Title: "Review: Task 1", State: "in_progress", Kind: "review"},
+		{ID: "impl-1", Title: "Implement Feature", State: "done", Kind: "implement"},
+		{ID: "review-2", Title: "Review: Task 2", State: "done", Kind: "review"},
+		{ID: "impl-2", Title: "Fix Bug", State: "done", Kind: "implement"},
+	}
+
+	bucketed := bucketTasksByState(tasks)
+
+	// Check that done column has only 2 tasks (the implement ones, not the review)
+	if len(bucketed["done"]) != 2 {
+		t.Errorf("Expected done column to have 2 tasks, got %d: %v", len(bucketed["done"]), bucketed["done"])
+	}
+
+	// Check that in_progress column has the review task
+	if len(bucketed["in_progress"]) != 1 {
+		t.Errorf("Expected in_progress column to have 1 task, got %d", len(bucketed["in_progress"]))
+	}
+	if bucketed["in_progress"][0].Kind != "review" {
+		t.Errorf("Expected in_progress task to be review kind, got %s", bucketed["in_progress"][0].Kind)
+	}
+
+	// Verify the done column has the correct tasks
+	doneTaskIDs := map[string]bool{}
+	for _, task := range bucketed["done"] {
+		doneTaskIDs[task.ID] = true
+	}
+	if !doneTaskIDs["impl-1"] {
+		t.Errorf("Expected impl-1 in done column")
+	}
+	if !doneTaskIDs["impl-2"] {
+		t.Errorf("Expected impl-2 in done column")
+	}
+	if doneTaskIDs["review-2"] {
+		t.Errorf("Expected review-2 to be filtered out from done column")
+	}
+
+	// Verify other columns are not affected
+	if len(bucketed["backlog"]) != 1 {
+		t.Errorf("Expected backlog to have 1 task, got %d", len(bucketed["backlog"]))
+	}
+	if len(bucketed["ready"]) != 1 {
+		t.Errorf("Expected ready to have 1 task, got %d", len(bucketed["ready"]))
+	}
+}
+
 // TestBoardModel_ProjectSwitch tests that the project switcher opens with 'P' key,
 // allows navigation, and properly switches projects while resetting board state.
 func TestBoardModel_ProjectSwitch(t *testing.T) {

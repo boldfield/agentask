@@ -171,9 +171,9 @@ func (m *BoardModel) openDesignDocCmd(documents []tuiclient.Document) tea.Cmd {
 	}
 }
 
-// renderDetailView renders the full-screen detail view for the current task.
-func (m *BoardModel) renderDetailView() string {
-	task := m.detailTask
+// buildDetailContent builds the complete scrollable content for the detail view.
+// It composes the header, metadata, events, result, and spec into a single string.
+func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 	var b strings.Builder
 
 	// Header: title and state
@@ -237,15 +237,26 @@ func (m *BoardModel) renderDetailView() string {
 		b.WriteString("\n")
 	}
 
+	b.WriteString(strings.Repeat("─", m.width))
+	b.WriteString("\n")
+
+	// Spec content
+	b.WriteString(task.Spec)
+
+	return b.String()
+}
+
+// renderDetailView renders the full-screen detail view for the current task.
+// The entire detail body is now in the scrollable viewport; this renders the viewport.
+func (m *BoardModel) renderDetailView() string {
+	var b strings.Builder
+
 	// Status/opener message
 	if m.detailMessage != "" {
 		b.WriteString(fmt.Sprintf("» %s\n", m.detailMessage))
 	}
 
-	b.WriteString(strings.Repeat("─", m.width))
-	b.WriteString("\n")
-
-	// Scrollable spec viewport
+	// The viewport holds the entire scrollable detail content
 	b.WriteString(m.detailViewport.View())
 
 	return b.String()
@@ -303,19 +314,22 @@ func (m *BoardModel) formatAbsTime(timestamp string) string {
 	return t.Format("2006-01-02 15:04:05 UTC")
 }
 
-// initDetailViewport initialises the spec viewport for the detail view.
+// initDetailViewport initialises the full-content viewport for the detail view.
+// It builds the complete scrollable content (header, events, result, spec) and seeds the viewport.
 // Call this whenever the detail mode is entered or the window is resized.
-func (m *BoardModel) initDetailViewport(specContent string) {
-	// Reserve lines for header fields + separator + help bar.
-	// The exact count varies with task data; a conservative fixed offset is fine.
-	const reservedLines = 14
+func (m *BoardModel) initDetailViewport(task tuiclient.TaskDetail) {
+	content := m.buildDetailContent(task)
+
+	// Reserve lines only for the help bar (no longer for the header, which is now scrollable).
+	// The help bar is 3 lines: separator + bar + nothing else.
+	const reservedLines = 3
 	vpHeight := m.height - reservedLines
 	if vpHeight < 3 {
 		vpHeight = 3
 	}
 
 	vp := viewport.New(m.width, vpHeight)
-	vp.SetContent(specContent)
+	vp.SetContent(content)
 	// Preserve scroll position on resize.
 	if m.detailViewport.YOffset > 0 {
 		vp.YOffset = m.detailViewport.YOffset
