@@ -379,3 +379,140 @@ func TestBoardModel_ApprovedHelpBar(t *testing.T) {
 		t.Errorf("Did not expect 'm merge' in board help bar, got:\n%s", boardOutput)
 	}
 }
+
+// TestBoardModel_ApprovedSendBackSuccess tests the approved→ready send-back flow.
+// Pressing 'b' on an approved task enters the send-back flow with optional note input,
+// then confirmation. On confirm with 'y', TransitionTask is called with "ready" (not ReviewTask).
+// After success, the task moves to the ready column on refresh.
+func TestBoardModel_ApprovedSendBackSuccess(t *testing.T) {
+	var callLog []string
+	var capturedTransitionID, capturedTransitionTo string
+	var capturedTransitionNote *string
+
+	mockClient := &tuiclient.MockClient{
+		TransitionTaskFunc: func(ctx context.Context, id, to string, note *string) error {
+			callLog = append(callLog, "transition")
+			capturedTransitionID = id
+			capturedTransitionTo = to
+			capturedTransitionNote = note
+			return nil
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			callLog = append(callLog, "refetch")
+			return []tuiclient.Task{
+				{ID: "approved-task-1", Title: "Approved Task", State: "ready"},
+			}, nil
+		},
+	}
+
+	model := buildApprovedModel(t, mockClient)
+
+	// Press 'b' to start the send-back flow.
+	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeApprovedRejectNote {
+		t.Fatalf("Expected modeApprovedRejectNote after 'b', got mode %d", model.mode)
+	}
+
+	if model.pendingTaskID != "approved-task-1" {
+		t.Errorf("Expected pendingTaskID approved-task-1, got %q", model.pendingTaskID)
+	}
+
+	// Enter a note and press enter to move to confirmation.
+	model.reviewInput.SetValue("Conflict with main")
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+
+	if model.mode != modeApprovedRejectConfirm {
+		t.Fatalf("Expected modeApprovedRejectConfirm after enter, got mode %d", model.mode)
+	}
+
+	if model.pendingNote == nil || *model.pendingNote != "Conflict with main" {
+		t.Errorf("Expected pendingNote 'Conflict with main', got %v", model.pendingNote)
+	}
+
+	// Confirm with 'y'.
+	m, bounceCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = m.(*BoardModel)
+
+	// Execute the bounce command.
+	model = executeReviewCmd(t, model, bounceCmd)
+
+	// After the transition and refetch, we should be back in modeNormal.
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after bounce execution, got mode %d", model.mode)
+	}
+
+	// Verify call order: transition → refetch (no ReviewTask).
+	if len(callLog) != 2 {
+		t.Fatalf("Expected 2 calls (transition, refetch), got %d: %v", len(callLog), callLog)
+	}
+	if callLog[0] != "transition" {
+		t.Errorf("Expected first call to be 'transition', got %q", callLog[0])
+	}
+	if callLog[1] != "refetch" {
+		t.Errorf("Expected second call to be 'refetch', got %q", callLog[1])
+	}
+
+	// Verify transition was called with the correct ID, target state, and note.
+	if capturedTransitionID != "approved-task-1" {
+		t.Errorf("TransitionTask: expected task ID approved-task-1, got %q", capturedTransitionID)
+	}
+	if capturedTransitionTo != "ready" {
+		t.Errorf("TransitionTask: expected to=ready, got %q", capturedTransitionTo)
+	}
+	if capturedTransitionNote == nil || *capturedTransitionNote != "Conflict with main" {
+		t.Errorf("TransitionTask: expected note 'Conflict with main', got %v", capturedTransitionNote)
+	}
+
+	// Verify the task is now in the ready column.
+	output := model.View()
+	if !strings.Contains(output, "ready(1)") {
+		t.Errorf("Expected task to be in ready column, got:\n%s", output)
+	}
+}
+
+// TestBoardModel_ApprovedSendBackNoNote tests the send-back flow with no optional note.
+func TestBoardModel_ApprovedSendBackNoNote(t *testing.T) {
+	var capturedTransitionNote *string
+
+	mockClient := &tuiclient.MockClient{
+		TransitionTaskFunc: func(ctx context.Context, id, to string, note *string) error {
+			capturedTransitionNote = note
+			return nil
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			return []tuiclient.Task{
+				{ID: "approved-task-1", Title: "Approved Task", State: "ready"},
+			}, nil
+		},
+	}
+
+	model := buildApprovedModel(t, mockClient)
+
+	// Press 'b' to start the send-back flow.
+	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	model = m.(*BoardModel)
+
+	// Press enter without entering a note (empty string).
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+
+	// pendingNote should be nil when empty.
+	if model.pendingNote != nil {
+		t.Errorf("Expected pendingNote to be nil for empty input, got %v", model.pendingNote)
+	}
+
+	// Confirm with 'y'.
+	m, bounceCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = m.(*BoardModel)
+
+	// Execute the bounce command.
+	model = executeReviewCmd(t, model, bounceCmd)
+
+	// Verify transition was called with nil note.
+	if capturedTransitionNote != nil {
+		t.Errorf("TransitionTask: expected note to be nil, got %v", capturedTransitionNote)
+	}
+}
