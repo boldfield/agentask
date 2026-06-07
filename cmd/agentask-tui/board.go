@@ -424,7 +424,7 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 		// Reinitialize the detail viewport if we're in detail mode.
 		if m.mode == modeDetail {
-			m.initDetailViewport(m.detailTask.Spec)
+			m.initDetailViewport(m.detailTask)
 		}
 		return m, nil
 
@@ -562,8 +562,8 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailTask = msg.task
 		m.detailDocuments = msg.documents
 		m.detailEvents = msg.events
-		// (Re)initialize the viewport with the spec content.
-		m.initDetailViewport(msg.task.Spec)
+		// (Re)initialize the viewport with the full detail content.
+		m.initDetailViewport(msg.task)
 		return m, nil
 
 	case openerResultMsg:
