@@ -39,7 +39,7 @@ type Store interface {
 	ClaimTask(ctx context.Context, taskID, agentID, model string, leaseTTL time.Duration) (Task, error)
 	HeartbeatTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 	PromoteTask(ctx context.Context, taskID string) (Task, error)
-	SubmitTask(ctx context.Context, taskID, agentID, result string, links []LinkInput) (TaskWithDepsAndLinks, error)
+	SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput) (TaskWithDepsAndLinks, error)
 	AddReview(ctx context.Context, taskID, actor, verdict string, note *string) (Event, error)
 	TransitionTask(ctx context.Context, taskID, to string, note *string) (Task, error)
 }
@@ -422,6 +422,7 @@ type Task struct {
 	ReviewModels   []string `db:"review_models" json:"review_models"`
 	ReviewRound    int      `db:"review_round" json:"review_round"`
 	TargetTaskID   *string  `db:"target_task_id" json:"target_task_id"` // nullable
+	Verdict        *string  `db:"verdict" json:"verdict"`               // nullable
 	CreatedAt      string   `db:"created_at" json:"created_at"`
 	UpdatedAt      string   `db:"updated_at" json:"updated_at"`
 }
@@ -467,6 +468,7 @@ type TaskWithDepsAndLinks struct {
 	ReviewModels   []string   `json:"review_models"`
 	ReviewRound    int        `json:"review_round"`
 	TargetTaskID   *string    `json:"target_task_id"`
+	Verdict        *string    `json:"verdict"`
 	CreatedAt      string     `json:"created_at"`
 	UpdatedAt      string     `json:"updated_at"`
 	DependsOn      []string   `json:"depends_on"`
@@ -889,9 +891,9 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLi
 	var t Task
 	var reviewModelsJSON *string
 	err := s.conn.QueryRowContext(ctx, `
-		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, created_at, updated_at
+		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
 		FROM task WHERE id = ?
-	`, id).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.CreatedAt, &t.UpdatedAt)
+	`, id).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return TaskWithDepsAndLinks{}, ErrNotFound
@@ -965,6 +967,7 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLi
 		ReviewModels:   t.ReviewModels,
 		ReviewRound:    t.ReviewRound,
 		TargetTaskID:   t.TargetTaskID,
+		Verdict:        t.Verdict,
 		CreatedAt:      t.CreatedAt,
 		UpdatedAt:      t.UpdatedAt,
 		DependsOn:      dependsOn,
@@ -990,7 +993,7 @@ const claimableSQL = `state = 'ready'
 // ListTasks retrieves tasks for a project with optional filters.
 // Filters compose with AND logic.
 func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter TaskListFilter) ([]Task, error) {
-	query := `SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, created_at, updated_at
+	query := `SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
 		FROM task
 		WHERE project_id = ?`
 	args := []interface{}{projectID}
@@ -1027,7 +1030,7 @@ func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter Ta
 	for rows.Next() {
 		var t Task
 		var reviewModelsJSON *string
-		if err := rows.Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan task: %w", err)
 		}
 		// Unmarshal review_models from JSON
@@ -1091,9 +1094,9 @@ func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID, model stri
 		var t Task
 		var reviewModelsJSON *string
 		err = tx.QueryRowContext(ctx, `
-			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, created_at, updated_at
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
 			FROM task WHERE id = ?
-		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.CreatedAt, &t.UpdatedAt)
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
 		if err != nil {
 			return Task{}, fmt.Errorf("failed to fetch claimed task: %w", err)
 		}
@@ -1184,9 +1187,9 @@ func (s *sqliteStore) HeartbeatTask(ctx context.Context, taskID, agentID string,
 		var t Task
 		var reviewModelsJSON *string
 		err = tx.QueryRowContext(ctx, `
-			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, created_at, updated_at
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
 			FROM task WHERE id = ?
-		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.CreatedAt, &t.UpdatedAt)
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
 		if err != nil {
 			return Task{}, fmt.Errorf("failed to fetch updated task: %w", err)
 		}
@@ -1266,9 +1269,9 @@ func (s *sqliteStore) PromoteTask(ctx context.Context, taskID string) (Task, err
 		var t Task
 		var reviewModelsJSON *string
 		err = tx.QueryRowContext(ctx, `
-			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, created_at, updated_at
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
 			FROM task WHERE id = ?
-		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.CreatedAt, &t.UpdatedAt)
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
 		if err != nil {
 			return Task{}, fmt.Errorf("failed to fetch promoted task: %w", err)
 		}
@@ -1306,14 +1309,13 @@ func (s *sqliteStore) PromoteTask(ctx context.Context, taskID string) (Task, err
 	return Task{}, ErrConflict
 }
 
-// SubmitTask atomically transitions a task from in_progress to review.
-// It validates link kinds, updates the task (clearing the lease), inserts task_link rows,
-// appends a submit event, and returns the updated task with all links, all within one transaction.
+// SubmitTask handles submission of tasks. For implement tasks, it transitions from in_progress to review.
+// For review tasks, it stores a verdict (approve/reject) and transitions to done.
 // Returns the updated TaskWithDepsAndLinks on success.
-// Returns ValidationError if a link kind is invalid.
+// Returns ValidationError if verdict is invalid or required.
 // Returns ErrNotFound if the task doesn't exist.
 // Returns ErrConflict if the task is not in_progress or not assigned to the given agentID.
-func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result string, links []LinkInput) (TaskWithDepsAndLinks, error) {
+func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput) (TaskWithDepsAndLinks, error) {
 	// Validate link kinds first (before mutating anything)
 	validKinds := map[string]bool{"pr": true, "branch": true, "commit": true, "ci": true}
 	for _, link := range links {
@@ -1328,9 +1330,167 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 	}
 	defer tx.Rollback()
 
+	// Load the task to determine its kind
+	var taskKind string
+	var targetTaskID *string
+	err = tx.QueryRowContext(ctx, "SELECT kind, target_task_id FROM task WHERE id = ?", taskID).Scan(&taskKind, &targetTaskID)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return TaskWithDepsAndLinks{}, ErrNotFound
+		}
+		return TaskWithDepsAndLinks{}, fmt.Errorf("failed to load task kind: %w", err)
+	}
+
 	now := nowTimestamp()
 
-	// Single conditional UPDATE: transition from in_progress to review, store result, clear lease
+	// Handle based on task kind
+	if taskKind == "review" {
+		// Review task submission: validate and store verdict, transition to done
+		if verdict == nil {
+			return TaskWithDepsAndLinks{}, invalid("MISSING_VERDICT", "verdict is required for review task submission")
+		}
+		if *verdict != "approve" && *verdict != "reject" {
+			return TaskWithDepsAndLinks{}, invalid("INVALID_VERDICT", "verdict must be 'approve' or 'reject'")
+		}
+
+		// Update review task: state='done', store verdict, clear lease
+		update_result, err := tx.ExecContext(ctx, `
+			UPDATE task
+			SET state='done', verdict=?, result=?, lease_expires_at=NULL, updated_at=?
+			WHERE id=? AND state='in_progress' AND assignee=?
+		`, verdict, &result, now, taskID, agentID)
+		if err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to submit review task: %w", err)
+		}
+
+		rowsAffected, err := update_result.RowsAffected()
+		if err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to get rows affected: %w", err)
+		}
+
+		if rowsAffected == 1 {
+			// Review submission succeeded. Append submit event on this task.
+			_, err := s.AppendEvent(ctx, tx, taskID, agentID, "submit", nil, nil)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append submit event: %w", err)
+			}
+
+			// Record review event on parent task with the verdict
+			if targetTaskID != nil {
+				_, err := s.AppendEvent(ctx, tx, *targetTaskID, agentID, "review", verdict, &result)
+				if err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append review event on parent: %w", err)
+				}
+			}
+
+			// Fetch and return the updated review task
+			var t Task
+			var reviewModelsJSON *string
+			err = tx.QueryRowContext(ctx, `
+				SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
+				FROM task WHERE id = ?
+			`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to fetch submitted review task: %w", err)
+			}
+
+			t.ReviewModels = []string{}
+			if reviewModelsJSON != nil {
+				if err := json.Unmarshal([]byte(*reviewModelsJSON), &t.ReviewModels); err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to unmarshal review_models: %w", err)
+				}
+			}
+
+			// Fetch dependencies and links
+			depRows, err := tx.QueryContext(ctx, `
+				SELECT depends_on_id FROM task_dep WHERE task_id = ? ORDER BY depends_on_id
+			`, taskID)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to query dependencies: %w", err)
+			}
+			defer depRows.Close()
+
+			dependsOn := make([]string, 0)
+			for depRows.Next() {
+				var depID string
+				if err := depRows.Scan(&depID); err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to scan dependency: %w", err)
+				}
+				dependsOn = append(dependsOn, depID)
+			}
+			if err := depRows.Err(); err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("error iterating dependencies: %w", err)
+			}
+
+			linkRows, err := tx.QueryContext(ctx, `
+				SELECT id, task_id, kind, value FROM task_link WHERE task_id = ? ORDER BY id
+			`, taskID)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to query links: %w", err)
+			}
+			defer linkRows.Close()
+
+			fetchedLinks := make([]TaskLink, 0)
+			for linkRows.Next() {
+				var link TaskLink
+				if err := linkRows.Scan(&link.ID, &link.TaskID, &link.Kind, &link.Value); err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to scan link: %w", err)
+				}
+				fetchedLinks = append(fetchedLinks, link)
+			}
+			if err := linkRows.Err(); err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("error iterating links: %w", err)
+			}
+
+			if err := tx.Commit(); err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to commit transaction: %w", err)
+			}
+
+			return TaskWithDepsAndLinks{
+				ID:             t.ID,
+				ProjectID:      t.ProjectID,
+				DocumentID:     t.DocumentID,
+				Title:          t.Title,
+				Spec:           t.Spec,
+				State:          t.State,
+				Assignee:       t.Assignee,
+				LeaseExpiresAt: t.LeaseExpiresAt,
+				Result:         t.Result,
+				Model:          t.Model,
+				Kind:           t.Kind,
+				ReviewModels:   t.ReviewModels,
+				ReviewRound:    t.ReviewRound,
+				TargetTaskID:   t.TargetTaskID,
+				Verdict:        t.Verdict,
+				CreatedAt:      t.CreatedAt,
+				UpdatedAt:      t.UpdatedAt,
+				DependsOn:      dependsOn,
+				Links:          fetchedLinks,
+			}, nil
+		}
+
+		// Review task was not submittable
+		var taskExists bool
+		err = tx.QueryRowContext(ctx, "SELECT COUNT(*) > 0 FROM task WHERE id = ?", taskID).Scan(&taskExists)
+		if err != nil {
+			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to check task existence: %w", err)
+		}
+
+		if !taskExists {
+			tx.Rollback()
+			return TaskWithDepsAndLinks{}, ErrNotFound
+		}
+
+		tx.Rollback()
+		return TaskWithDepsAndLinks{}, ErrConflict
+	}
+
+	// Implement task submission: verdict is forbidden
+	if verdict != nil {
+		return TaskWithDepsAndLinks{}, invalid("VERDICT_FORBIDDEN", "verdict is not allowed for implement task submission")
+	}
+
+	// Implement task: transition from in_progress to review
 	result_ptr := &result
 	update_result, err := tx.ExecContext(ctx, `
 		UPDATE task
@@ -1347,27 +1507,15 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 	}
 
 	if rowsAffected == 1 {
-		// Submit succeeded. Insert task_link rows (dedup by task_id, kind, value).
+		// Submit succeeded. Insert task_link rows.
 		for _, link := range links {
-			// Check if this link already exists
-			var existingCount int
-			err := tx.QueryRowContext(ctx, `
-				SELECT COUNT(*) FROM task_link WHERE task_id = ? AND kind = ? AND value = ?
-			`, taskID, link.Kind, link.Value).Scan(&existingCount)
+			linkID := GenerateID()
+			_, err := tx.ExecContext(ctx, `
+				INSERT INTO task_link (id, task_id, kind, value)
+				VALUES (?, ?, ?, ?)
+			`, linkID, taskID, link.Kind, link.Value)
 			if err != nil {
-				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to check link existence: %w", err)
-			}
-
-			// Only insert if it doesn't exist
-			if existingCount == 0 {
-				linkID := GenerateID()
-				_, err := tx.ExecContext(ctx, `
-					INSERT INTO task_link (id, task_id, kind, value)
-					VALUES (?, ?, ?, ?)
-				`, linkID, taskID, link.Kind, link.Value)
-				if err != nil {
-					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to insert link: %w", err)
-				}
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to insert link: %w", err)
 			}
 		}
 
@@ -1377,13 +1525,13 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append submit event: %w", err)
 		}
 
-		// Fetch the submitted task to check if it's an implement task
+		// SELECT the submitted task within the same transaction
 		var t Task
 		var reviewModelsJSON *string
 		err = tx.QueryRowContext(ctx, `
-			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, created_at, updated_at
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
 			FROM task WHERE id = ?
-		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.CreatedAt, &t.UpdatedAt)
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
 		if err != nil {
 			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to fetch submitted task: %w", err)
 		}
@@ -1394,76 +1542,6 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			if err := json.Unmarshal([]byte(*reviewModelsJSON), &t.ReviewModels); err != nil {
 				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to unmarshal review_models: %w", err)
 			}
-		}
-
-		// If this is an implement task entering review, auto-spawn review tasks
-		if t.Kind == "implement" {
-			// Increment review_round
-			newReviewRound := t.ReviewRound + 1
-			_, err := tx.ExecContext(ctx, `
-				UPDATE task SET review_round = ? WHERE id = ?
-			`, newReviewRound, taskID)
-			if err != nil {
-				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to increment review_round: %w", err)
-			}
-
-			// Extract PR link from the submitted links
-			var prLink string
-			for _, link := range links {
-				if link.Kind == "pr" {
-					prLink = link.Value
-					break
-				}
-			}
-
-			// Determine reviewers (default to ["opus"] if empty)
-			reviewers := t.ReviewModels
-			if len(reviewers) == 0 {
-				reviewers = []string{"opus"}
-			}
-
-			// Create a review task for each reviewer
-			for _, reviewerModel := range reviewers {
-				reviewTaskID := GenerateID()
-				reviewTitle := "Review: " + t.Title + " [" + reviewerModel + "]"
-
-				// Build the spec for the review task: a strict-review brief pointing at the parent's PR link
-				reviewSpec := "Review the implementation:\n\n"
-				if prLink != "" {
-					reviewSpec += "Implementation PR: " + prLink + "\n\n"
-				}
-				reviewSpec += "Parent task: " + t.ID + "\n\n"
-				reviewSpec += "## Instructions\n\n"
-				reviewSpec += "Examine the submitted implementation and provide approval or rejection with written feedback.\n\n"
-				reviewSpec += "Approve if:\n"
-				reviewSpec += "- The implementation matches the specification\n"
-				reviewSpec += "- The code is correct and follows the project conventions\n"
-				reviewSpec += "- Tests pass and coverage is adequate\n\n"
-				reviewSpec += "Reject if:\n"
-				reviewSpec += "- The implementation has issues or does not match the specification\n"
-				reviewSpec += "- Further work is needed before merging\n\n"
-				reviewSpec += "Provide your verdict: approve or reject"
-
-				reviewModelsJSON := (*string)(nil) // review tasks don't have review_models
-				_, err := tx.ExecContext(ctx, `
-					INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, review_models, review_round, target_task_id, created_at, updated_at)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				`, reviewTaskID, t.ProjectID, t.DocumentID, reviewTitle, reviewSpec, "ready", reviewerModel, "review", reviewModelsJSON, newReviewRound, &t.ID, now, now)
-				if err != nil {
-					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to create review task: %w", err)
-				}
-			}
-
-			// Append spawn_review event on the parent task
-			reviewersList, _ := json.Marshal(reviewers)
-			eventNote := "Round " + fmt.Sprintf("%d", newReviewRound) + " with models: " + string(reviewersList)
-			_, err = s.AppendEvent(ctx, tx, taskID, "system", "spawn_review", nil, &eventNote)
-			if err != nil {
-				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append spawn_review event: %w", err)
-			}
-
-			// Update t.ReviewRound for the response
-			t.ReviewRound = newReviewRound
 		}
 
 		// Fetch dependencies
@@ -1527,6 +1605,7 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			ReviewModels:   t.ReviewModels,
 			ReviewRound:    t.ReviewRound,
 			TargetTaskID:   t.TargetTaskID,
+			Verdict:        t.Verdict,
 			CreatedAt:      t.CreatedAt,
 			UpdatedAt:      t.UpdatedAt,
 			DependsOn:      dependsOn,

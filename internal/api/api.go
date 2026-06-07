@@ -477,6 +477,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	var payload struct {
 		AgentID string            `json:"agent_id"`
 		Result  string            `json:"result"`
+		Verdict *string           `json:"verdict"`
 		Links   []store.LinkInput `json:"links"`
 	}
 
@@ -491,7 +492,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Submit the task
-	task, err := s.store.SubmitTask(r.Context(), taskID, payload.AgentID, payload.Result, payload.Links)
+	task, err := s.store.SubmitTask(r.Context(), taskID, payload.AgentID, payload.Result, payload.Verdict, payload.Links)
 	if err != nil {
 		// Check if it's a ValidationError (invalid link kind)
 		var validationErr *store.ValidationError
