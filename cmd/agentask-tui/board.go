@@ -304,18 +304,7 @@ func (m *BoardModel) fetchTasksInline(ctx context.Context, errPrefix string) rev
 		return reviewActionMsg{err: errMsg}
 	}
 
-	bucketed := make(map[string][]tuiclient.Task)
-	for _, state := range stateOrder {
-		bucketed[state] = []tuiclient.Task{}
-	}
-	for _, task := range tasks {
-		if _, exists := bucketed[task.State]; exists {
-			bucketed[task.State] = append(bucketed[task.State], task)
-		}
-	}
-	for _, taskList := range bucketed {
-		sortTasksNatural(taskList)
-	}
+	bucketed := bucketTasksByState(tasks)
 
 	msg := reviewActionMsg{tasks: bucketed}
 	if errPrefix != "" {
@@ -337,27 +326,39 @@ func (m *BoardModel) fetchTasks() tea.Cmd {
 			}
 		}
 
-		// Bucket tasks by state
-		bucketed := make(map[string][]tuiclient.Task)
-		for _, state := range stateOrder {
-			bucketed[state] = []tuiclient.Task{}
-		}
-
-		for _, task := range tasks {
-			if _, exists := bucketed[task.State]; exists {
-				bucketed[task.State] = append(bucketed[task.State], task)
-			}
-		}
-
-		// Sort each state's tasks in natural title order (MR-1 < MR-2 < ... < MR-10).
-		for _, taskList := range bucketed {
-			sortTasksNatural(taskList)
-		}
+		bucketed := bucketTasksByState(tasks)
 
 		return tasksFetchedMsg{
 			tasks: bucketed,
 		}
 	}
+}
+
+// bucketTasksByState groups tasks into buckets by state, filtering out review-kind tasks
+// from the done column. This ensures the done column shows only implement deliverables.
+func bucketTasksByState(tasks []tuiclient.Task) map[string][]tuiclient.Task {
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range stateOrder {
+		bucketed[state] = []tuiclient.Task{}
+	}
+
+	for _, task := range tasks {
+		if _, exists := bucketed[task.State]; !exists {
+			continue
+		}
+		// Skip review-kind tasks from the done column
+		if task.State == stateDone && task.Kind == "review" {
+			continue
+		}
+		bucketed[task.State] = append(bucketed[task.State], task)
+	}
+
+	// Sort each state's tasks in natural title order
+	for _, taskList := range bucketed {
+		sortTasksNatural(taskList)
+	}
+
+	return bucketed
 }
 
 // sortTasksNatural orders tasks within a column by title in natural order, so MR-1 < MR-2 <

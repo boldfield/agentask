@@ -38,6 +38,7 @@ type Task struct {
 	Title          string  `json:"title"`
 	Spec           string  `json:"spec"`
 	State          string  `json:"state"`
+	Kind           string  `json:"kind"`
 	Assignee       *string `json:"assignee"`
 	LeaseExpiresAt *string `json:"lease_expires_at"`
 	Result         *string `json:"result"`
