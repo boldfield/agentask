@@ -1482,9 +1482,9 @@ func (s *sqliteStore) AddReview(ctx context.Context, taskID, actor, verdict stri
 
 // TransitionTask moves a task to a new state according to the transition rules.
 // Valid transitions:
-//   - to='done': allowed ONLY from 'review', AND only if at least one approve review event exists
-//   - to='ready': allowed ONLY from 'review'
-//   - to='blocked' or 'failed': allowed from any ACTIVE state (backlog, ready, in_progress, review)
+//   - to='done': allowed ONLY from 'approved'
+//   - to='ready': allowed ONLY from 'approved'
+//   - to='blocked' or 'failed': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved)
 //   - anything else: ErrConflict
 //
 // Returns the updated Task on success.
@@ -1519,32 +1519,21 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 
 	switch to {
 	case "done":
-		// Allowed ONLY from 'review' AND at least one approve event exists
-		if taskState == "review" {
-			// Count approve review events
-			var approveCount int
-			err := tx.QueryRowContext(ctx, `
-				SELECT COUNT(*) FROM event
-				WHERE task_id = ? AND kind = 'review' AND verdict = 'approve'
-			`, taskID).Scan(&approveCount)
-			if err != nil {
-				return Task{}, fmt.Errorf("failed to count approve events: %w", err)
-			}
-			if approveCount > 0 {
-				canTransition = true
-			}
+		// Allowed from 'approved' (being in approved implies a passed review)
+		if taskState == "approved" {
+			canTransition = true
 		}
 
 	case "ready":
-		// Allowed ONLY from 'review'
-		if taskState == "review" {
+		// Allowed from 'approved'
+		if taskState == "approved" {
 			canTransition = true
 		}
 
 	case "blocked", "failed":
-		// Allowed from any active state (backlog, ready, in_progress, review)
+		// Allowed from any active state (backlog, ready, in_progress, review, approved)
 		// Terminal states are done, blocked, failed
-		activeStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true}
+		activeStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true, "approved": true}
 		if activeStates[taskState] {
 			canTransition = true
 		}
