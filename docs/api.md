@@ -301,6 +301,10 @@ curl -H "Authorization: Bearer token" \
 curl -H "Authorization: Bearer token" \
   "https://api.example.com/projects/550e8400-e29b-41d4-a716-446655440000/tasks?model=haiku"
 
+# Filter by kind
+curl -H "Authorization: Bearer token" \
+  "https://api.example.com/projects/550e8400-e29b-41d4-a716-446655440000/tasks?kind=implement"
+
 # Filter by assignee
 curl -H "Authorization: Bearer token" \
   "https://api.example.com/projects/550e8400-e29b-41d4-a716-446655440000/tasks?assignee=agent-1"
@@ -313,6 +317,7 @@ curl -H "Authorization: Bearer token" \
 **Query Parameters:**
 - `state` (optional): Filter by task state (`backlog`, `ready`, `in_progress`, `review`, `approved`, `done`, `blocked`, `failed`)
 - `model` (optional): Filter by assigned model (e.g., `haiku`, `sonnet`, `opus`)
+- `kind` (optional): Filter by task kind (`implement` or `review`)
 - `assignee` (optional): Filter by agent ID
 - `claimable` (optional): If `true`, only return tasks that can be claimed (in `ready` state with no live lease and all dependencies done)
 

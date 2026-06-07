@@ -41,8 +41,9 @@ curl -s "${A[@]}" "$AGENTASK_URL/projects/$PROJECT_ID/tasks?model=$AGENT_MODEL&c
 ```
 
 `claimable=true` returns only tasks that are `ready`, have all dependencies `done`, and carry no
-live lease; `model=$AGENT_MODEL` further restricts to your tier. Pick one id. Empty list → nothing
-to do; stop.
+live lease; `model=$AGENT_MODEL` further restricts to your tier. Implementers can add `&kind=implement`
+to filter for implement-only tasks; reviewers can add `&kind=review` for review-only tasks. Pick one id.
+Empty list → nothing to do; stop.
 
 ### 2. Claim it (atomic, model-matched — you must win)
 
