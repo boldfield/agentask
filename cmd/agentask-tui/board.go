@@ -73,7 +73,7 @@ type BoardModel struct {
 	urlOpener func(rawURL string) error
 	// ghMerger is called to merge a PR via `gh pr merge`.
 	// In production it is defaultGHMerger; tests inject a mock to avoid shell execution.
-	ghMerger func(prURL string) error
+	ghMerger func(ctx context.Context, prURL string) error
 }
 
 const (
@@ -263,7 +263,7 @@ func (m *BoardModel) mergePRCmd(taskID string, prURL string, fromDetail bool) te
 		defer cancel()
 
 		// Step 1: merge the PR via gh.
-		if err := m.ghMerger(prURL); err != nil {
+		if err := m.ghMerger(ctx, prURL); err != nil {
 			msg := m.fetchTasksInline(ctx, fmt.Sprintf("PR merge failed: %v", err))
 			msg.fromDetail = fromDetail
 			return msg
@@ -930,6 +930,10 @@ func (m *BoardModel) renderReviewOverlay() string {
 			b.WriteString("hint: " + m.inputHint + "\n")
 		}
 		b.WriteString("(enter to submit, esc to cancel)\n")
+	case modeMergeConfirm:
+		b.WriteString(m.reviewInput.View())
+		b.WriteString("\n")
+		b.WriteString("(y to confirm merge and complete, n/esc to cancel)\n")
 	}
 	return b.String()
 }

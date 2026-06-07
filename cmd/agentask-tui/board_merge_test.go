@@ -89,12 +89,15 @@ func TestBoardModel_MergePRConfirmFlow(t *testing.T) {
 	model := buildApprovedModel(t, mockClient)
 
 	// Enter detail mode by pressing enter on the approved task.
-	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = m.(*BoardModel)
 
 	if model.mode != modeDetail {
 		t.Fatalf("Expected modeDetail after enter, got mode %d", model.mode)
 	}
+
+	// Execute the detail fetch command to load the task detail.
+	model = executeReviewCmd(t, model, detailCmd)
 
 	// Press 'm' to start merge flow.
 	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
@@ -136,8 +139,11 @@ func TestBoardModel_MergePRNoPRLink(t *testing.T) {
 	model := buildApprovedModel(t, mockClient)
 
 	// Enter detail mode and try to merge.
-	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = m.(*BoardModel)
+
+	// Execute the detail fetch command to load the task detail.
+	model = executeReviewCmd(t, model, detailCmd)
 
 	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
 	model = m.(*BoardModel)
@@ -160,6 +166,20 @@ func TestBoardModel_MergePRSuccess(t *testing.T) {
 	var capturedMergePRURL string
 
 	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, taskID string) (tuiclient.TaskDetail, error) {
+			return tuiclient.TaskDetail{
+				ID:    "approved-task-1",
+				Title: "Approved Task",
+				State: "approved",
+				Links: []tuiclient.TaskLink{
+					{Kind: "pr", Value: "owner/repo#123"},
+				},
+				Spec: "Task spec",
+			}, nil
+		},
+		ListDocumentsFunc: func(ctx context.Context, projectID string) ([]tuiclient.Document, error) {
+			return []tuiclient.Document{}, nil
+		},
 		TransitionTaskFunc: func(ctx context.Context, id, to string, note *string) error {
 			callLog = append(callLog, "transition")
 			capturedTransitionID = id
@@ -177,8 +197,11 @@ func TestBoardModel_MergePRSuccess(t *testing.T) {
 	model := buildApprovedModel(t, mockClient)
 
 	// Enter detail mode and initiate merge.
-	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = m.(*BoardModel)
+
+	// Execute the detail fetch command to load the task detail.
+	model = executeReviewCmd(t, model, detailCmd)
 
 	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
 	model = m.(*BoardModel)
@@ -187,12 +210,11 @@ func TestBoardModel_MergePRSuccess(t *testing.T) {
 	m, mergeCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	model = m.(*BoardModel)
 
-	if model.mode != modeNormal {
-		t.Errorf("Expected modeNormal after confirm, got mode %d", model.mode)
-	}
+	// After confirming, mode goes back to modeDetail (via cancelReviewMode).
+	// The merge will be executed next, and on success will transition to modeNormal.
 
 	// Inject a mock ghMerger that records the PR URL.
-	model.ghMerger = func(prURL string) error {
+	model.ghMerger = func(ctx context.Context, prURL string) error {
 		callLog = append(callLog, "merge")
 		capturedMergePRURL = prURL
 		return nil
@@ -200,6 +222,11 @@ func TestBoardModel_MergePRSuccess(t *testing.T) {
 
 	// Execute the merge command.
 	model = executeReviewCmd(t, model, mergeCmd)
+
+	// After the merge and transition, we should be back in modeNormal.
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after merge execution, got mode %d", model.mode)
+	}
 
 	// Verify call order: merge → transition → refetch.
 	if len(callLog) != 3 {
@@ -236,6 +263,20 @@ func TestBoardModel_MergePRFailure(t *testing.T) {
 	var transitionCalled bool
 
 	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, taskID string) (tuiclient.TaskDetail, error) {
+			return tuiclient.TaskDetail{
+				ID:    "approved-task-1",
+				Title: "Approved Task",
+				State: "approved",
+				Links: []tuiclient.TaskLink{
+					{Kind: "pr", Value: "owner/repo#123"},
+				},
+				Spec: "Task spec",
+			}, nil
+		},
+		ListDocumentsFunc: func(ctx context.Context, projectID string) ([]tuiclient.Document, error) {
+			return []tuiclient.Document{}, nil
+		},
 		TransitionTaskFunc: func(ctx context.Context, id, to string, note *string) error {
 			transitionCalled = true
 			return nil
@@ -251,8 +292,11 @@ func TestBoardModel_MergePRFailure(t *testing.T) {
 	model := buildApprovedModel(t, mockClient)
 
 	// Enter detail mode and initiate merge.
-	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = m.(*BoardModel)
+
+	// Execute the detail fetch command to load the task detail.
+	model = executeReviewCmd(t, model, detailCmd)
 
 	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
 	model = m.(*BoardModel)
@@ -262,7 +306,7 @@ func TestBoardModel_MergePRFailure(t *testing.T) {
 	model = m.(*BoardModel)
 
 	// Inject a failing ghMerger.
-	model.ghMerger = func(prURL string) error {
+	model.ghMerger = func(ctx context.Context, prURL string) error {
 		callLog = append(callLog, "merge")
 		return fmt.Errorf("merge rejected: PR has conflicts")
 	}
@@ -314,8 +358,11 @@ func TestBoardModel_ApprovedHelpBar(t *testing.T) {
 	model := buildApprovedModel(t, mockClient)
 
 	// Enter detail mode on approved task.
-	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = m.(*BoardModel)
+
+	// Execute the detail fetch command to load the task detail.
+	model = executeReviewCmd(t, model, detailCmd)
 
 	approvedOutput := model.View()
 	if !strings.Contains(approvedOutput, "m merge & complete") {

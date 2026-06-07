@@ -332,16 +332,16 @@ func defaultURLOpener(rawURL string) error {
 	return fmt.Errorf("no browser found: set $BROWSER or install xdg-open")
 }
 
-// defaultGHMerger merges a PR via `gh pr merge <prURL>`.
+// defaultGHMerger merges a PR via `gh pr merge <prURL> --squash`.
 // Returns an error if gh is not found or the merge fails.
-func defaultGHMerger(prURL string) error {
+func defaultGHMerger(ctx context.Context, prURL string) error {
 	if _, err := exec.LookPath("gh"); err != nil {
 		return fmt.Errorf("gh command not found: install GitHub CLI (https://cli.github.com)")
 	}
 
-	// Run gh pr merge with the PR URL.
+	// Run gh pr merge with the PR URL and squash flag.
 	// The PR URL is expected to be in the form "owner/repo#PR_NUMBER" or a full GitHub URL.
-	cmd := exec.Command("gh", "pr", "merge", prURL)
+	cmd := exec.CommandContext(ctx, "gh", "pr", "merge", prURL, "--squash")
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("gh pr merge failed: %w", err)
 	}
