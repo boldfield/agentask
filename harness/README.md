@@ -12,6 +12,7 @@ work, run it via `claude -p`, and submit — Haiku implements, Opus reviews, the
 | `worker-haiku.sh [slot]`  | Haiku implementer | `model=haiku, kind=implement` |
 | `worker-opus.sh [slot]`   | Opus implementer (e.g. prompt-authoring) | `model=opus, kind=implement` |
 | `reviewer-opus.sh [slot]` | Opus reviewer | `model=opus, kind=review` |
+| `reviewer-sonnet.sh [slot]` | Sonnet reviewer | `model=sonnet, kind=review` |
 
 Run a few in separate terminals, each with a **distinct slot**:
 
@@ -23,29 +24,40 @@ graceful stop (finishes the in-flight task; Ctrl-C again to force-quit).
 
 ## Code vs. state
 
-- **Code + prompts** (`agent.sh`, the wrappers, `worker-prompt.md`, `reviewer-prompt.md`) are
-  versioned here. The engine reads the prompt **fresh each dispatch**, so editing it applies to the
-  next task with no restart.
-- **State + config** lives under `$AGENTASK_HOME` (default `~/.agentask`), un-versioned: `env`
-  (URL / token / project), `agents/<slot>.id` (persistent ids), `wt-<slot>` (worktrees). Copy
-  `env.example` → `~/.agentask/env` and fill it in.
+The engine keeps **code** and **state** in separate trees, so they never mix:
 
-## Running from `~/.agentask` (symlinks)
+- **Code + prompts** (`agent.sh`, the wrappers, `worker-prompt.md`, `reviewer-prompt.md`) — versioned
+  *here*, in the repo. The engine finds them via its own location, and reads the prompt **fresh each
+  dispatch**, so editing it applies to the next task with no restart.
+- **State + config** — lives under `$AGENTASK_HOME` (default `~/.agentask`), un-versioned: `env`
+  (URL / token / project), `agents/<slot>.id` (persistent ids), `wt-*` (worktrees), and `repos/`
+  (on-demand repo clones in multi-project mode). Copy `env.example` → `~/.agentask/env` and fill it in.
 
-To keep `cd ~/.agentask && ./worker-haiku.sh …` working, symlink the scripts + prompts to this
-versioned copy (one source of truth, old paths still resolve):
+**Run the scripts straight from the repo — no symlinks.** Because the two trees are independent, you
+invoke the code from `harness/` and it uses `~/.agentask` purely for state:
 
-    cd ~/.agentask
-    for f in agent.sh worker-haiku.sh worker-opus.sh reviewer-opus.sh worker-prompt.md reviewer-prompt.md; do
-      ln -sf "$HOME/projects/agentask/harness/$f" "$f"
-    done
+    cd ~/projects/agentask/harness
+    AGENTASK_PROJECT=all ./worker-haiku.sh haiku-1
 
-This checkout must then stay on a branch that contains `harness/` (i.e. `main` after this merges) —
-otherwise the symlinks dangle.
+(Symlinking the wrappers *into* `~/.agentask` would drop code into the state tree next to `repos/`
+and `wt-*` — don't. If you want to invoke from anywhere, add `harness/` to `PATH` or alias the
+wrappers; `$AGENTASK_HOME` still points the engine at your state.)
 
-## Roadmap — multi-project
+## Project scope: single vs. multi
 
-Single-project today (`AGENTASK_PROJECT` pinned). The multi-project redesign — poll a
-`projects-with-work` endpoint, shuffle the result, and stand up a worktree **per repo** (a worktree
-can't span repositories) — slots into `agent.sh`'s discovery + worktree steps without touching the
-wrappers. The repo-guard inverts from "refuse on mismatch" to "set up the project's repo."
+Set by `AGENTASK_PROJECT`:
+
+- **A project uuid → single-project** (the default; back-compat). The slot is pinned to that board
+  and `AGENTASK_REPO`, with one worktree — exactly as before, including the repo-guard.
+- **`all` (or empty) → multi-project.** The slot polls `GET /projects?claimable=true&model=&kind=`
+  (the v0.4.0 work-discovery filter), shuffles the projects that have its work, and drains them all —
+  cloning each project's repo on demand into `~/.agentask/repos/<owner-repo>/` and standing up a
+  per-`(slot, repo)` worktree `wt-<slot>-<owner-repo>` (a worktree can't span repositories).
+  `AGENTASK_PROJECTS=<id,id,…>` optionally restricts which projects multi-mode will touch.
+
+      AGENTASK_PROJECT=all ./worker-haiku.sh haiku-1     # one slot, all boards
+
+  One `claude -p` task per discovery pass, then re-poll with a fresh shuffle — so N parallel slots
+  spread across all work-bearing projects instead of serializing on one board. The repo-guard
+  inverts from "refuse on mismatch" to "set up the project's repo." Assumes each repo's default
+  branch is `main` (master-default repos need the prompt parameterized — not yet supported).
