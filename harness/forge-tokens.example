@@ -5,5 +5,6 @@
 # Copy to ~/.agentask/forge-tokens and `chmod 600` it (it holds secrets, and is NOT versioned).
 # One "owner=token" per line; whitespace and "# comments" are ignored.
 #
+# No quotes around the token (a leading \" yields 401 Bad credentials; the parser strips them anyway).
 # fAIctory=ghp_xxxxxxxxxxxxxxxxxxxxxxxx
 # boldfield=ghp_yyyyyyyyyyyyyyyyyyyyyyyy   # optional — omit to use your logged-in gh account
