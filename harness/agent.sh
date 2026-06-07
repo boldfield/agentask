@@ -88,8 +88,13 @@ token_for_owner() {
   [ -f "$FORGE_TOKENS" ] || return 0
   # case-insensitive owner match — GitHub owners are case-insensitive (fAIctory == faictory), and the
   # owner derived from the repo URL may differ in case from the forge-tokens entry.
-  sed -E 's/[[:space:]]*#.*$//' "$FORGE_TOKENS" 2>/dev/null \
-    | grep -iE "^[[:space:]]*$1[[:space:]]*=" | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//'
+  local val
+  val=$(sed -E 's/[[:space:]]*#.*$//' "$FORGE_TOKENS" 2>/dev/null \
+        | grep -iE "^[[:space:]]*$1[[:space:]]*=" | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//')
+  # tolerate a token wrapped in surrounding quotes ("ghp_…" or 'ghp_…') — a common copy-paste slip
+  # that yields HTTP 401 Bad credentials otherwise.
+  val="${val#[\"\']}"; val="${val%[\"\']}"
+  printf '%s' "$val"
 }
 # Set GH_TOKEN for a repo owner from the map, or fall back to the operator's default gh auth.
 apply_owner_token() {
