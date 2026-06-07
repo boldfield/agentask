@@ -406,7 +406,7 @@ type Task struct {
 	Result         *string  `db:"result" json:"result"`                     // nullable
 	Model          string   `db:"model" json:"model"`
 	Kind           string   `db:"kind" json:"kind"`
-	ReviewModels   []string `json:"review_models"`
+	ReviewModels   []string `db:"review_models" json:"review_models"`
 	ReviewRound    int      `db:"review_round" json:"review_round"`
 	TargetTaskID   *string  `db:"target_task_id" json:"target_task_id"` // nullable
 	CreatedAt      string   `db:"created_at" json:"created_at"`
@@ -756,6 +756,11 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 			TargetTaskID: nil,
 			CreatedAt:    now,
 			UpdatedAt:    now,
+		}
+
+		// Normalize ReviewModels to empty slice when nil
+		if task.ReviewModels == nil {
+			task.ReviewModels = []string{}
 		}
 
 		// Insert task

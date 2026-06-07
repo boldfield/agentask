@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -1826,5 +1827,29 @@ func TestTaskFieldsRoundTrip(t *testing.T) {
 	}
 	if defaultTask.ReviewRound != 0 {
 		t.Errorf("expected default review_round=0, got %d", defaultTask.ReviewRound)
+	}
+
+	// Test 5: Verify JSON marshaling normalizes empty review_models to [] not null
+	jsonData, err := json.Marshal(defaultTask)
+	if err != nil {
+		t.Fatalf("failed to marshal task: %v", err)
+	}
+	// Unmarshal to check structure
+	var jsonObj map[string]interface{}
+	if err := json.Unmarshal(jsonData, &jsonObj); err != nil {
+		t.Fatalf("failed to unmarshal json: %v", err)
+	}
+	reviewModelsVal := jsonObj["review_models"]
+	if reviewModelsVal == nil {
+		t.Errorf("review_models should not be null in JSON, should be []")
+	}
+	// Check it's an array (even if empty)
+	if reviewModelsVal != nil {
+		switch reviewModelsVal.(type) {
+		case []interface{}:
+			// OK
+		default:
+			t.Errorf("review_models should be a JSON array, got type %T", reviewModelsVal)
+		}
 	}
 }
