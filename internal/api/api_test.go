@@ -12,9 +12,13 @@ import (
 	"github.com/boldfield/agentask/internal/store"
 )
 
+func defaultTestAllowedModels() []string {
+	return []string{"haiku", "sonnet", "opus"}
+}
+
 func setupTestServer(t *testing.T, authToken string) *Server {
 	// Use in-memory database for testing
-	s, err := store.Open("file::memory:?cache=shared")
+	s, err := store.Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open test store: %v", err)
 	}
@@ -2469,7 +2473,7 @@ func TestListProjectsWithoutAuth(t *testing.T) {
 // This test uses a fresh database to ensure no prior projects exist.
 func TestListProjectsReturnsEmptyArray(t *testing.T) {
 	tmpdb := t.TempDir() + "/test.db"
-	s, err := store.Open(tmpdb)
+	s, err := store.Open(tmpdb, defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open test store: %v", err)
 	}

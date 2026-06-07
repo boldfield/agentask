@@ -16,6 +16,11 @@ import (
 	"time"
 )
 
+// defaultTestAllowedModels returns the default allowed models for tests (matching main.go default).
+func defaultTestAllowedModels() []string {
+	return []string{"haiku", "sonnet", "opus"}
+}
+
 // createTestFSWithBadMigration creates a test filesystem with the standard migrations
 // plus a bad migration (0003_bad.sql) that leaves a dangling foreign key.
 // It wraps the embedded migrations and adds the bad migration on top.
@@ -72,7 +77,7 @@ func (c *compositeFS) ReadDir(name string) ([]fs.DirEntry, error) {
 // and that re-applying is idempotent.
 func TestMigrations(t *testing.T) {
 	// Use in-memory database for testing
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -135,7 +140,7 @@ func TestMigrations(t *testing.T) {
 	}
 
 	// Verify idempotency: re-open the same database and it should work
-	store2, err := Open("file::memory:?cache=shared")
+	store2, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to re-open database: %v", err)
 	}
@@ -157,7 +162,7 @@ func TestWALEnabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "wal_test.db")
 
-	store, err := Open(dbPath)
+	store, err := Open(dbPath, defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -176,7 +181,7 @@ func TestWALEnabled(t *testing.T) {
 
 // TestForeignKeysEnforced verifies that foreign key constraints are enforced.
 func TestForeignKeysEnforced(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -201,7 +206,7 @@ func TestOpenSamePath(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "test.db")
 
 	// Open the database the first time
-	store1, err := Open(dbPath)
+	store1, err := Open(dbPath, defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database for the first time: %v", err)
 	}
@@ -222,7 +227,7 @@ func TestOpenSamePath(t *testing.T) {
 	}
 
 	// Open the database the second time (same path)
-	store2, err := Open(dbPath)
+	store2, err := Open(dbPath, defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database for the second time: %v", err)
 	}
@@ -251,7 +256,7 @@ func TestOpenSamePath(t *testing.T) {
 // TestAppendEventAtomicity tests that AppendEvent works within a transaction
 // and that rolling back the transaction drops both the state change and the event.
 func TestAppendEventAtomicity(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -338,7 +343,7 @@ func TestAppendEventAtomicity(t *testing.T) {
 
 // TestListEvents tests that ListEvents returns events in chronological order (created_at, id).
 func TestListEvents(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -461,7 +466,7 @@ func TestListEvents(t *testing.T) {
 // scrambles them. With fixed-width nanosecond timestamps and the single-writer store,
 // each insert gets a distinct increasing timestamp, preserving order.
 func TestListEventsRapidOrdering(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -522,7 +527,7 @@ func TestListEventsRapidOrdering(t *testing.T) {
 // TestClaimTaskSuccessful tests that claiming a ready task succeeds and
 // sets state, assignee, and lease_expires_at correctly.
 func TestClaimTaskSuccessful(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -592,7 +597,7 @@ func TestClaimTaskSuccessful(t *testing.T) {
 
 // TestClaimTaskAlreadyClaimed tests that claiming an already-claimed task returns ErrConflict.
 func TestClaimTaskAlreadyClaimed(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -640,7 +645,7 @@ func TestClaimTaskAlreadyClaimed(t *testing.T) {
 
 // TestClaimTaskWithUnfinishedDependency tests that claiming a task with an unfinished dependency returns ErrConflict.
 func TestClaimTaskWithUnfinishedDependency(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -698,7 +703,7 @@ func TestClaimTaskWithUnfinishedDependency(t *testing.T) {
 
 // TestClaimTaskNotFound tests that claiming a non-existent task returns ErrNotFound.
 func TestClaimTaskNotFound(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -717,7 +722,7 @@ func TestClaimTaskNotFound(t *testing.T) {
 // the same ready task concurrently. Exactly one should succeed (ErrConflict=nil), and the
 // other N-1 should get ErrConflict. This proves the atomic UPDATE design works.
 func TestClaimTaskConcurrency(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -801,7 +806,7 @@ func TestClaimTaskConcurrency(t *testing.T) {
 
 // TestClaimTaskExpiredLease tests that a task with an expired lease can be re-claimed.
 func TestClaimTaskExpiredLease(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -853,7 +858,7 @@ func TestClaimTaskExpiredLease(t *testing.T) {
 
 // TestClaimTaskModelMismatch tests that claiming with a mismatched model returns MODEL_MISMATCH conflict.
 func TestClaimTaskModelMismatch(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -908,7 +913,7 @@ func TestClaimTaskModelMismatch(t *testing.T) {
 // and all other agents (matching or not) lose the race. The test adds a secondary verification:
 // after the task is claimed, subsequent sonnet attempts get ErrConflict (not otherwise-claimable).
 func TestClaimTaskConcurrencyMixedModels(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -1029,7 +1034,7 @@ func TestMigrationForeignKeysDisabled(t *testing.T) {
 	tmpDir := t.TempDir()
 	dbPath := filepath.Join(tmpDir, "migration_fk_test.db")
 
-	store, err := Open(dbPath)
+	store, err := Open(dbPath, defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -1098,7 +1103,7 @@ func TestMigrationRoundTrip(t *testing.T) {
 	dbPath := filepath.Join(tmpDir, "roundtrip_test.db")
 
 	// Open fresh DB and populate it
-	store, err := Open(dbPath)
+	store, err := Open(dbPath, defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -1198,7 +1203,7 @@ func TestMigrationRoundTrip(t *testing.T) {
 	store.Close()
 
 	// Reopen the database (this will trigger migrations again, but they should be idempotent)
-	store2, err := Open(dbPath)
+	store2, err := Open(dbPath, defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to reopen database: %v", err)
 	}
@@ -1875,7 +1880,7 @@ func TestMigration0004AddTaskColumns(t *testing.T) {
 // TestTaskFieldsRoundTrip verifies that the new fields (model, kind, review_models, review_round, target_task_id)
 // are properly persisted and retrieved through the Go layer.
 func TestTaskFieldsRoundTrip(t *testing.T) {
-	store, err := Open("file::memory:?cache=shared")
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open database: %v", err)
 	}
@@ -2017,5 +2022,132 @@ func TestTaskFieldsRoundTrip(t *testing.T) {
 		default:
 			t.Errorf("review_models should be a JSON array, got type %T", reviewModelsVal)
 		}
+	}
+}
+
+// TestCreateTasksWithConfiguredAllowlist verifies that model allowlist validation works.
+// Models not in the allowlist are rejected with UNKNOWN_MODEL.
+func TestCreateTasksWithConfiguredAllowlist(t *testing.T) {
+	ctx := context.Background()
+
+	// Test 1: Create a store with a custom allowlist (opus,sonnet only, no haiku)
+	customAllowlist := []string{"opus", "sonnet"}
+	store, err := Open("file::memory:?cache=shared", customAllowlist)
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Test 2: Try to create a task with a model not in the allowlist (haiku)
+	// Should fail with UNKNOWN_MODEL
+	_, err = store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:      "Haiku Task",
+			Spec:       "Test spec",
+			DocumentID: doc.ID,
+			Model:      "haiku",
+		},
+	})
+	if err == nil {
+		t.Error("expected UNKNOWN_MODEL error for haiku model, but creation succeeded")
+	}
+	var valErr *ValidationError
+	if !errors.As(err, &valErr) {
+		t.Errorf("expected ValidationError, got %T", err)
+	} else if valErr.Code != "UNKNOWN_MODEL" {
+		t.Errorf("expected error code UNKNOWN_MODEL, got %s", valErr.Code)
+	}
+
+	// Test 3: Create a task with a model in the allowlist (opus) should succeed
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:      "Opus Task",
+			Spec:       "Test spec",
+			DocumentID: doc.ID,
+			Model:      "opus",
+		},
+	})
+	if err != nil {
+		t.Errorf("expected opus task creation to succeed, got error: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Model != "opus" {
+		t.Errorf("expected task with model='opus', got %v", tasks)
+	}
+
+	// Test 4: Create a task with sonnet model (also in allowlist) should succeed
+	tasks, err = store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:      "Sonnet Task",
+			Spec:       "Test spec",
+			DocumentID: doc.ID,
+			Model:      "sonnet",
+		},
+	})
+	if err != nil {
+		t.Errorf("expected sonnet task creation to succeed, got error: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Model != "sonnet" {
+		t.Errorf("expected task with model='sonnet', got %v", tasks)
+	}
+
+	// Test 5: Create a task with no explicit model (should default to first in allowlist, opus)
+	tasks, err = store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:      "Default Model Task",
+			Spec:       "Test spec",
+			DocumentID: doc.ID,
+		},
+	})
+	if err != nil {
+		t.Errorf("expected default model task creation to succeed, got error: %v", err)
+	}
+	if len(tasks) != 1 || tasks[0].Model != "opus" {
+		t.Errorf("expected task with default model='opus', got model='%s'", tasks[0].Model)
+	}
+
+	// Test 6: Create a task with review_models not in allowlist should fail
+	_, err = store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Task with bad review model",
+			Spec:         "Test spec",
+			DocumentID:   doc.ID,
+			Model:        "opus",
+			ReviewModels: []string{"haiku"}, // haiku not in allowlist
+		},
+	})
+	if err == nil {
+		t.Error("expected UNKNOWN_MODEL error for review_models with haiku, but creation succeeded")
+	}
+	if !errors.As(err, &valErr) {
+		t.Errorf("expected ValidationError, got %T", err)
+	} else if valErr.Code != "UNKNOWN_MODEL" {
+		t.Errorf("expected error code UNKNOWN_MODEL, got %s", valErr.Code)
+	}
+
+	// Test 7: Create a task with review_models in allowlist should succeed
+	tasks, err = store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Task with good review models",
+			Spec:         "Test spec",
+			DocumentID:   doc.ID,
+			Model:        "opus",
+			ReviewModels: []string{"opus", "sonnet"},
+		},
+	})
+	if err != nil {
+		t.Errorf("expected task with review_models creation to succeed, got error: %v", err)
+	}
+	if len(tasks) != 1 || len(tasks[0].ReviewModels) != 2 {
+		t.Errorf("expected task with 2 review_models, got %v", tasks)
 	}
 }
