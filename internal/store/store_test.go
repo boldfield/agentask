@@ -2464,3 +2464,144 @@ func TestSubmitImplementTaskResubmitAfterBounce(t *testing.T) {
 		t.Error("round 1 review task should still exist")
 	}
 }
+
+// TestSubmitTaskIdempotentLinks verifies that submitting a task multiple times with the same
+// links does not create duplicate link rows.
+func TestSubmitTaskIdempotentLinks(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Feature", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create a task
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:      "Test Task",
+			Spec:       "Test spec",
+			DocumentID: doc.ID,
+			Model:      "opus",
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	task := tasks[0]
+
+	// Promote task from backlog to ready
+	task, err = store.PromoteTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	// Claim the task
+	claimedTask, err := store.ClaimTask(ctx, task.ID, "agent-1", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	if claimedTask.State != "in_progress" {
+		t.Errorf("expected task state 'in_progress', got %s", claimedTask.State)
+	}
+
+	// First submission with PR and branch links
+	links := []LinkInput{
+		{Kind: "pr", Value: "https://github.com/test/repo/pull/123"},
+		{Kind: "branch", Value: "feature/test-branch"},
+	}
+	submittedTask, err := store.SubmitTask(ctx, task.ID, "agent-1", "result of work", links)
+	if err != nil {
+		t.Fatalf("first submit failed: %v", err)
+	}
+	if submittedTask.State != "review" {
+		t.Errorf("expected task state 'review', got %s", submittedTask.State)
+	}
+
+	// Verify we have exactly 2 links after first submission
+	if len(submittedTask.Links) != 2 {
+		t.Errorf("expected 2 links after first submission, got %d", len(submittedTask.Links))
+	}
+
+	// Verify the link values are correct
+	linkMap := make(map[string]string)
+	for _, link := range submittedTask.Links {
+		linkMap[link.Kind] = link.Value
+	}
+	if linkMap["pr"] != "https://github.com/test/repo/pull/123" {
+		t.Errorf("PR link mismatch: got %s", linkMap["pr"])
+	}
+	if linkMap["branch"] != "feature/test-branch" {
+		t.Errorf("branch link mismatch: got %s", linkMap["branch"])
+	}
+
+	// Move task back to in_progress to simulate rework
+	now := nowTimestamp()
+	leaseExpiry := leaseExpiryTimestamp(5 * time.Minute)
+	_, err = store.Conn().ExecContext(ctx, `
+		UPDATE task SET state='in_progress', assignee='agent-1', lease_expires_at=?, updated_at=? WHERE id=?
+	`, leaseExpiry, now, task.ID)
+	if err != nil {
+		t.Fatalf("failed to reset task state: %v", err)
+	}
+
+	// Second submission with same links (testing idempotency)
+	submittedTask2, err := store.SubmitTask(ctx, task.ID, "agent-1", "updated result", links)
+	if err != nil {
+		t.Fatalf("second submit failed: %v", err)
+	}
+
+	// Verify we still have exactly 2 links (not 4)
+	if len(submittedTask2.Links) != 2 {
+		t.Errorf("expected 2 links after second submission with same links, got %d", len(submittedTask2.Links))
+	}
+
+	// Move task back to in_progress again for a third submission with a new link
+	_, err = store.Conn().ExecContext(ctx, `
+		UPDATE task SET state='in_progress', assignee='agent-1', lease_expires_at=?, updated_at=? WHERE id=?
+	`, leaseExpiry, now, task.ID)
+	if err != nil {
+		t.Fatalf("failed to reset task state for third submission: %v", err)
+	}
+
+	// Third submission: same PR/branch links + a new commit link
+	linksWithCommit := []LinkInput{
+		{Kind: "pr", Value: "https://github.com/test/repo/pull/123"},
+		{Kind: "branch", Value: "feature/test-branch"},
+		{Kind: "commit", Value: "abc123def456"},
+	}
+	submittedTask3, err := store.SubmitTask(ctx, task.ID, "agent-1", "result with commit", linksWithCommit)
+	if err != nil {
+		t.Fatalf("third submit failed: %v", err)
+	}
+
+	// Verify we now have exactly 3 links (old PR and branch + new commit)
+	if len(submittedTask3.Links) != 3 {
+		t.Errorf("expected 3 links after adding new commit link, got %d", len(submittedTask3.Links))
+	}
+
+	// Verify all three links are present
+	linkMap = make(map[string]string)
+	for _, link := range submittedTask3.Links {
+		linkMap[link.Kind] = link.Value
+	}
+	if linkMap["pr"] != "https://github.com/test/repo/pull/123" {
+		t.Errorf("PR link missing or wrong: got %s", linkMap["pr"])
+	}
+	if linkMap["branch"] != "feature/test-branch" {
+		t.Errorf("branch link missing or wrong: got %s", linkMap["branch"])
+	}
+	if linkMap["commit"] != "abc123def456" {
+		t.Errorf("commit link missing or wrong: got %s", linkMap["commit"])
+	}
+}

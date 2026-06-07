@@ -1347,15 +1347,27 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 	}
 
 	if rowsAffected == 1 {
-		// Submit succeeded. Insert task_link rows.
+		// Submit succeeded. Insert task_link rows (dedup by task_id, kind, value).
 		for _, link := range links {
-			linkID := GenerateID()
-			_, err := tx.ExecContext(ctx, `
-				INSERT INTO task_link (id, task_id, kind, value)
-				VALUES (?, ?, ?, ?)
-			`, linkID, taskID, link.Kind, link.Value)
+			// Check if this link already exists
+			var existingCount int
+			err := tx.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM task_link WHERE task_id = ? AND kind = ? AND value = ?
+			`, taskID, link.Kind, link.Value).Scan(&existingCount)
 			if err != nil {
-				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to insert link: %w", err)
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to check link existence: %w", err)
+			}
+
+			// Only insert if it doesn't exist
+			if existingCount == 0 {
+				linkID := GenerateID()
+				_, err := tx.ExecContext(ctx, `
+					INSERT INTO task_link (id, task_id, kind, value)
+					VALUES (?, ?, ?, ?)
+				`, linkID, taskID, link.Kind, link.Value)
+				if err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to insert link: %w", err)
+				}
 			}
 		}
 
