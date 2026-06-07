@@ -2621,3 +2621,157 @@ func TestBoardModel_ProjectSwitchSameProject(t *testing.T) {
 		t.Errorf("Expected selectedTaskID to remain 'task-1', got %s", model.selectedTaskID)
 	}
 }
+
+// TestBoardModel_ProjectNameInHeader verifies that the active project name is shown in the board header.
+func TestBoardModel_ProjectNameInHeader(t *testing.T) {
+	mockClient := &tuiclient.MockClient{
+		Tasks: []tuiclient.Task{
+			{ID: "task-1", Title: "Task 1", State: "backlog"},
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "My Test Project"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Simulate task fetch
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{{ID: "task-1", Title: "Task 1", State: "backlog"}}
+	bucketed["ready"] = []tuiclient.Task{}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	output := model.View()
+
+	// Verify project name is in the header
+	if !strings.Contains(output, "My Test Project") {
+		t.Errorf("Expected project name 'My Test Project' in header, got:\n%s", output)
+	}
+
+	// Verify project name appears before tabs
+	projIndex := strings.Index(output, "My Test Project")
+	tabsIndex := strings.Index(output, "backlog")
+	if projIndex > tabsIndex {
+		t.Errorf("Expected project name to appear before tabs in output")
+	}
+}
+
+// TestBoardModel_ProjectNameTruncation verifies that long project names are truncated gracefully.
+func TestBoardModel_ProjectNameTruncation(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	// Very long project name
+	longName := "This Is A Very Long Project Name That Should Be Truncated"
+	project := tuiclient.Project{ID: "project-1", Name: longName}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 40, Height: 24}) // moderately narrow terminal
+	model = m.(*BoardModel)
+
+	// Simulate task fetch
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range []string{"backlog", "ready", "in_progress", "review", "done"} {
+		bucketed[state] = []tuiclient.Task{}
+	}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	output := model.View()
+
+	// Verify the full name is truncated (should have ellipsis)
+	if strings.Contains(output, longName) {
+		t.Errorf("Expected long project name to be truncated, but found full name in output:\n%s", output)
+	}
+
+	// Verify truncation marker (ellipsis) is present
+	if !strings.Contains(output, "…") {
+		t.Errorf("Expected truncation marker '…' in output:\n%s", output)
+	}
+
+	// Verify the first part of the name is still visible
+	if !strings.Contains(output, "This Is A Very") {
+		t.Errorf("Expected start of project name in truncated output:\n%s", output)
+	}
+}
+
+// TestBoardModel_ProjectNameInDetailView verifies that the project name is also shown in the detail view.
+func TestBoardModel_ProjectNameInDetailView(t *testing.T) {
+	taskDetail := tuiclient.TaskDetail{
+		ID:        "task-detail-1",
+		Title:     "My Feature Task",
+		Spec:      "This is the spec.",
+		State:     "in_progress",
+		CreatedAt: "2026-01-01T00:00:00Z",
+		UpdatedAt: "2026-01-02T00:00:00Z",
+	}
+
+	project := tuiclient.Project{ID: "project-1", Name: "Detail Test Project", Repo: "https://github.com/example/repo"}
+
+	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			return taskDetail, nil
+		},
+		ListDocumentsFunc: func(ctx context.Context, projectID string) ([]tuiclient.Document, error) {
+			return nil, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Load board tasks
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range []string{"backlog", "ready", "review", "done"} {
+		bucketed[state] = []tuiclient.Task{}
+	}
+	bucketed["in_progress"] = []tuiclient.Task{
+		{ID: "task-detail-1", Title: "My Feature Task", State: "in_progress"},
+	}
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Open detail view
+	model.selectedTaskID = "task-detail-1"
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+
+	if detailCmd != nil {
+		detailMsg := detailCmd()
+		m, _ = model.Update(detailMsg)
+		model = m.(*BoardModel)
+	}
+
+	output := model.View()
+
+	// Verify project name is in the detail view
+	if !strings.Contains(output, "Detail Test Project") {
+		t.Errorf("Expected project name 'Detail Test Project' in detail view, got:\n%s", output)
+	}
+}
