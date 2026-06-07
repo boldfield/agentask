@@ -3351,6 +3351,141 @@ func TestTransitionBlockedToReady(t *testing.T) {
 	}
 }
 
+func TestTransitionBlockedToFailed(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	// Create a document
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create tasks in backlog state
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 1 - Blocked", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 2 - Ready", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 3 - InProgress", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 4 - Done", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	taskID1 := tasks[0].ID
+	taskID2 := tasks[1].ID
+	taskID3 := tasks[2].ID
+	taskID4 := tasks[3].ID
+
+	// Test 1: Transition a task to blocked state
+	blockedNote := "blocker: unresolvable"
+	task1, err := store.TransitionTask(ctx, taskID1, "blocked", &blockedNote)
+	if err != nil {
+		t.Fatalf("failed to transition to blocked: %v", err)
+	}
+	if task1.State != "blocked" {
+		t.Errorf("expected task state='blocked', got '%s'", task1.State)
+	}
+
+	// Test 2: blocked→failed succeeds (main test case)
+	failedNote := "dead-end blocker"
+	failed, err := store.TransitionTask(ctx, taskID1, "failed", &failedNote)
+	if err != nil {
+		t.Fatalf("failed to transition blocked→failed: %v", err)
+	}
+	if failed.State != "failed" {
+		t.Errorf("expected task state='failed' after transition, got '%s'", failed.State)
+	}
+
+	// Test 3: Transition event is recorded with the note
+	events, err := store.ListEvents(ctx, taskID1)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+	if len(events) < 2 {
+		t.Fatalf("expected at least 2 events, got %d", len(events))
+	}
+	lastEvent := events[len(events)-1]
+	if lastEvent.Kind != "transition" {
+		t.Errorf("expected last event kind='transition', got '%s'", lastEvent.Kind)
+	}
+	if lastEvent.Note == nil || *lastEvent.Note != failedNote {
+		t.Errorf("expected event note='%s', got %v", failedNote, lastEvent.Note)
+	}
+
+	// Test 4: active→failed still works (unchanged behavior)
+	// Task 2 is in ready state, transition to failed
+	readyFailedNote := "ready to fail"
+	readyFailed, err := store.TransitionTask(ctx, taskID2, "failed", &readyFailedNote)
+	if err != nil {
+		t.Fatalf("failed to transition ready→failed: %v", err)
+	}
+	if readyFailed.State != "failed" {
+		t.Errorf("expected task state='failed' after ready→failed, got '%s'", readyFailed.State)
+	}
+
+	// Test 5: blocked→ready still works (unchanged behavior)
+	_, err = store.TransitionTask(ctx, taskID3, "blocked", nil)
+	if err != nil {
+		t.Fatalf("failed to transition to blocked: %v", err)
+	}
+	unblockNote := "unblock and retry"
+	unblocked, err := store.TransitionTask(ctx, taskID3, "ready", &unblockNote)
+	if err != nil {
+		t.Fatalf("failed to transition blocked→ready: %v", err)
+	}
+	if unblocked.State != "ready" {
+		t.Errorf("expected task state='ready', got '%s'", unblocked.State)
+	}
+
+	// Test 6: done→failed still fails (should return ErrConflict)
+	// First set task 4 to approved, then done
+	_, err = store.Conn().ExecContext(ctx, `
+		UPDATE task SET state = 'approved' WHERE id = ?
+	`, taskID4)
+	if err != nil {
+		t.Fatalf("failed to set task to approved: %v", err)
+	}
+	_, err = store.TransitionTask(ctx, taskID4, "done", nil)
+	if err != nil {
+		t.Fatalf("failed to transition to done: %v", err)
+	}
+
+	// Now try to transition done→failed (should fail)
+	_, err = store.TransitionTask(ctx, taskID4, "failed", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected done→failed to return ErrConflict, got %v", err)
+	}
+
+	// Test 7: blocked→blocked is rejected (no-op, should fail)
+	task5, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 5 - NoOp", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task 5: %v", err)
+	}
+	taskID5 := task5[0].ID
+	_, err = store.TransitionTask(ctx, taskID5, "blocked", nil)
+	if err != nil {
+		t.Fatalf("failed to transition to blocked: %v", err)
+	}
+	_, err = store.TransitionTask(ctx, taskID5, "blocked", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected blocked→blocked to return ErrConflict, got %v", err)
+	}
+}
+
 // TestListProjectsWithClaimableFilter verifies that ListProjects with filter.Claimable=true
 // returns only projects with at least one claimable task matching the model and kind.
 func TestListProjectsWithClaimableFilter(t *testing.T) {

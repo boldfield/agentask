@@ -1769,7 +1769,8 @@ func (s *sqliteStore) AddReview(ctx context.Context, taskID, actor, verdict stri
 // Valid transitions:
 //   - to='done': allowed ONLY from 'approved'
 //   - to='ready': allowed from 'approved' or 'blocked' (blocked→ready clears stale assignee/lease)
-//   - to='blocked' or 'failed': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved)
+//   - to='blocked': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved)
+//   - to='failed': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved) or 'blocked' (retire a dead blocked task)
 //   - anything else: ErrConflict
 //
 // Returns the updated Task on success.
@@ -1815,11 +1816,17 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 			canTransition = true
 		}
 
-	case "blocked", "failed":
+	case "blocked":
 		// Allowed from any active state (backlog, ready, in_progress, review, approved)
-		// Terminal states are done, blocked, failed
 		activeStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true, "approved": true}
 		if activeStates[taskState] {
+			canTransition = true
+		}
+
+	case "failed":
+		// Allowed from any active state or blocked (retire a dead blocked task)
+		activeStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true, "approved": true}
+		if activeStates[taskState] || taskState == "blocked" {
 			canTransition = true
 		}
 	}

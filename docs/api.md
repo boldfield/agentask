@@ -789,12 +789,14 @@ The state machine enforces these rules:
 - `approved` → `done` (human merges PR)
 - `approved` → `ready` (human disagrees with reviewers, requests rework)
 - `blocked` → `ready` (human unblocks / retries; clears stale assignee and lease)
+- `blocked` → `failed` (retire a dead blocked task without re-entering the queue)
 - Any active state → `blocked` (off-ramp: external blocker)
 - Any active state → `failed` (off-ramp: task cannot be done as specified)
 
 Note: `review` → `done` is no longer a direct transition. All paths to `done` now go through
 `approved`. The `approved` state is the human merge gate. `blocked` is recoverable via the
-`blocked` → `ready` transition, unlike terminal states `done` and `failed`.
+`blocked` → `ready` transition, unlike terminal states `done` and `failed`. Once a `blocked`
+task is decided to be unrecoverable, use `blocked` → `failed` to retire it cleanly.
 
 ---
 
