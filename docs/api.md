@@ -227,7 +227,7 @@ Bulk-create tasks for a project.
 - `title` (required): Task title
 - `spec` (required): Task specification/description
 - `document_id` (required): ID of the design or feature document this task is decomposed from
-- `model` (required): Assigned model (e.g., `haiku`, `sonnet`, `opus`); must be in the deployment allowlist
+- `model` (optional): Assigned model (e.g., `haiku`, `sonnet`, `opus`); must be in the deployment allowlist if provided. If omitted or empty, defaults to the deployment default model.
 - `review_models` (optional): List of reviewer models for this task (e.g., `["opus", "sonnet"]`); each must be in the allowlist. Default is `["opus"]` if unset/empty. Ignored for review tasks (auto-spawned only).
 - `depends_on` (optional): Array of task IDs or keys (if using intra-batch references) that must be done before this task is claimable
 
@@ -640,7 +640,6 @@ Submit a task for review (implement tasks) or submit a verdict (review tasks). B
 - `agent_id` (required): The ID of the reviewing agent (must match the task's assignee)
 - `verdict` (required): Either `"approve"` or `"reject"`
 - `result` (optional): Review writeup or detailed feedback
-- `links` (forbidden): Must not be present for review tasks
 
 **Response (200 OK):**
 ```json
@@ -675,9 +674,8 @@ The response includes the review task's own `id` and the parent implement task's
 - `400 EMPTY_AGENT_ID`: agent_id cannot be empty
 - `400 INVALID_LINK_KIND`: One or more link kinds are invalid (must be pr, branch, commit, or ci) (implement only)
 - `400 INVALID_VERDICT`: verdict must be "approve" or "reject" (review only)
-- `400 VERDICT_FORBIDDEN`: verdict must not be present for implement tasks
-- `400 LINKS_FORBIDDEN`: links must not be present for review tasks
-- `400 VERDICT_REQUIRED`: verdict is required for review tasks
+- `400 FORBIDDEN_VERDICT`: verdict must not be present for implement tasks
+- `400 MISSING_VERDICT`: verdict is required for review tasks
 - `400 JSON_DECODE_ERROR`: Invalid JSON in request body
 - `404 NOT_FOUND`: Task not found
 - `409 CONFLICT`: Task is not in_progress, is not assigned to the provided agent_id, or is not the expected kind
@@ -967,9 +965,8 @@ All error responses follow a consistent format:
 - `JSON_DECODE_ERROR` (400): Invalid JSON in request body
 - `EMPTY_<FIELD>` (400): Required field is empty
 - `INVALID_<FIELD>` (400): Field value is invalid (e.g., verdict not "approve" or "reject")
-- `VERDICT_FORBIDDEN` (400): Verdict provided for an implement task (forbidden)
-- `VERDICT_REQUIRED` (400): Verdict missing for a review task (required)
-- `LINKS_FORBIDDEN` (400): Links provided for a review task (forbidden)
+- `FORBIDDEN_VERDICT` (400): Verdict provided for an implement task (forbidden)
+- `MISSING_VERDICT` (400): Verdict missing for a review task (required)
 - `CREATE_ERROR` (500): Server error during creation
 - `GET_ERROR` (500): Server error retrieving resource
 - `LIST_ERROR` (500): Server error listing resources
