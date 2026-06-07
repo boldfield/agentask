@@ -43,9 +43,21 @@ versioned copy (one source of truth, old paths still resolve):
 This checkout must then stay on a branch that contains `harness/` (i.e. `main` after this merges) —
 otherwise the symlinks dangle.
 
-## Roadmap — multi-project
+## Project scope: single vs. multi
 
-Single-project today (`AGENTASK_PROJECT` pinned). The multi-project redesign — poll a
-`projects-with-work` endpoint, shuffle the result, and stand up a worktree **per repo** (a worktree
-can't span repositories) — slots into `agent.sh`'s discovery + worktree steps without touching the
-wrappers. The repo-guard inverts from "refuse on mismatch" to "set up the project's repo."
+Set by `AGENTASK_PROJECT`:
+
+- **A project uuid → single-project** (the default; back-compat). The slot is pinned to that board
+  and `AGENTASK_REPO`, with one worktree — exactly as before, including the repo-guard.
+- **`all` (or empty) → multi-project.** The slot polls `GET /projects?claimable=true&model=&kind=`
+  (the v0.4.0 work-discovery filter), shuffles the projects that have its work, and drains them all —
+  cloning each project's repo on demand into `~/.agentask/repos/<owner-repo>/` and standing up a
+  per-`(slot, repo)` worktree `wt-<slot>-<owner-repo>` (a worktree can't span repositories).
+  `AGENTASK_PROJECTS=<id,id,…>` optionally restricts which projects multi-mode will touch.
+
+      AGENTASK_PROJECT=all ./worker-haiku.sh haiku-1     # one slot, all boards
+
+  One `claude -p` task per discovery pass, then re-poll with a fresh shuffle — so N parallel slots
+  spread across all work-bearing projects instead of serializing on one board. The repo-guard
+  inverts from "refuse on mismatch" to "set up the project's repo." Assumes each repo's default
+  branch is `main` (master-default repos need the prompt parameterized — not yet supported).

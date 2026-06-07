@@ -2,15 +2,22 @@
 # agent.sh — the unified Agentask fleet engine. One loop, parameterized:
 #   --model <tier>            the model this agent claims + runs (e.g. haiku, opus)
 #   --kind  <implement|review>  implement = worker (worker-prompt.md); review = reviewer (reviewer-prompt.md)
-#   [slot]                    stable slot name -> persistent agent id + dedicated worktree
+#   [slot]                    stable slot name -> persistent agent id + dedicated worktree(s)
 #
-# Code + prompts live next to this script (resolved through symlinks), so editing a versioned
-# prompt takes effect on the NEXT dispatch with no restart. STATE — env, agent ids, worktrees —
-# lives under $AGENTASK_HOME (default ~/.agentask) and is NOT versioned.
+# PROJECT SCOPE (from $AGENTASK_PROJECT):
+#   a project uuid  -> SINGLE-project mode: pinned to that board + $AGENTASK_REPO (back-compat).
+#   "all" or empty  -> MULTI-project mode: poll GET /projects?claimable=&model=&kind= (v0.4.0+),
+#                      shuffle, and drain every project that has matching work — cloning each
+#                      project's repo on demand and standing up a per-(slot,repo) worktree (a
+#                      worktree can't span repositories). Optional $AGENTASK_PROJECTS (comma-sep
+#                      ids) restricts which projects multi-mode will touch.
 #
-# Ctrl-C / TERM is a GRACEFUL stop: the in-flight task finishes, THEN the loop exits. The `claude`
-# run is backgrounded under job control (`set -m`) so it sits in its own process group and the
-# terminal's Ctrl-C never reaches it. Ctrl-C a SECOND time to force-quit.
+# Code + prompts live next to this script (resolved through symlinks); the prompt is read FRESH each
+# dispatch. STATE — env, agent ids, repo clones, worktrees — lives under $AGENTASK_HOME (~/.agentask)
+# and is NOT versioned. Ctrl-C is a GRACEFUL stop (finishes the in-flight task; again to force-quit).
+#
+# NOTE: assumes each repo's default branch is `main` (matches worker-prompt.md). master-default repos
+# need the prompt parameterized — not supported yet.
 set -uo pipefail
 set -m
 
@@ -46,16 +53,17 @@ else
 fi
 [ -f "$PROMPT_FILE" ] || { echo "prompt not found: $PROMPT_FILE" >&2; exit 1; }
 
-MAIN_REPO="${AGENTASK_MAIN_REPO:-$AGENTASK_REPO}"   # the primary clone worktrees are added from
-WT="$AGENTASK_HOME/wt-$SLOT"                          # this agent's dedicated worktree
 ID_DIR="$AGENTASK_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
-
-# Persistent agent id: generate once per slot, reuse on every restart.
+REPOS_DIR="$AGENTASK_HOME/repos"     # per-repo clones (multi-mode)
 mkdir -p "$ID_DIR"
 [ -s "$ID_FILE" ] || echo "$SLOT-$(hostname -s)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' ')" > "$ID_FILE"
 export AGENT_ID="$(cat "$ID_FILE")"
 
-# Graceful stop: first Ctrl-C drains the current task; second one force-quits.
+# Mode: single (a uuid) vs multi (all/empty).
+MULTI=0
+case "${AGENTASK_PROJECT:-}" in ""|all|ALL) MULTI=1 ;; esac
+
+# --- graceful stop ---
 STOP=0
 request_stop() {
   [ "$STOP" -eq 1 ] && return
@@ -65,34 +73,36 @@ request_stop() {
 }
 trap request_stop INT TERM
 
-cleanup() {
-  echo "[$AGENT_ID] cleaning up worktree $WT"
-  cd "$MAIN_REPO" 2>/dev/null || true
-  git -C "$MAIN_REPO" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"
-  git -C "$MAIN_REPO" worktree prune 2>/dev/null || true
+# --- helpers ---
+norm_repo() { echo "$1" | sed -E 's#^(https://|git@)github\.com[:/]##; s#\.git$##'; }   # -> owner/repo
+repo_slug() { norm_repo "$1" | tr '/' '-'; }                                            # -> owner-repo
+
+# Ensure a local clone of a repo (clone on first sight, fetch otherwise); echo the clone dir.
+ensure_clone() {
+  local repo="$1" owner_repo slug clone
+  owner_repo="$(norm_repo "$repo")"; slug="$(repo_slug "$repo")"; clone="$REPOS_DIR/$slug"
+  if [ ! -d "$clone/.git" ]; then
+    mkdir -p "$REPOS_DIR"
+    gh repo clone "$owner_repo" "$clone" -- --quiet 2>/dev/null \
+      || git clone --quiet "https://github.com/$owner_repo.git" "$clone" 2>/dev/null \
+      || { echo "[$AGENT_ID] clone failed: $owner_repo" >&2; return 1; }
+  fi
+  git -C "$clone" fetch origin --quiet 2>/dev/null || true
+  echo "$clone"
 }
-trap cleanup EXIT
 
-# Guard: refuse to run if MAIN_REPO doesn't match the project's repo (right project, wrong checkout).
-# (In the multi-project redesign this inverts into "set up the project's repo" per claimed task.)
-_norm() { echo "$1" | sed -E 's#^(https://|git@)github\.com[:/]##; s#\.git$##'; }
-_proj_repo=$(curl -s --max-time 15 -H "Authorization: Bearer $AGENTASK_TOKEN" "$AGENTASK_URL/projects/$AGENTASK_PROJECT" | jq -r '.repo // ""')
-_origin=$(git -C "$MAIN_REPO" remote get-url origin 2>/dev/null || echo "")
-if [ -n "$_proj_repo" ] && [ "$(_norm "$_proj_repo")" != "$(_norm "$_origin")" ]; then
-  echo "[$AGENT_ID] REFUSING: project $AGENTASK_PROJECT repo is '$(_norm "$_proj_repo")' but AGENTASK_REPO ($MAIN_REPO) points at '$(_norm "$_origin")'. Point AGENTASK_REPO at the matching checkout." >&2
-  exit 1
-fi
+# Ensure this slot's detached worktree for a given clone; echo the worktree dir.
+ensure_worktree() {
+  local clone="$1" wt
+  wt="$AGENTASK_HOME/wt-$SLOT-$(basename "$clone")"
+  git -C "$clone" worktree prune 2>/dev/null || true
+  [ -e "$wt" ] && { git -C "$clone" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; }
+  git -C "$clone" worktree add --detach "$wt" origin/main --quiet 2>/dev/null \
+    || { echo "[$AGENT_ID] worktree add failed for $(basename "$clone")" >&2; return 1; }
+  echo "$wt"
+}
 
-# Fresh detached worktree on startup (the agent branches/checks-out per task from origin/main).
-git -C "$MAIN_REPO" fetch origin --quiet || true
-git -C "$MAIN_REPO" worktree prune
-[ -e "$WT" ] && { git -C "$MAIN_REPO" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"; }
-git -C "$MAIN_REPO" worktree add --detach "$WT" origin/main
-export AGENTASK_REPO="$WT"
-cd "$WT" || { echo "worktree cd failed"; exit 1; }
-
-# Run one claude task, shielded from the terminal's Ctrl-C, waiting until it truly finishes.
-# The prompt is read FRESH each dispatch so edits apply to the next task without a restart.
+# Run one claude task, shielded from Ctrl-C, waiting until it truly finishes.
 dispatch() {
   local prompt; prompt="$(cat "$PROMPT_FILE")"
   # >>> remove --dangerously-skip-permissions if you want interactive permission prompts <<<
@@ -102,24 +112,95 @@ dispatch() {
 }
 nap() { sleep "$1" & wait $! 2>/dev/null; }
 
-echo "[$AGENT_ID] $ROLE ($MODEL/$KIND) @ $WT @ $(git rev-parse --short HEAD); polling $AGENTASK_URL"
+# Count claimable tasks of THIS agent's kind for a project (shared model tiers return both kinds).
+claimable_count() {
+  curl -s --max-time 15 -H "Authorization: Bearer $AGENTASK_TOKEN" \
+    "$AGENTASK_URL/projects/$1/tasks?model=$AGENT_MODEL&claimable=true" \
+    | jq --arg k "$KIND" '[.[] | select(.kind == $k)] | length' 2>/dev/null || echo 0
+}
+
+# Cleanup: drop ALL of this slot's worktrees (single wt-$SLOT and multi wt-$SLOT-*), prune clones.
+cleanup() {
+  echo "[$AGENT_ID] cleaning up worktrees for slot $SLOT"
+  for wt in "$AGENTASK_HOME/wt-$SLOT" "$AGENTASK_HOME"/wt-"$SLOT"-*; do
+    [ -e "$wt" ] && rm -rf "$wt"
+  done
+  for clone in "$REPOS_DIR"/* "${AGENTASK_MAIN_REPO:-${AGENTASK_REPO:-/nonexistent}}"; do
+    [ -d "$clone/.git" ] && git -C "$clone" worktree prune 2>/dev/null || true
+  done
+}
+trap cleanup EXIT
+
+# ============================== SINGLE-PROJECT MODE ==============================
+if [ "$MULTI" = 0 ]; then
+  MAIN_REPO="${AGENTASK_MAIN_REPO:-$AGENTASK_REPO}"
+  WT="$AGENTASK_HOME/wt-$SLOT"
+  # Guard: refuse if MAIN_REPO doesn't match the pinned project's repo.
+  _proj_repo=$(curl -s --max-time 15 -H "Authorization: Bearer $AGENTASK_TOKEN" "$AGENTASK_URL/projects/$AGENTASK_PROJECT" | jq -r '.repo // ""')
+  _origin=$(git -C "$MAIN_REPO" remote get-url origin 2>/dev/null || echo "")
+  if [ -n "$_proj_repo" ] && [ "$(norm_repo "$_proj_repo")" != "$(norm_repo "$_origin")" ]; then
+    echo "[$AGENT_ID] REFUSING: project $AGENTASK_PROJECT repo is '$(norm_repo "$_proj_repo")' but AGENTASK_REPO ($MAIN_REPO) points at '$(norm_repo "$_origin")'." >&2
+    exit 1
+  fi
+  git -C "$MAIN_REPO" fetch origin --quiet || true
+  git -C "$MAIN_REPO" worktree prune
+  [ -e "$WT" ] && { git -C "$MAIN_REPO" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"; }
+  git -C "$MAIN_REPO" worktree add --detach "$WT" origin/main
+  export AGENTASK_REPO="$WT"; cd "$WT" || { echo "worktree cd failed"; exit 1; }
+
+  echo "[$AGENT_ID] $ROLE ($MODEL/$KIND) SINGLE @ project $AGENTASK_PROJECT @ $WT; polling"
+  while true; do
+    [ "$STOP" -eq 1 ] && break
+    if [ "$(claimable_count "$AGENTASK_PROJECT")" -gt 0 ]; then
+      echo "[$AGENT_ID] $(date '+%H:%M:%S') claimable $KIND; dispatching ($MODEL)…"
+      dispatch
+      git -C "$WT" fetch origin --quiet 2>/dev/null || true
+      git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
+      [ "$STOP" -eq 1 ] && break
+    else
+      echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable ($KIND); sleeping 30s"; nap 30
+    fi
+  done
+  exit 0
+fi
+
+# ============================== MULTI-PROJECT MODE ==============================
+ALLOW="${AGENTASK_PROJECTS:-}"   # optional comma-separated id allowlist
+in_allow() { [ -z "$ALLOW" ] && return 0; case ",$ALLOW," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
+echo "[$AGENT_ID] $ROLE ($MODEL/$KIND) MULTI @ $AGENTASK_URL${ALLOW:+ (allow: $ALLOW)}; discovering work across projects"
 while true; do
   [ "$STOP" -eq 1 ] && break
-  # Count ONLY tasks of this agent's kind: a shared model tier (e.g. opus) returns both implement
-  # and review tasks, and dispatching against the wrong kind would busy-loop.
-  n=$(curl -s --max-time 15 -H "Authorization: Bearer $AGENTASK_TOKEN" \
-        "$AGENTASK_URL/projects/$AGENTASK_PROJECT/tasks?model=$AGENT_MODEL&claimable=true" \
-        | jq --arg k "$KIND" '[.[] | select(.kind == $k)] | length' 2>/dev/null || echo 0)
-  if [ "${n:-0}" -gt 0 ]; then
-    echo "[$AGENT_ID] $(date '+%H:%M:%S') $n claimable $KIND; dispatching claude ($MODEL)…"
-    dispatch
-    # Hygiene: return the worktree to a detached origin/main between tasks so the just-worked branch
-    # isn't left checked out here (a held branch can't be checked out by another worktree).
-    git -C "$WT" fetch origin --quiet 2>/dev/null || true
-    git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
-    [ "$STOP" -eq 1 ] && break
-  else
-    echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable ($KIND); sleeping 30s"
-    nap 30
+  # Discover projects holding my (model,kind) claimable work — one call (v0.4.0 filter).
+  # (while-read, not mapfile: macOS ships bash 3.2.) sort -R shuffles so projects drain fairly.
+  rows=()
+  while IFS= read -r _row; do rows+=("$_row"); done < <(curl -s --max-time 20 -H "Authorization: Bearer $AGENTASK_TOKEN" \
+      "$AGENTASK_URL/projects?claimable=true&model=$AGENT_MODEL&kind=$KIND" \
+      | jq -r '.[] | select(.repo != null and .repo != "") | "\(.id)\t\(.repo)"' 2>/dev/null \
+      | sort -R)
+  if [ "${#rows[@]}" -eq 0 ]; then
+    echo "[$AGENT_ID] $(date '+%H:%M:%S') no claimable $KIND work in any project; sleeping 30s"; nap 30; continue
   fi
+
+  worked=0
+  for row in "${rows[@]}"; do
+    [ "$STOP" -eq 1 ] && break
+    pid="${row%%$'\t'*}"; prepo="${row#*$'\t'}"
+    [ -z "$pid" ] && continue
+    in_allow "$pid" || continue
+    # Re-check claimable (the listing can race another worker); skip if it emptied out.
+    [ "$(claimable_count "$pid")" -gt 0 ] || continue
+    clone="$(ensure_clone "$prepo")" || continue
+    wt="$(ensure_worktree "$clone")" || continue
+    export AGENTASK_PROJECT="$pid" AGENTASK_REPO="$wt"
+    cd "$wt" || continue
+    echo "[$AGENT_ID] $(date '+%H:%M:%S') dispatching ($MODEL/$KIND) on $(norm_repo "$prepo") [${pid:0:8}]…"
+    dispatch
+    git -C "$wt" checkout --detach --force origin/main --quiet 2>/dev/null || true
+    worked=1
+    break   # one task per discovery pass, then re-poll fresh (keeps the shuffle honest)
+  done
+  [ "$STOP" -eq 1 ] && break
+  # rows existed but every candidate raced away / failed setup — brief sleep, then re-poll.
+  [ "$worked" -eq 0 ] && { echo "[$AGENT_ID] $(date '+%H:%M:%S') candidate projects raced away; sleeping 10s"; nap 10; }
 done
