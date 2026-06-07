@@ -1,268 +1,238 @@
 # Execution agent runbook (live API)
 
-You are an execution agent draining a project's backlog **through the live Agentask API**.
-This is the production loop — you claim, work, and submit over HTTP, not by moving files.
-(For the legacy text-file board used to bootstrap the MVP, see `AGENT.md`; this file
-supersedes it for any project tracked in a running Agentask instance.)
+You are an execution agent draining a project's backlog **through the live Agentask API**
+(v0.2.0+). You claim, work, and submit over HTTP, not by moving files. (For the legacy text-file
+board used to bootstrap the MVP, see `AGENT.md`.)
+
+Two things are central in v0.2.0:
+
+- **Tasks are model-pinned.** Every task has a `model` tier (`haiku` / `sonnet` / `opus` / any value
+  in the deployment allowlist). You declare your model on claim and may only claim tasks whose
+  `model` matches yours.
+- **Review is a kind of task.** When an implement task is submitted to `review`, the server
+  **auto-spawns a `review`-kind task per reviewer**. Reviewers are model-pinned workers (typically
+  `opus`) that claim those review tasks and return a verdict. Most of this runbook is the implement
+  loop; the **Review tasks** section covers the reviewer loop.
 
 ## Configuration
 
-Two values, from the environment:
+From the environment:
 
 - `AGENTASK_URL` — base URL, e.g. `https://agentask.summercamp.eastharbor.casa`
-- `AGENTASK_TOKEN` — bearer token for the service
-
-Every request except `GET /healthz` requires `Authorization: Bearer $AGENTASK_TOKEN`.
-You also need:
-
-- `PROJECT_ID` — the project you're draining (a UUID).
-- `AGENT_ID` — a stable string identifying you (e.g. `haiku-3`). You report it on claim,
-  heartbeat, and submit; the server checks it on every state change.
-
-A convenience for the examples below:
+- `AGENTASK_TOKEN` — bearer token (every request except `GET /healthz` needs
+  `Authorization: Bearer $AGENTASK_TOKEN`)
+- `PROJECT_ID` — the project you're draining (a UUID)
+- `AGENT_ID` — a stable string identifying you (e.g. `haiku-3`); reported on claim/heartbeat/submit
+- `AGENT_MODEL` — your model tier; you may only claim tasks whose `model` equals it
 
 ```bash
 A=(-H "Authorization: Bearer $AGENTASK_TOKEN" -H "Content-Type: application/json")
 ```
 
-## The loop
+## The implement loop
 
-Work **one task at a time**, end to end. Do not start a second task until the current one
-is in `review`, `approved`, `blocked`, or `failed`.
+Work **one task at a time**, end to end. Don't start a second task until the current one is in
+`review`, `blocked`, or `failed`.
 
-### 1. Discover claimable work
-
-Poll for tasks that match your assigned model:
+### 1. Discover claimable work (your model)
 
 ```bash
-curl -s "${A[@]}" "$AGENTASK_URL/projects/$PROJECT_ID/tasks?claimable=true&model=haiku" | jq -r '.[].id'
+curl -s "${A[@]}" "$AGENTASK_URL/projects/$PROJECT_ID/tasks?model=$AGENT_MODEL&claimable=true" | jq -r '.[].id'
 ```
 
-`claimable=true` returns only tasks that are `ready`, have all dependencies `done`, and
-carry no live lease. The `model` parameter restricts results to your model (e.g., `haiku`,
-`sonnet`, `opus`). Pick one id. If the list is empty, there is nothing to do — stop.
+`claimable=true` returns only tasks that are `ready`, have all dependencies `done`, and carry no
+live lease; `model=$AGENT_MODEL` further restricts to your tier. Pick one id. Empty list → nothing
+to do; stop.
 
-### 2. Claim it (atomic — you must win, must match model)
+### 2. Claim it (atomic, model-matched — you must win)
 
 ```bash
-curl -s -o /tmp/claim.json -w '%{http_code}' "${A[@]}" \
-  -X POST "$AGENTASK_URL/tasks/$TASK_ID/claim" \
-  -d "{\"agent_id\":\"$AGENT_ID\",\"model\":\"haiku\"}"
+curl -s -o /tmp/claim.json -w '%{http_code}' "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/claim" \
+  -d "{\"agent_id\":\"$AGENT_ID\",\"model\":\"$AGENT_MODEL\"}"
 ```
 
-Declare your assigned model when claiming (e.g., `haiku`, `sonnet`, `opus`). The server
-enforces model matching — you can only claim tasks whose model equals your declared model.
-
-- `200` → you won. The task is now `in_progress`, assigned to you, with a lease. Note
-  `lease_expires_at` and `kind` in the response body.
-- `409` → someone else won, it stopped being claimable, or the model didn't match. If your
-  claimed model doesn't match the task's model, the error code is `MODEL_MISMATCH`. Pick a
-  different task; **never** work a task you did not win.
+- `model` is **required** (`400 EMPTY_MODEL` if omitted) and must equal the task's `model`
+  (`409`/`MODEL_MISMATCH` otherwise).
+- `200` → you won; the task is `in_progress`, assigned to you, with a lease (`lease_expires_at`).
+- `409` → someone else won, it's not your model, or it stopped being claimable. Pick another.
 - `404` → the task id is gone; re-list.
+
+Never work a task you did not win.
 
 ### 3. Read the full spec
 
 ```bash
-curl -s "${A[@]}" "$AGENTASK_URL/tasks/$TASK_ID" | jq '{title, spec, kind, depends_on, links}'
+curl -s "${A[@]}" "$AGENTASK_URL/tasks/$TASK_ID" | jq '{title, spec, model, review_models, agent_merge, depends_on, links}'
 ```
 
-The `spec` is your contract. Read it, and read the design/feature document it derives from
-if you need context (`GET /projects/$PROJECT_ID/documents`). Note the `kind` field — it will
-be either `implement` or `review`. Build exactly what the spec says — no more.
-
-### 3.5. Branch on task kind
-
-The `kind` field determines your workflow:
-
-**For `kind: implement` tasks:** Proceed to section 4 (Branch and implement). You will
-implement the feature, run tests, open a PR, and submit the task to `review`. The system
-will auto-spawn review tasks for assigned reviewers (typically Opus). The task advances
-through states: `in_progress` → `review` → `approved` → `done` (once human merges).
-
-**For `kind: review` tasks:** This is review work — you are a reviewer. Skip the branch and
-implement sections and jump to section 8.5 (below), where instead of submitting the task to
-review, you submit a `verdict` (approve or reject) that completes your review task and
-potentially advances the parent implement task.
+The `spec` is your contract — build exactly what it says, no more. Read the design/feature document
+it derives from for context (`GET /projects/$PROJECT_ID/documents`).
 
 ### 4. Branch and implement
 
-```bash
-git checkout main && git pull --ff-only
-git checkout -b agentask/<task-slug>
-```
-
-Implement on the branch. Write tests where the acceptance criteria call for them. Keep the
-change scoped to this task. **Never commit to `main`.**
+Branch from the remote (`git fetch origin && git checkout -b <slug> origin/main`); never commit to
+`main`. Implement on the branch, scoped to this task, with the tests the acceptance criteria call
+for.
 
 ### 5. Heartbeat on long work
 
-The lease expires (default 5m). If your work takes longer, extend it **before** it lapses,
-or another agent may reclaim the task:
+The lease expires (default 5m). Extend it **before** it lapses, or another agent may reclaim the
+task:
 
 ```bash
 curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/heartbeat" -d "{\"agent_id\":\"$AGENT_ID\"}" | jq -r .lease_expires_at
 ```
 
-Only the current assignee may heartbeat, and only while `in_progress`.
+Only the current assignee may heartbeat, only while `in_progress`.
 
-### 6. Verify before submitting
+### 6. Sync with main, then verify
 
-Actually run it — build, vet, test — and confirm every acceptance-criteria bullet holds.
-Do not submit with failing checks.
+Bring your branch up to date so it merges cleanly, then verify the **merged** result:
+
+```bash
+git fetch origin && git merge origin/main --no-edit   # resolve any conflicts, keeping both sides' intent
+make check && make test                               # on the merged result; don't submit with failures
+```
 
 ### 7. Open a PR
 
 ```bash
-git push -u origin agentask/<task-slug>
-gh pr create --fill --base main   # title: short summary of the task
+git push -u origin <slug>
+gh pr create --fill --base main
 ```
 
-The PR body should list which acceptance criteria are met and how you verified them. A
-required CI check (`test`, and `docker` where configured) runs on the PR.
+The PR body should list which acceptance criteria are met and how you verified them.
 
-### 8. Submit the implement task (moves to `review`)
+### 8. Submit (moves the task to `review` and spawns review tasks)
 
-For `implement` kind tasks, attach the PR URL and head commit as typed links:
+For an **implement** task, submit with the PR/commit links and **no verdict**:
 
 ```bash
-PR_URL=$(gh pr view --json url -q .url)
-SHA=$(git rev-parse HEAD)
+PR_URL=$(gh pr view --json url -q .url); SHA=$(git rev-parse HEAD)
 curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/submit" -d "$(jq -n \
   --arg a "$AGENT_ID" --arg pr "$PR_URL" --arg sha "$SHA" \
-  '{agent_id:$a, result:"see PR", links:[{kind:"pr",value:$pr},{kind:"commit",value:$sha}]}')" \
-  | jq -c '{state, links:[.links[].kind]}'
+  '{agent_id:$a, result:"see PR", links:[{kind:"pr",value:$pr},{kind:"commit",value:$sha}]}')"
 ```
 
-Submit clears your lease and moves the task to `review`. Only the assignee may submit, only
-from `in_progress`. Valid link kinds: `pr`, `branch`, `commit`, `ci`.
-
-When you submit an implement task, review tasks are auto-spawned for each required reviewer
-(the task's `review_models` list; defaults to one Opus reviewer). Those review workers will
-claim the review tasks and submit verdicts, advancing the parent task.
-
-### 8.5. Submit a review verdict (review tasks only)
-
-For `review` kind tasks, you submit a verdict instead of links. A review task completes by
-submitting an `approve` or `reject` verdict plus an optional writeup:
-
-```bash
-curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/submit" -d "$(jq -n \
-  --arg a "$AGENT_ID" \
-  '{agent_id:$a, verdict:"approve", result:"Code review passed. Well-structured and thoroughly tested."}')" \
-  | jq -c '{state, target_task_id}'
-```
-
-The verdict transitions your review task to `done`. When **all** reviewers of the current
-round have submitted verdicts:
-
-- **If all approve** → the parent implement task moves to `approved` (awaiting human merge)
-- **If any reject** → the parent implement task moves back to `ready` (rework needed)
-
-The parent remains in `review` until the last reviewer completes. Do **not** submit verdicts
-for implement tasks (forbidden); only for review tasks.
+Submit clears your lease, moves the task to `review`, and **auto-spawns one `review`-kind task per
+entry in `review_models`** (default `["opus"]`), each `ready` and pinned to that reviewer's model.
+Only the assignee may submit, only from `in_progress`. Valid link kinds: `pr`, `branch`, `commit`,
+`ci`. On rework (a rejected task bounced back to `ready`), continue the **existing** PR — don't open
+a new one — and omit links you already attached.
 
 ### 9. Stop
 
-**Implement tasks:** Do **not** merge. Your task is done when it reaches `review` state (with
-auto-spawned review tasks) or `approved` state (all reviewers approved). The human drains the
-`approved` lane: once all reviewers approve and the task reaches `approved`, a human merges
-the PR and transitions the task to `done` via `POST /tasks/$TASK_ID/transition` (`to: done`).
+Do **not** merge and do **not** transition the task yourself. Report the task id and PR URL, stop.
 
-**Review tasks:** Your task is done once you submit your verdict. If you are the last reviewer,
-the system will automatically move the parent task to either `approved` (all approve) or `ready`
-(rework needed).
+## Review tasks (the reviewer loop)
 
-Report the task id and PR URL if it was an implement task, and stop. Only return to step 1 if
-explicitly told to continue.
+A reviewer is a model-pinned worker (e.g. `AGENT_MODEL=opus`) that drains `review`-kind tasks.
+
+### Claim a review task
+
+```bash
+curl -s "${A[@]}" "$AGENTASK_URL/projects/$PROJECT_ID/tasks?model=$AGENT_MODEL&claimable=true" | jq -r '.[].id'
+curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$REVIEW_TASK_ID/claim" -d "{\"agent_id\":\"$AGENT_ID\",\"model\":\"$AGENT_MODEL\"}"
+```
+
+The review task's `spec` carries the **Implementation PR** URL and the **Parent task** id (also in
+`target_task_id`). GET the parent task too — its `spec` is the acceptance criteria you review
+against, and its `agent_merge` flag + `pr` link matter for the merge step.
+
+### Review as merged with main
+
+Check out the PR head **detached**, merge current main into it, and verify the merged result:
+
+```bash
+git fetch origin && git fetch origin "pull/<n>/head" && git checkout --detach FETCH_HEAD
+git merge origin/main --no-edit    # CONFLICT → automatic reject
+make check && make test            # on the merged result; failure → reject
+```
+
+A PR that conflicts with main, or whose merged result fails the build/tests, is never approvable.
+
+### Submit a verdict
+
+```bash
+curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$REVIEW_TASK_ID/submit" -d "$(jq -n \
+  --arg a "$AGENT_ID" '{agent_id:$a, result:"<findings>", verdict:"approve"}')"   # or "reject"
+```
+
+The server records the verdict on the parent and drives it: **reject → parent back to `ready`**
+(rework); **approve →** once *all* of this round's reviewers approve (wait-for-all), the parent
+moves to `approved`. A fresh review round spawns each time the parent re-enters `review`.
+
+## The `approved` state and the merge gate
+
+A task in `approved` passed review and awaits merge:
+
+- **`agent_merge` is `false` (default):** the **human** merges the PR and transitions
+  `approved → done`.
+- **`agent_merge` is `true`:** the reviewer auto-merges (next section).
+
+`review → approved` and `review → ready` are server-driven by review verdicts — not manual
+transitions. `approved → done` / `approved → ready` are the merge gate.
+
+## Reviewer auto-merge (`agent_merge`)
+
+`agent_merge` is an **immutable** per-task boolean (set at creation, default `false`). When it's
+`true`, after a passing review the reviewer (running with local `gh`) merges the parent's PR:
+
+```bash
+gh pr merge "<parent-pr-url>" --auto    # CI-gated: merges only once required checks pass
+```
+
+If the merge succeeds, transition the parent `POST /tasks/<parent-id>/transition {"to":"done"}`. If
+it can't merge (red checks, branch protection, conflict), the task stays in `approved` for the
+human. Only do this when the parent has actually reached `approved` (all reviewers approved).
+
+## Task creation
+
+```json
+{ "title": "...", "spec": "...", "document_id": "...",
+  "model": "haiku", "review_models": ["opus"], "agent_merge": false }
+```
+
+- `model` (required) and each `review_models` entry must be in the deployment allowlist
+  (`AGENTASK_MODELS`) — else `400 UNKNOWN_MODEL`. `review_models` defaults to `["opus"]`.
+- `agent_merge` defaults to `false` and is immutable.
+- Review tasks are auto-spawned only — never create them directly.
 
 ## Blocked or failed
 
-If the spec is ambiguous/wrong, a dependency is broken, or the task can't be done as
-specified, surface it instead of guessing:
+If the spec is ambiguous/wrong, a dependency is broken, or the task can't be done as specified,
+surface it instead of guessing:
 
 ```bash
-# blocked: needs info / a decision / a fixed dependency
-curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/transition" \
-  -d '{"to":"blocked","note":"<precisely what you need>"}'
-
-# failed: attempted, cannot be done as specified
-curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/transition" \
-  -d '{"to":"failed","note":"<what you tried and why it failed>"}'
+curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/transition" -d '{"to":"blocked","note":"<what you need>"}'
+curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/transition" -d '{"to":"failed","note":"<what you tried>"}'
 ```
-
-Do not push partial guesses. A human decides next steps.
-
-## Task states and the human merge gate
-
-The `approved` state is the explicit merge gate: once all required reviewers have approved,
-the parent task automatically moves to `approved`. Humans then drain this lane, merging the PR
-and transitioning the task to `done`.
-
-**Implement task lifecycle:**
-- `in_progress` → (submit) → `review` (reviewers are now working)
-- `review` → (all reviewers approve) → `approved` (ready for human merge)
-- `approved` → (human merges PR) → `done`
-
-If any reviewer rejects before all approve:
-- `review` → (any reject + all verdicted) → `ready` (rework needed)
-
-The human may also reject a task from `approved` if they disagree with the reviewers:
-- `approved` → (human rejects) → `ready` (rework needed)
-
-This design preserves the human as the final merge gate while automating the review-to-approved
-transition once all reviewers agree.
 
 ## Rules
 
 - **One task at a time.** Finish, block, or fail it before touching another.
-- **Only work a task you won** (claim returned `200`). A `409` means it's not yours.
-- **Model matching.** You can only claim tasks whose `model` matches your declared model.
-- **Heartbeat** before the lease expires on long work, or lose the task.
-- **Respect dependencies** — the `claimable=true` filter already enforces them; don't try to
-  claim a `ready` task whose deps aren't `done` (the claim will `409`).
-- **Stay in scope.** Build what the spec says. Ambiguous or wrong → Blocked, don't improvise.
-- **Know your kind.** Implement tasks end in `review` (or `approved`); review tasks end with
-  a verdict. Branch accordingly in section 3.5.
-- **Implement workers never merge.** Your terminal state is `review` (or `approved` if all
-  reviewers approve). Humans drain the `approved` lane and merge.
-
-## Reviewer auto-merge contract (`agent_merge` flag)
-
-Each task has an optional `agent_merge` boolean flag (defaults to `false`). This flag is **immutable** — set at task creation and never changed.
-
-**When `agent_merge` is `true`:** After a passing review verdict (`approve`), the reviewer (Opus, running with local `gh`) automatically merges the PR:
-
-```bash
-gh pr merge --auto
-```
-
-The merge is **CI-gated**: it succeeds only if required CI checks have passed. If the merge fails (red checks, branch protection, conflicts, etc.), the task remains in `approved` state — the human must intervene.
-
-If the merge succeeds, the reviewer then transitions the task to `done` via `POST /tasks/{id}/transition` (`to: done`).
-
-**When `agent_merge` is `false` (default):** The task stays in `approved` after a passing review. The human gates the merge via the standard merge workflow; no automatic merge happens.
-
-### Task creation with `agent_merge`
-
-Agents creating tasks (or humans via the API) include `agent_merge: true` in the task input to opt in:
-
-```json
-{
-  "title": "Low-risk feature",
-  "spec": "...",
-  "document_id": "...",
-  "agent_merge": true
-}
-```
-
-Omitting it defaults to `false`.
+- **Only work a task you won** (claim `200`). A `409` means it's not yours or not your model.
+- **Declare your `model`** on every claim; it must match the task.
+- **Heartbeat** before the lease expires on long work.
+- **Review the merged-with-main result**, never the branch alone.
+- **Never self-merge** unless the task is `agent_merge` and you merged it via the contract above.
+  Otherwise your terminal state is `review` (implement) or a submitted verdict (review).
 
 ## Status / HTTP code reference
 
-| Code | Meaning in this API |
-|------|---------------------|
+| Code | Meaning |
+|------|---------|
 | 200 / 201 | success |
-| 400 | bad input (e.g. invalid link kind, empty agent_id) |
+| 400 | bad input — `EMPTY_AGENT_ID`, `EMPTY_MODEL`, `UNKNOWN_MODEL`, invalid link kind |
 | 401 | missing/invalid bearer token |
 | 404 | unknown task/project id |
-| 409 | not claimable / not your task / illegal transition (e.g. `done` without an approve) |
+| 409 | not claimable / not your task / model mismatch / illegal transition |
+
+## State machine
+
+```
+backlog ─promote→ ready ─claim→ in_progress ─submit→ review ─(all reviewers approve)→ approved ─merge→ done
+                    ▲                              │                                       │
+                    └────── lease expiry ──────────┘            reject ─→ ready    human/agent_merge gate
+blocked / failed are off-ramps from any active state.
+```
