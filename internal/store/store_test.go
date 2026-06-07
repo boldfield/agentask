@@ -2717,13 +2717,13 @@ func TestSubmitReviewTaskWithVerdictApprove(t *testing.T) {
 		t.Errorf("expected review event verdict='approve', got %v", reviewEvent.Verdict)
 	}
 
-	// Verify parent task is still in review state
+	// Verify parent task moved to approved state (single reviewer all approved)
 	parentTask, err := store.GetTask(ctx, taskID)
 	if err != nil {
 		t.Fatalf("failed to get parent task: %v", err)
 	}
-	if parentTask.State != "review" {
-		t.Errorf("expected parent task state='review', got '%s'", parentTask.State)
+	if parentTask.State != "approved" {
+		t.Errorf("expected parent task state='approved' (single reviewer approved), got '%s'", parentTask.State)
 	}
 }
 
@@ -2812,13 +2812,13 @@ func TestSubmitReviewTaskWithVerdictReject(t *testing.T) {
 		t.Errorf("expected verdict='reject', got %v", reviewResult.Verdict)
 	}
 
-	// Verify parent task is still in review state (aggregation happens in MR-9)
+	// Verify parent task moved to ready state (single reviewer rejected)
 	parentTask, err := store.GetTask(ctx, taskID)
 	if err != nil {
 		t.Fatalf("failed to get parent task: %v", err)
 	}
-	if parentTask.State != "review" {
-		t.Errorf("expected parent task state='review', got '%s'", parentTask.State)
+	if parentTask.State != "ready" {
+		t.Errorf("expected parent task state='ready' (single reviewer rejected), got '%s'", parentTask.State)
 	}
 }
 
@@ -2956,5 +2956,233 @@ func TestSubmitReviewTaskWithoutVerdictRejected(t *testing.T) {
 	var validationErr *ValidationError
 	if !errors.As(err, &validationErr) || validationErr.Code != "MISSING_VERDICT" {
 		t.Errorf("expected MISSING_VERDICT validation error, got: %v", err)
+	}
+}
+
+// TestWaitForAllAggregation_FirstApproveSecondApprove tests MR-9: with two reviewers,
+// the first approve leaves the parent in review, the second approve moves it to approved.
+func TestWaitForAllAggregation_FirstApproveSecondApprove(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create implement task with two reviewers
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus", "sonnet"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote, claim, and submit the implement task
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Find the two review tasks
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTasks []*Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTasks = append(reviewTasks, &allTasks[i])
+		}
+	}
+	if len(reviewTasks) != 2 {
+		t.Fatalf("expected 2 review tasks, got %d", len(reviewTasks))
+	}
+
+	// First reviewer (opus) approves
+	_, err = store.ClaimTask(ctx, reviewTasks[0].ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim first review task: %v", err)
+	}
+	approve := "approve"
+	_, err = store.SubmitTask(ctx, reviewTasks[0].ID, "opus-reviewer", "Looks good", &approve, []LinkInput{})
+	if err != nil {
+		t.Fatalf("failed to submit first review task: %v", err)
+	}
+
+	// Verify parent task is still in review state (first approval doesn't move it)
+	parentTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "review" {
+		t.Errorf("expected parent task state='review' after first approve, got '%s'", parentTask.State)
+	}
+
+	// Second reviewer (sonnet) approves
+	_, err = store.ClaimTask(ctx, reviewTasks[1].ID, "sonnet-reviewer", "sonnet", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim second review task: %v", err)
+	}
+	_, err = store.SubmitTask(ctx, reviewTasks[1].ID, "sonnet-reviewer", "Looks good", &approve, []LinkInput{})
+	if err != nil {
+		t.Fatalf("failed to submit second review task: %v", err)
+	}
+
+	// Verify parent task moved to approved state (all approved)
+	parentTask, err = store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "approved" {
+		t.Errorf("expected parent task state='approved' after all approve, got '%s'", parentTask.State)
+	}
+}
+
+// TestWaitForAllAggregation_ApproveAndReject tests MR-9: with one approve and one reject,
+// the parent moves to ready for rework.
+func TestWaitForAllAggregation_ApproveAndReject(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create implement task with two reviewers
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus", "sonnet"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote, claim, and submit the implement task
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Find the two review tasks
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTasks []*Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTasks = append(reviewTasks, &allTasks[i])
+		}
+	}
+	if len(reviewTasks) != 2 {
+		t.Fatalf("expected 2 review tasks, got %d", len(reviewTasks))
+	}
+
+	// Find which review task is opus and which is sonnet
+	var opusTask, sonnetTask *Task
+	for i := range reviewTasks {
+		if reviewTasks[i].Model == "opus" {
+			opusTask = reviewTasks[i]
+		} else if reviewTasks[i].Model == "sonnet" {
+			sonnetTask = reviewTasks[i]
+		}
+	}
+	if opusTask == nil || sonnetTask == nil {
+		t.Fatalf("could not find both opus and sonnet review tasks")
+	}
+
+	// First reviewer (opus) approves
+	_, err = store.ClaimTask(ctx, opusTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim first review task: %v", err)
+	}
+	approve := "approve"
+	_, err = store.SubmitTask(ctx, opusTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{})
+	if err != nil {
+		t.Fatalf("failed to submit first review task: %v", err)
+	}
+
+	// Verify parent task is still in review state
+	parentTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "review" {
+		t.Errorf("expected parent task state='review' after one approve, got '%s'", parentTask.State)
+	}
+
+	// Second reviewer (sonnet) rejects
+	_, err = store.ClaimTask(ctx, sonnetTask.ID, "sonnet-reviewer", "sonnet", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim second review task: %v", err)
+	}
+	reject := "reject"
+	_, err = store.SubmitTask(ctx, sonnetTask.ID, "sonnet-reviewer", "Needs changes", &reject, []LinkInput{})
+	if err != nil {
+		t.Fatalf("failed to submit second review task: %v", err)
+	}
+
+	// Verify parent task moved to ready state (at least one reject)
+	parentTask, err = store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "ready" {
+		t.Errorf("expected parent task state='ready' after reject, got '%s'", parentTask.State)
 	}
 }
