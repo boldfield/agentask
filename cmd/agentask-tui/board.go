@@ -63,6 +63,7 @@ type BoardModel struct {
 	// Detail view state
 	detailTask      tuiclient.TaskDetail // the currently displayed task detail
 	detailDocuments []tuiclient.Document // cached documents for opener actions
+	detailEvents    []tuiclient.Event    // cached events for the event timeline
 	detailViewport  viewport.Model       // scrollable spec viewport
 	detailMessage   string               // brief status message (opener result, error, etc.)
 	// urlOpener is called to open a URL in the user's browser.
@@ -516,6 +517,7 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.detailTask = msg.task
 		m.detailDocuments = msg.documents
+		m.detailEvents = msg.events
 		// (Re)initialize the viewport with the spec content.
 		m.initDetailViewport(msg.task.Spec)
 		return m, nil
