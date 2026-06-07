@@ -37,27 +37,22 @@ to take more than a minute. Pin heartbeats to those points; do not rely on sensi
    `docs/features/model-and-review.md` for design context. The spec gives intent, constraints,
    pattern pointers (file:line) and acceptance criteria — and deliberately NO code. You write the
    implementation.
-4. Set up your branch. You are in your OWN worktree — NEVER run `git checkout main` (main is
-   checked out in another worktree and the command will fail). Always branch from the remote:
-   - REWORK (the task already has a `pr`/`branch` link and was bounced back to ready): check the
-     prior PR's state (`gh pr view <pr-url> --json state`) and branch on it:
-     - **Exactly one OPEN PR → continue it** — NEVER open a new branch/PR. Work **DETACHED** so a
-       branch checkout can't collide with another worker's worktree: `git fetch origin` then
-       `git checkout --detach origin/<branch>` (the PR's head branch); make your fixes; publish in
-       step 7 with `git push origin HEAD:<branch>` — it stays the same PR. **NEVER run
-       `git checkout <branch>`** — a named-branch checkout fails with "already checked out" when
-       another worktree holds that branch, and **that error is NOT a reason to block** (work detached
-       + push-to-ref as above). Read ONLY the **most recent**
-       actionable feedback comment on it — from `opus-reviewer` (a `CHANGES REQUESTED`) OR a human
-       (e.g. "fix merge conflict"); `gh pr view <pr-url> --comments` lists oldest→newest, take the
-       LAST one; it **supersedes all earlier comments**; address every point. (Merge conflicts are
-       cleared by the sync in step 6.)
-     - **The prior PR is CLOSED or gone → treat this as a FRESH build** (the FRESH-task steps below):
-       open a NEW branch from `origin/main` and a NEW PR. A closed PR means the prior attempt was
-       discarded — do NOT block.
-     - **Multiple OPEN PRs for this task (ambiguous) → STOP and transition to `blocked`** with a
-       note; don't guess which to continue.
-   - FRESH task: `git fetch origin`, then `git checkout -B mr/<short-slug-from-title> origin/main`.
+4. Set up your branch. **Your branch name is FIXED: `mr/<TASKID8>`, where `<TASKID8>` is the FIRST 8
+   CHARACTERS of this task's id — copy them verbatim. NEVER invent a name from the title.** A
+   title-derived name varies between attempts (the same title yields different slugs) and is what
+   creates DUPLICATE PRs; the task-id name is identical on every build and rework, so there is
+   exactly one branch — and one PR — per task. You are in your OWN worktree; NEVER `git checkout main`.
+   Always work **DETACHED**:
+   - `git fetch origin`.
+   - **If `origin/mr/<TASKID8>` exists** (a prior build/rework of THIS task) → `git checkout --detach
+     origin/mr/<TASKID8>`. You are continuing the SAME branch/PR. Read ONLY the **most recent**
+     actionable feedback comment on its PR — from `opus-reviewer` (`CHANGES REQUESTED`) OR a human
+     (e.g. "fix merge conflict"); `gh pr view <pr-url> --comments` lists oldest→newest, take the LAST
+     one; it **supersedes all earlier comments**; address every point. (Merge conflicts are cleared
+     by the sync in step 6.)
+   - **Else** (first attempt) → `git checkout --detach origin/main`.
+   Do NOT run `git checkout <named-branch>` — it fails with "already checked out" if another worktree
+   holds the branch, and that is NEVER a reason to block (detached + push-to-ref, below, sidesteps it).
 5. Implement exactly what the spec requires — nothing more, nothing less. Keep the diff scoped to
    this one task. Follow its constraints and the pattern pointers it names.
 6. Sync with main, then verify. FIRST `git fetch origin && git merge origin/main` to bring your
@@ -68,9 +63,11 @@ to take more than a minute. Pin heartbeats to those points; do not rely on sensi
    fix whatever they flag — and heartbeat again before any lengthy fix-and-rerun cycle. (This sync
    is what clears merge conflicts that accrued while the PR sat in review.)
 7. Commit, push, PR. End the commit message with a blank line then
-   `Co-Authored-By: Claude (<value of $AGENT_MODEL>) <noreply@anthropic.com>`. Push the branch; open a PR with
-   `gh pr create` ONLY on a fresh task. On REWORK push your (detached) HEAD to the PR's branch:
-   `git push origin HEAD:<branch>` — do NOT run `gh pr create`, the PR already exists. Capture the PR URL.
+   `Co-Authored-By: Claude (<value of $AGENT_MODEL>) <noreply@anthropic.com>`. Push with
+   `git push origin HEAD:mr/<TASKID8>`. Then check for an existing PR on that branch:
+   `gh pr list --head mr/<TASKID8> --state open --json url`. **If one exists, your push already
+   updated it — do NOT create another.** If none exists (first build), open it:
+   `gh pr create --head mr/<TASKID8> --fill`. Capture the PR URL.
 8. Submit. POST `$AGENTASK_URL/tasks/<id>/submit` with `{"agent_id":"<value of $AGENT_ID>","result":"<what
    you did; confirm make check & make test pass>","links":[{"kind":"pr","value":"<full PR URL>"},
    {"kind":"branch","value":"<branch>"}]}`. **The `pr` link is REQUIRED and must be the full PR URL
