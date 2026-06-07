@@ -209,6 +209,18 @@ curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/transition" -d '{"to":"b
 curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/transition" -d '{"to":"failed","note":"<what you tried>"}'
 ```
 
+## Unblocking
+
+Once a blocker is cleared, the task can be recovered from `blocked` state (unlike terminal states
+`done` and `failed`). A human operator can unblock and retry a blocked task:
+
+```bash
+curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/transition" -d '{"to":"ready","note":"blocker cleared"}'
+```
+
+This transitions the task back to `ready`, clears any stale assignee and lease, and allows a worker
+to claim it again.
+
 ## Rules
 
 - **One task at a time.** Finish, block, or fail it before touching another.
@@ -233,7 +245,10 @@ curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/transition" -d '{"to":"f
 
 ```
 backlog ─promote→ ready ─claim→ in_progress ─submit→ review ─(all reviewers approve)→ approved ─merge→ done
-                    ▲                              │                                       │
-                    └────── lease expiry ──────────┘            reject ─→ ready    human/agent_merge gate
-blocked / failed are off-ramps from any active state.
+                  ▲ ▲                              │                                       │
+                  │ └────── lease expiry ──────────┘            reject ─→ ready    human/agent_merge gate
+                  │
+                  └─ blocked →unblock ─ (recoverable off-ramp; clears stale assignee/lease)
+                  
+blocked / failed are off-ramps from any active state. blocked is recoverable via → ready; done/failed are terminal.
 ```

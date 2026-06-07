@@ -1736,7 +1736,7 @@ func (s *sqliteStore) AddReview(ctx context.Context, taskID, actor, verdict stri
 // TransitionTask moves a task to a new state according to the transition rules.
 // Valid transitions:
 //   - to='done': allowed ONLY from 'approved'
-//   - to='ready': allowed ONLY from 'approved'
+//   - to='ready': allowed from 'approved' or 'blocked' (blocked→ready clears stale assignee/lease)
 //   - to='blocked' or 'failed': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved)
 //   - anything else: ErrConflict
 //
@@ -1778,8 +1778,8 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 		}
 
 	case "ready":
-		// Allowed from 'approved'
-		if taskState == "approved" {
+		// Allowed from 'approved' or 'blocked' (unblock/retry path)
+		if taskState == "approved" || taskState == "blocked" {
 			canTransition = true
 		}
 
@@ -1797,12 +1797,15 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 	}
 
 	// Perform the conditional UPDATE
+	// On blocked→ready, also clear assignee and lease_expires_at to make it freshly claimable
 	now := nowTimestamp()
 	result, err := tx.ExecContext(ctx, `
 		UPDATE task
-		SET state=?, updated_at=?
+		SET state=?, updated_at=?,
+		    assignee=CASE WHEN ? = 'blocked' THEN NULL ELSE assignee END,
+		    lease_expires_at=CASE WHEN ? = 'blocked' THEN NULL ELSE lease_expires_at END
 		WHERE id=? AND state=?
-	`, to, now, taskID, taskState)
+	`, to, now, taskState, taskState, taskID, taskState)
 	if err != nil {
 		return Task{}, fmt.Errorf("failed to transition task: %w", err)
 	}

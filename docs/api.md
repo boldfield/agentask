@@ -788,11 +788,13 @@ The state machine enforces these rules:
 - `review` → `ready` (when any reviewer rejects; automatic, via verdict)
 - `approved` → `done` (human merges PR)
 - `approved` → `ready` (human disagrees with reviewers, requests rework)
+- `blocked` → `ready` (human unblocks / retries; clears stale assignee and lease)
 - Any active state → `blocked` (off-ramp: external blocker)
 - Any active state → `failed` (off-ramp: task cannot be done as specified)
 
 Note: `review` → `done` is no longer a direct transition. All paths to `done` now go through
-`approved`. The `approved` state is the human merge gate.
+`approved`. The `approved` state is the human merge gate. `blocked` is recoverable via the
+`blocked` → `ready` transition, unlike terminal states `done` and `failed`.
 
 ---
 
