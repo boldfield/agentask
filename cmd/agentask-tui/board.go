@@ -1349,19 +1349,27 @@ func (m *BoardModel) renderColumnTasks() string {
 		}
 		b.WriteString(fmt.Sprintf("%s %s  %s\n", prefix, taskIDDisplay, task.Title))
 
-		// In in_progress state, show assignee and lease countdown
-		if task.State == stateInProgress {
-			assignee := "(unassigned)"
-			if task.Assignee != nil {
-				assignee = *task.Assignee
+		// Show assignee for in_progress, review, approved, and done states
+		shouldShowAssignee := task.State == stateInProgress || task.State == stateReview ||
+			task.State == stateApproved || task.State == stateDone
+		if shouldShowAssignee && task.Assignee != nil {
+			assignee := *task.Assignee
+			// Truncate long agent IDs to keep layout compact
+			if len(assignee) > 20 {
+				assignee = assignee[:17] + "…"
 			}
 
-			leaseStatus := "no lease"
-			if task.LeaseExpiresAt != nil {
-				leaseStatus = m.formatLeaseCountdown(*task.LeaseExpiresAt)
+			// For in_progress, also show lease countdown and updated time
+			if task.State == stateInProgress {
+				leaseStatus := "no lease"
+				if task.LeaseExpiresAt != nil {
+					leaseStatus = m.formatLeaseCountdown(*task.LeaseExpiresAt)
+				}
+				b.WriteString(fmt.Sprintf("    @%s · lease %s · updated %s ago\n", assignee, leaseStatus, m.formatTime(task.UpdatedAt)))
+			} else {
+				// For other states, just show assignee and updated time
+				b.WriteString(fmt.Sprintf("    @%s · updated %s ago\n", assignee, m.formatTime(task.UpdatedAt)))
 			}
-
-			b.WriteString(fmt.Sprintf("    %s · lease %s · updated %s ago\n", assignee, leaseStatus, m.formatTime(task.UpdatedAt)))
 		}
 	}
 

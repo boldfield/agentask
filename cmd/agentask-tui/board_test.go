@@ -312,6 +312,135 @@ func TestBoardModel_InProgressCardDetails(t *testing.T) {
 	}
 }
 
+// TestBoardModel_AssigneeOnReviewApprovedDone tests that assignee is shown on review, approved, and done cards.
+func TestBoardModel_AssigneeOnReviewApprovedDone(t *testing.T) {
+	assigneeReview := "alice"
+	assigneeApproved := "bob"
+	assigneeDone := "charlie"
+
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Simulate fetch with assignees on review, approved, and done tasks
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{{
+		ID:       "task-review",
+		Title:    "Review Task",
+		State:    "review",
+		Assignee: &assigneeReview,
+	}}
+	bucketed["approved"] = []tuiclient.Task{{
+		ID:       "task-approved",
+		Title:    "Approved Task",
+		State:    "approved",
+		Assignee: &assigneeApproved,
+	}}
+	bucketed["done"] = []tuiclient.Task{{
+		ID:       "task-done",
+		Title:    "Done Task",
+		State:    "done",
+		Assignee: &assigneeDone,
+	}}
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Navigate to review column
+	for model.selectedColumn < 3 {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+		model = m.(*BoardModel)
+	}
+
+	output := model.View()
+	if !strings.Contains(output, "alice") {
+		t.Errorf("Expected assignee 'alice' in review column output, got:\n%s", output)
+	}
+
+	// Navigate to approved column
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = m.(*BoardModel)
+
+	output = model.View()
+	if !strings.Contains(output, "bob") {
+		t.Errorf("Expected assignee 'bob' in approved column output, got:\n%s", output)
+	}
+
+	// Navigate to done column
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+	model = m.(*BoardModel)
+
+	output = model.View()
+	if !strings.Contains(output, "charlie") {
+		t.Errorf("Expected assignee 'charlie' in done column output, got:\n%s", output)
+	}
+}
+
+// TestBoardModel_NoAssigneeShown tests that tasks without assignee don't show anything.
+func TestBoardModel_NoAssigneeShown(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Simulate fetch with tasks that have no assignee
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{}
+	bucketed["in_progress"] = []tuiclient.Task{{
+		ID:       "task-no-assignee",
+		Title:    "No Assignee Task",
+		State:    "in_progress",
+		Assignee: nil,
+	}}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["approved"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	output := model.View()
+	// Should not contain "null" or "(unassigned)" or "@"
+	if strings.Contains(output, "null") {
+		t.Errorf("Expected no 'null' in output for unassigned task, got:\n%s", output)
+	}
+	if strings.Contains(output, "(unassigned)") {
+		t.Errorf("Expected no '(unassigned)' in output for unassigned task, got:\n%s", output)
+	}
+	if strings.Contains(output, "@") {
+		t.Errorf("Expected no '@' in output for unassigned task, got:\n%s", output)
+	}
+	// Task title should still be there
+	if !strings.Contains(output, "No Assignee Task") {
+		t.Errorf("Expected task title in output, got:\n%s", output)
+	}
+}
+
 // TestBoardModel_DisappearedTaskSelection tests that when the selected task disappears,
 // the cursor lands on the positionally-nearest remaining task, not the first.
 func TestBoardModel_DisappearedTaskSelection(t *testing.T) {
