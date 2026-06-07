@@ -176,7 +176,10 @@ func (m *BoardModel) openDesignDocCmd(documents []tuiclient.Document) tea.Cmd {
 func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 	var b strings.Builder
 
-	// Header: title and state
+	// Header: title, state, and project
+	if m.project.Name != "" {
+		b.WriteString(fmt.Sprintf("Project: %s\n", m.project.Name))
+	}
 	b.WriteString(fmt.Sprintf("Task: %s\n", task.Title))
 	stateStr := fmt.Sprintf("State: %s", task.State)
 	if task.Assignee != nil {

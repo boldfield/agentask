@@ -1092,6 +1092,11 @@ func (m *BoardModel) View() string {
 	// Project switcher overlay.
 	if m.mode == modeProjectSwitch {
 		var b strings.Builder
+		if m.project.Name != "" {
+			projName := truncateString(m.project.Name, m.width)
+			b.WriteString(projName)
+			b.WriteString("\n")
+		}
 		b.WriteString(m.renderTabs())
 		b.WriteString("\n")
 		b.WriteString(strings.Repeat("─", m.width))
@@ -1101,6 +1106,13 @@ func (m *BoardModel) View() string {
 	}
 
 	var b strings.Builder
+
+	// Render project name
+	if m.project.Name != "" {
+		projName := truncateString(m.project.Name, m.width)
+		b.WriteString(projName)
+		b.WriteString("\n")
+	}
 
 	// Render tabs (column headers)
 	b.WriteString(m.renderTabs())
@@ -1179,6 +1191,17 @@ func (m *BoardModel) renderProjectSwitchOverlay() string {
 		b.WriteString(fmt.Sprintf("%s%s\n", cursor, p.Name))
 	}
 	return b.String()
+}
+
+// truncateString truncates a string to the given width, adding "…" if truncated.
+func truncateString(s string, width int) string {
+	if len(s) <= width {
+		return s
+	}
+	if width <= 1 {
+		return "…"
+	}
+	return s[:width-1] + "…"
 }
 
 // renderTabs renders the column tabs with counts.
