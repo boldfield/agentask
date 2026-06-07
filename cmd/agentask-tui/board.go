@@ -36,6 +36,10 @@ const (
 	modeMergeConfirm
 	// modeProjectSwitch is the project selection overlay.
 	modeProjectSwitch
+	// modeApprovedRejectNote is the optional note input step for approved→ready send-back.
+	modeApprovedRejectNote
+	// modeApprovedRejectConfirm is the "Send back to ready? [y/N]" confirmation step.
+	modeApprovedRejectConfirm
 )
 
 // BoardModel is the Bubble Tea model for the task board view.
@@ -291,6 +295,34 @@ func (m *BoardModel) mergePRCmd(taskID string, prURL string, fromDetail bool) te
 		}
 
 		// Success: refetch to reflect the updated board.
+		msg := m.fetchTasksInline(ctx, "")
+		msg.fromDetail = fromDetail
+		return msg
+	}
+}
+
+// approvedRejectCmd creates a command that transitions an approved task back to ready
+// with an optional note. This is a plain state transition (approved→ready) that does NOT
+// record a review verdict — it's for bouncing approved tasks back for rework.
+// On success, the command triggers a refetch.
+func (m *BoardModel) approvedRejectCmd(taskID string, note *string, fromDetail bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Transition directly without recording a review verdict.
+		if err := m.client.TransitionTask(ctx, taskID, "ready", note); err != nil {
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+				msg := m.fetchTasksInline(ctx, fmt.Sprintf("bounce transition 409: %s", apiErr.Message))
+				msg.fromDetail = fromDetail
+				return msg
+			}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("bounce transition failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
+		}
+
 		msg := m.fetchTasksInline(ctx, "")
 		msg.fromDetail = fromDetail
 		return msg
@@ -593,6 +625,20 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.reviewInput.Focus()
 				m.inputHint = ""
 				m.mode = modeRejectReason
+				var cmd tea.Cmd
+				m.reviewInput, cmd = m.reviewInput.Update(nil)
+				return m, cmd
+			}
+
+		// Bounce back: only on approved column tasks
+		case "b":
+			if m.selectedColumn == 4 && m.selectedTaskID != "" {
+				m.pendingTaskID = m.selectedTaskID
+				m.reviewInput.Placeholder = "optional note (enter to skip)"
+				m.reviewInput.SetValue("")
+				m.reviewInput.Focus()
+				m.inputHint = ""
+				m.mode = modeApprovedRejectNote
 				var cmd tea.Cmd
 				m.reviewInput, cmd = m.reviewInput.Update(nil)
 				return m, cmd
@@ -928,6 +974,46 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Ignore all other keys in confirm mode.
 		return m, nil
+
+	case modeApprovedRejectNote:
+		switch msg.String() {
+		case "esc":
+			// Cancel the send-back action entirely.
+			m.cancelReviewMode()
+			return m, nil
+		case "enter":
+			// Capture the note (nil if empty), then move to confirm step.
+			noteValue := strings.TrimSpace(m.reviewInput.Value())
+			if noteValue == "" {
+				m.pendingNote = nil
+			} else {
+				m.pendingNote = &noteValue
+			}
+			m.mode = modeApprovedRejectConfirm
+			return m, nil
+		default:
+			// Pass the key to the text input.
+			var cmd tea.Cmd
+			m.reviewInput, cmd = m.reviewInput.Update(msg)
+			return m, cmd
+		}
+
+	case modeApprovedRejectConfirm:
+		switch msg.String() {
+		case "esc", "n", "N":
+			// User declined or pressed escape — cancel.
+			m.cancelReviewMode()
+			return m, nil
+		case "y", "Y":
+			// Capture origin before cancelReviewMode clears it.
+			taskID := m.pendingTaskID
+			note := m.pendingNote
+			originFromDetail := m.reviewFromDetail
+			m.cancelReviewMode()
+			return m, m.approvedRejectCmd(taskID, note, originFromDetail)
+		}
+		// Ignore all other keys in confirm mode.
+		return m, nil
 	}
 
 	return m, nil
@@ -1205,7 +1291,7 @@ func (m *BoardModel) formatTime(timestamp string) string {
 }
 
 // renderHelpBar renders the bottom help bar.
-// Show column-specific actions: `p promote` on backlog, `a approve` / `x reject` on review.
+// Show column-specific actions: `p promote` on backlog, `a approve` / `x reject` on review, `b bounce` on approved.
 func (m *BoardModel) renderHelpBar() string {
 	// While in a review input mode, show mode-specific hints.
 	if m.mode != modeNormal {
@@ -1216,6 +1302,8 @@ func (m *BoardModel) renderHelpBar() string {
 		return "←/→ column   ↑/↓ select   enter detail   p promote   P switch project   r refresh   q quit"
 	case 3: // review
 		return "←/→ column   ↑/↓ select   enter detail   a approve   x reject   P switch project   r refresh   q quit"
+	case 4: // approved
+		return "←/→ column   ↑/↓ select   enter detail   b bounce   P switch project   r refresh   q quit"
 	default:
 		return "←/→ column   ↑/↓ select   enter detail   P switch project   r refresh   q quit"
 	}
