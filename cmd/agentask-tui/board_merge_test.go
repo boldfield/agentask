@@ -516,3 +516,40 @@ func TestBoardModel_ApprovedSendBackNoNote(t *testing.T) {
 		t.Errorf("TransitionTask: expected note to be nil, got %v", capturedTransitionNote)
 	}
 }
+
+// TestBoardModel_BounceOverlayRender tests that renderReviewOverlay returns non-empty,
+// properly formatted output for both modeApprovedRejectNote and modeApprovedRejectConfirm.
+func TestBoardModel_BounceOverlayRender(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+	model := buildApprovedModel(t, mockClient)
+
+	// Test modeApprovedRejectNote
+	model.mode = modeApprovedRejectNote
+	model.reviewInput.SetValue("Test note")
+	overlayOutput := model.renderReviewOverlay()
+
+	if overlayOutput == "" {
+		t.Errorf("renderReviewOverlay returned empty string for modeApprovedRejectNote")
+	}
+	if !strings.Contains(overlayOutput, "Bounce back to ready") {
+		t.Errorf("Expected 'Bounce back to ready' in modeApprovedRejectNote output, got:\n%s", overlayOutput)
+	}
+	if !strings.Contains(overlayOutput, "(enter to continue, esc to cancel)") {
+		t.Errorf("Expected hint text in modeApprovedRejectNote output, got:\n%s", overlayOutput)
+	}
+
+	// Test modeApprovedRejectConfirm
+	model.mode = modeApprovedRejectConfirm
+	model.pendingNote = nil
+	overlayOutput = model.renderReviewOverlay()
+
+	if overlayOutput == "" {
+		t.Errorf("renderReviewOverlay returned empty string for modeApprovedRejectConfirm")
+	}
+	if !strings.Contains(overlayOutput, "Send back to ready? [y/N]") {
+		t.Errorf("Expected 'Send back to ready? [y/N]' in modeApprovedRejectConfirm output, got:\n%s", overlayOutput)
+	}
+	if !strings.Contains(overlayOutput, "(y to confirm, n/esc to cancel)") {
+		t.Errorf("Expected hint text in modeApprovedRejectConfirm output, got:\n%s", overlayOutput)
+	}
+}

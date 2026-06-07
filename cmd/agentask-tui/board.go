@@ -1155,6 +1155,14 @@ func (m *BoardModel) renderReviewOverlay() string {
 		b.WriteString(m.reviewInput.View())
 		b.WriteString("\n")
 		b.WriteString("(y to confirm merge and complete, n/esc to cancel)\n")
+	case modeApprovedRejectNote:
+		b.WriteString("Bounce back to ready — optional note:\n")
+		b.WriteString(m.reviewInput.View())
+		b.WriteString("\n")
+		b.WriteString("(enter to continue, esc to cancel)\n")
+	case modeApprovedRejectConfirm:
+		b.WriteString("Send back to ready? [y/N] ")
+		b.WriteString("(y to confirm, n/esc to cancel)\n")
 	}
 	return b.String()
 }
