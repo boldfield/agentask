@@ -207,9 +207,11 @@ func (m *BoardModel) renderDetailView() string {
 		}
 	}
 
-	// Result
+	// Result (wrapped to the view width so long summaries are fully readable, not truncated)
 	if task.Result != nil && *task.Result != "" {
-		b.WriteString(fmt.Sprintf("Result: %s\n", *task.Result))
+		b.WriteString("Result:\n")
+		b.WriteString(wrapText(*task.Result, m.width))
+		b.WriteString("\n")
 	}
 
 	// Status/opener message
@@ -224,6 +226,36 @@ func (m *BoardModel) renderDetailView() string {
 	b.WriteString(m.detailViewport.View())
 
 	return b.String()
+}
+
+// wrapText wraps s to the given width on word boundaries, preserving existing newlines.
+// Used for free-text fields (like a task result) that would otherwise overrun the terminal.
+func wrapText(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	var out strings.Builder
+	for i, line := range strings.Split(s, "\n") {
+		if i > 0 {
+			out.WriteByte('\n')
+		}
+		col := 0
+		for j, word := range strings.Fields(line) {
+			wlen := len(word)
+			if j > 0 {
+				if col+1+wlen > width {
+					out.WriteByte('\n')
+					col = 0
+				} else {
+					out.WriteByte(' ')
+					col++
+				}
+			}
+			out.WriteString(word)
+			col += wlen
+		}
+	}
+	return out.String()
 }
 
 // resolveTaskTitle looks up a task ID in the board's full task list and returns the title.
