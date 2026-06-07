@@ -328,3 +328,19 @@ func defaultURLOpener(rawURL string) error {
 
 	return fmt.Errorf("no browser found: set $BROWSER or install xdg-open")
 }
+
+// defaultGHMerger shells out to `gh pr merge` to merge the PR.
+// The prURL should be a full URL (e.g., "https://github.com/owner/repo/pull/123").
+func defaultGHMerger(prURL string) error {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return fmt.Errorf("gh command not found: ensure GitHub CLI is installed")
+	}
+
+	cmd := exec.Command("gh", "pr", "merge", prURL, "--auto", "--squash")
+	// Run in background to avoid blocking the TUI. Capture stderr to report errors.
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("gh pr merge failed: %w\n%s", err, string(output))
+	}
+	return nil
+}

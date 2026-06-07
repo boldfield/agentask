@@ -34,6 +34,11 @@ const (
 	modeRejectReason
 )
 
+// ghMergerFunc is the signature for the function that merges a PR. It takes the PR URL
+// and returns an error if the merge fails. In production it shells out to `gh pr merge`;
+// tests inject a mock to avoid actual merge operations and verify the URL.
+type ghMergerFunc func(prURL string) error
+
 // BoardModel is the Bubble Tea model for the task board view.
 type BoardModel struct {
 	client         tuiclient.Client
@@ -54,11 +59,12 @@ type BoardModel struct {
 
 	// Review action state
 	mode             boardMode
-	reviewInput      textinput.Model // shared textinput for note/reason
-	pendingNote      *string         // captured note (nil = omitted) when in modeApproveConfirm
-	pendingTaskID    string          // ID of the task being reviewed
-	inputHint        string          // hint displayed below the input (e.g. "reason required")
-	reviewFromDetail bool            // true when the review flow was started from the detail view
+	reviewInput      textinput.Model       // shared textinput for note/reason
+	pendingNote      *string               // captured note (nil = omitted) when in modeApproveConfirm
+	pendingTaskID    string                // ID of the task being reviewed
+	pendingTask      *tuiclient.TaskDetail // cached task detail for merge checks
+	inputHint        string                // hint displayed below the input (e.g. "reason required")
+	reviewFromDetail bool                  // true when the review flow was started from the detail view
 
 	// Detail view state
 	detailTask      tuiclient.TaskDetail // the currently displayed task detail
@@ -68,6 +74,9 @@ type BoardModel struct {
 	// urlOpener is called to open a URL in the user's browser.
 	// In production it is defaultURLOpener; tests inject a recorder to assert the URL.
 	urlOpener func(rawURL string) error
+	// ghMerger is called to merge a PR. In production it shells out to `gh pr merge`;
+	// tests inject a mock to avoid actual merge operations and verify the URL.
+	ghMerger ghMergerFunc
 }
 
 const (
@@ -101,6 +110,7 @@ func NewBoardModel(client tuiclient.Client, config *tuiconfig.Config, project tu
 		loading:        true,
 		reviewInput:    inputWidget,
 		urlOpener:      defaultURLOpener,
+		ghMerger:       defaultGHMerger,
 	}
 	m.newTickCmd = m.defaultTickCmd
 	return m
@@ -157,6 +167,22 @@ type promoteErrorMsg struct {
 	err    string
 }
 
+// fetchTaskForReviewCmd creates a command that fetches a task to display the approve note input.
+// This is needed to check for pr links before showing the approval confirmation.
+func (m *BoardModel) fetchTaskForReviewCmd(taskID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		task, err := m.client.GetTask(ctx, taskID)
+		if err != nil {
+			return taskForReviewFetchedMsg{err: fmt.Errorf("get task failed: %w", err)}
+		}
+
+		return taskForReviewFetchedMsg{task: task}
+	}
+}
+
 // reviewActionMsg is returned when a review action (approve/reject) completes.
 // It carries either a successful refetch (tasks != nil) or an error string.
 // fromDetail is true when the action was initiated from the full-screen detail view;
@@ -168,13 +194,19 @@ type reviewActionMsg struct {
 	fromDetail bool
 }
 
-// reviewApprove creates a command that calls ReviewTask(approve) then TransitionTask(done),
-// in that order. If ReviewTask fails, TransitionTask is not called. Both calls use note,
-// which may be nil. fromDetail records whether the action was initiated from the detail view
-// so the handler can return the user to the board where the result is visible.
+// reviewApprove creates a command that calls ReviewTask(approve) then merges the PR (if present)
+// and then calls TransitionTask(done), in that order. If ReviewTask fails, nothing else is called.
+// If merging fails, TransitionTask is not called so the PR/task don't get out of sync.
+// Both ReviewTask and TransitionTask use note, which may be nil. fromDetail records whether the
+// action was initiated from the detail view so the handler can return the user to the board.
 // On success, the command triggers a refetch.
 func (m *BoardModel) reviewApprove(taskID string, note *string, fromDetail bool) tea.Cmd {
 	actor := m.config.Actor
+	// Capture the task and ghMerger at command creation time, not execution time, so they're
+	// available even if cancelReviewMode clears pendingTask before the command runs.
+	task := m.pendingTask
+	ghMerger := m.ghMerger
+
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -186,7 +218,21 @@ func (m *BoardModel) reviewApprove(taskID string, note *string, fromDetail bool)
 			return msg
 		}
 
-		// Step 2: transition to done (terminal state).
+		// Step 2: merge the PR if present (only if task has a pr link).
+		if task != nil {
+			for _, link := range task.Links {
+				if link.Kind == "pr" {
+					if err := ghMerger(link.Value); err != nil {
+						msg := m.fetchTasksInline(ctx, fmt.Sprintf("PR merge failed: %v", err))
+						msg.fromDetail = fromDetail
+						return msg
+					}
+					break
+				}
+			}
+		}
+
+		// Step 3: transition to done (terminal state).
 		if err := m.client.TransitionTask(ctx, taskID, "done", note); err != nil {
 			var apiErr *tuiclient.APIError
 			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
@@ -368,6 +414,13 @@ type tasksFetchedMsg struct {
 	err   error
 }
 
+// taskForReviewFetchedMsg is sent when a task is fetched to show the approve note input.
+// It carries the task detail so we can check for pr links before showing the approve confirmation.
+type taskForReviewFetchedMsg struct {
+	task tuiclient.TaskDetail
+	err  error
+}
+
 // tickMsg is sent by the poll tick to trigger a fetch and re-arm the next tick.
 type tickMsg struct{}
 
@@ -478,14 +531,8 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "a":
 			if m.selectedColumn == 3 && m.selectedTaskID != "" {
 				m.pendingTaskID = m.selectedTaskID
-				m.reviewInput.Placeholder = "optional note (enter to skip)"
-				m.reviewInput.SetValue("")
-				m.reviewInput.Focus()
-				m.inputHint = ""
-				m.mode = modeApproveNote
-				var cmd tea.Cmd
-				m.reviewInput, cmd = m.reviewInput.Update(nil)
-				return m, cmd
+				// Fetch the task detail to check for pr links
+				return m, m.fetchTaskForReviewCmd(m.selectedTaskID)
 			}
 
 		// Reject: only on review column tasks
@@ -519,6 +566,24 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// (Re)initialize the viewport with the spec content.
 		m.initDetailViewport(msg.task.Spec)
 		return m, nil
+
+	case taskForReviewFetchedMsg:
+		if msg.err != nil {
+			m.error = fmt.Sprintf("failed to fetch task for review: %v", msg.err)
+			m.pendingTaskID = ""
+			return m, nil
+		}
+		// Cache the task detail for merge checks
+		m.pendingTask = &msg.task
+		// Now show the approve note input
+		m.reviewInput.Placeholder = "optional note (enter to skip)"
+		m.reviewInput.SetValue("")
+		m.reviewInput.Focus()
+		m.inputHint = ""
+		m.mode = modeApproveNote
+		var cmd tea.Cmd
+		m.reviewInput, cmd = m.reviewInput.Update(nil)
+		return m, cmd
 
 	case openerResultMsg:
 		m.detailMessage = msg.message
@@ -619,6 +684,8 @@ func (m *BoardModel) updateDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if m.detailTask.State == stateReview {
 			m.pendingTaskID = m.detailTask.ID
 			m.reviewFromDetail = true
+			// The detail view already has the task detail, so use it directly
+			m.pendingTask = &m.detailTask
 			m.reviewInput.Placeholder = "optional note (enter to skip)"
 			m.reviewInput.SetValue("")
 			m.reviewInput.Focus()
@@ -729,6 +796,7 @@ func (m *BoardModel) cancelReviewMode() {
 	m.reviewFromDetail = false
 	m.pendingNote = nil
 	m.pendingTaskID = ""
+	m.pendingTask = nil
 	m.inputHint = ""
 	m.reviewInput.SetValue("")
 	m.reviewInput.Blur()
@@ -827,7 +895,17 @@ func (m *BoardModel) renderReviewOverlay() string {
 		if len(taskID) > 8 {
 			taskID = taskID[:8]
 		}
-		b.WriteString(fmt.Sprintf("Approve %s → done? [y/N] ", taskID))
+		msg := fmt.Sprintf("Approve %s → done? [y/N] ", taskID)
+		// If task has a pr link, mention the merge in the confirmation
+		if m.pendingTask != nil {
+			for _, link := range m.pendingTask.Links {
+				if link.Kind == "pr" {
+					msg = fmt.Sprintf("Approve %s (merge %s) → done? [y/N] ", taskID, link.Value)
+					break
+				}
+			}
+		}
+		b.WriteString(msg)
 		b.WriteString("(done is terminal and cannot be undone)\n")
 		b.WriteString("(y to confirm, n/esc to cancel)\n")
 	case modeRejectReason:

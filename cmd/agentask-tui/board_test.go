@@ -908,6 +908,15 @@ func TestBoardModel_ApproveFlow_ConfirmY(t *testing.T) {
 	var capturedTransitionNote *string
 
 	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			return tuiclient.TaskDetail{
+				ID:        id,
+				Title:     "Review Task",
+				State:     "review",
+				DependsOn: []string{},
+				Links:     []tuiclient.TaskLink{},
+			}, nil
+		},
 		ReviewTaskFunc: func(ctx context.Context, id, actor, verdict string, note *string) error {
 			callLog = append(callLog, "review")
 			capturedReviewID = id
@@ -935,11 +944,14 @@ func TestBoardModel_ApproveFlow_ConfirmY(t *testing.T) {
 	model := buildReviewModel(t, mockClient)
 
 	// Press 'a' to start approve flow.
-	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m, approveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	model = m.(*BoardModel)
 
+	// Execute the fetch command to get the task detail and transition to modeApproveNote.
+	model = executeReviewCmd(t, model, approveCmd)
+
 	if model.mode != modeApproveNote {
-		t.Fatalf("Expected modeApproveNote after 'a', got mode %d", model.mode)
+		t.Fatalf("Expected modeApproveNote after fetching task, got mode %d", model.mode)
 	}
 
 	// Type a note.
@@ -963,7 +975,7 @@ func TestBoardModel_ApproveFlow_ConfirmY(t *testing.T) {
 	}
 
 	// Press 'y' to confirm.
-	m, approveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m, approveCmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	model = m.(*BoardModel)
 
 	if model.mode != modeNormal {
@@ -1026,6 +1038,15 @@ func TestBoardModel_ApproveFlow_EmptyNote(t *testing.T) {
 	var capturedTransitionNote *string
 
 	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			return tuiclient.TaskDetail{
+				ID:        id,
+				Title:     "Review Task",
+				State:     "review",
+				DependsOn: []string{},
+				Links:     []tuiclient.TaskLink{},
+			}, nil
+		},
 		ReviewTaskFunc: func(ctx context.Context, id, actor, verdict string, note *string) error {
 			capturedReviewNote = note
 			return nil
@@ -1041,14 +1062,17 @@ func TestBoardModel_ApproveFlow_EmptyNote(t *testing.T) {
 
 	model := buildReviewModel(t, mockClient)
 
-	// Press 'a' → skip note (press enter immediately) → confirm 'y'.
-	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	// Press 'a', execute the fetch command to get to modeApproveNote.
+	m, approveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	model = m.(*BoardModel)
+	model = executeReviewCmd(t, model, approveCmd)
 
+	// Press enter immediately to skip note.
 	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = m.(*BoardModel)
 
-	m, approveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	// Confirm with 'y'.
+	m, approveCmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
 	model = m.(*BoardModel)
 
 	model = executeReviewCmd(t, model, approveCmd)
@@ -1070,6 +1094,15 @@ func TestBoardModel_ApproveFlow_CancelWithEscAtNote(t *testing.T) {
 	transitionCalled := false
 
 	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			return tuiclient.TaskDetail{
+				ID:        id,
+				Title:     "Review Task",
+				State:     "review",
+				DependsOn: []string{},
+				Links:     []tuiclient.TaskLink{},
+			}, nil
+		},
 		ReviewTaskFunc: func(ctx context.Context, id, actor, verdict string, note *string) error {
 			reviewCalled = true
 			return nil
@@ -1082,9 +1115,10 @@ func TestBoardModel_ApproveFlow_CancelWithEscAtNote(t *testing.T) {
 
 	model := buildReviewModel(t, mockClient)
 
-	// Press 'a' then esc.
-	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	// Press 'a', execute the fetch command to get to modeApproveNote.
+	m, approveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	model = m.(*BoardModel)
+	model = executeReviewCmd(t, model, approveCmd)
 
 	if model.mode != modeApproveNote {
 		t.Fatalf("Expected modeApproveNote, got %d", model.mode)
@@ -1114,6 +1148,15 @@ func TestBoardModel_ApproveFlow_CancelWithN(t *testing.T) {
 	transitionCalled := false
 
 	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			return tuiclient.TaskDetail{
+				ID:        id,
+				Title:     "Review Task",
+				State:     "review",
+				DependsOn: []string{},
+				Links:     []tuiclient.TaskLink{},
+			}, nil
+		},
 		ReviewTaskFunc: func(ctx context.Context, id, actor, verdict string, note *string) error {
 			reviewCalled = true
 			return nil
@@ -1126,9 +1169,11 @@ func TestBoardModel_ApproveFlow_CancelWithN(t *testing.T) {
 
 	model := buildReviewModel(t, mockClient)
 
-	// 'a' → enter (skip note) → 'n' (decline confirm).
-	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	// 'a' → fetch → enter (skip note) → 'n' (decline confirm).
+	m, approveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	model = m.(*BoardModel)
+	model = executeReviewCmd(t, model, approveCmd)
+
 	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	model = m.(*BoardModel)
 
@@ -1317,6 +1362,15 @@ func TestBoardModel_ApproveTransition409(t *testing.T) {
 	transitionCalled := false
 
 	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			return tuiclient.TaskDetail{
+				ID:        id,
+				Title:     "Review Task",
+				State:     "review",
+				DependsOn: []string{},
+				Links:     []tuiclient.TaskLink{},
+			}, nil
+		},
 		ReviewTaskFunc: func(ctx context.Context, id, actor, verdict string, note *string) error {
 			reviewCalled = true
 			return nil
@@ -1341,8 +1395,10 @@ func TestBoardModel_ApproveTransition409(t *testing.T) {
 	model := buildReviewModel(t, mockClient)
 
 	// Walk through the approve flow.
-	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	m, fetchCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 	model = m.(*BoardModel)
+	model = executeReviewCmd(t, model, fetchCmd) // execute the fetch command
+
 	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter}) // skip note
 	model = m.(*BoardModel)
 	m, approveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}}) // confirm
