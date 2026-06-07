@@ -32,6 +32,8 @@ const (
 	modeApproveConfirm
 	// modeRejectReason is the required reason input step for a reject action.
 	modeRejectReason
+	// modeMergeConfirm is the "Merge PR and complete? [y/N]" confirmation step.
+	modeMergeConfirm
 )
 
 // BoardModel is the Bubble Tea model for the task board view.
@@ -56,6 +58,7 @@ type BoardModel struct {
 	mode             boardMode
 	reviewInput      textinput.Model // shared textinput for note/reason
 	pendingNote      *string         // captured note (nil = omitted) when in modeApproveConfirm
+	pendingPRURL     string          // PR URL to merge when in modeMergeConfirm
 	pendingTaskID    string          // ID of the task being reviewed
 	inputHint        string          // hint displayed below the input (e.g. "reason required")
 	reviewFromDetail bool            // true when the review flow was started from the detail view
@@ -69,6 +72,9 @@ type BoardModel struct {
 	// urlOpener is called to open a URL in the user's browser.
 	// In production it is defaultURLOpener; tests inject a recorder to assert the URL.
 	urlOpener func(rawURL string) error
+	// ghMerger is called to merge a PR via `gh pr merge`.
+	// In production it is defaultGHMerger; tests inject a mock to avoid shell execution.
+	ghMerger func(ctx context.Context, prURL string) error
 }
 
 const (
@@ -76,15 +82,17 @@ const (
 	stateReady      = "ready"
 	stateInProgress = "in_progress"
 	stateReview     = "review"
+	stateApproved   = "approved"
 	stateDone       = "done"
 )
 
-var stateOrder = []string{stateBacklog, stateReady, stateInProgress, stateReview, stateDone}
+var stateOrder = []string{stateBacklog, stateReady, stateInProgress, stateReview, stateApproved, stateDone}
 var stateColors = map[string]lipgloss.Color{
 	stateBacklog:    lipgloss.Color("8"),
 	stateReady:      lipgloss.Color("4"),
 	stateInProgress: lipgloss.Color("3"),
 	stateReview:     lipgloss.Color("5"),
+	stateApproved:   lipgloss.Color("6"),
 	stateDone:       lipgloss.Color("2"),
 }
 
@@ -102,6 +110,7 @@ func NewBoardModel(client tuiclient.Client, config *tuiconfig.Config, project tu
 		loading:        true,
 		reviewInput:    inputWidget,
 		urlOpener:      defaultURLOpener,
+		ghMerger:       defaultGHMerger,
 	}
 	m.newTickCmd = m.defaultTickCmd
 	return m
@@ -240,6 +249,41 @@ func (m *BoardModel) reviewReject(taskID string, reason string, fromDetail bool)
 			return msg
 		}
 
+		msg := m.fetchTasksInline(ctx, "")
+		msg.fromDetail = fromDetail
+		return msg
+	}
+}
+
+// mergePRCmd creates a command that merges the task's GitHub PR via gh, then transitions
+// to done. If the task has no PR link, shows a clear message and doesn't transition.
+// On merge failure, surfaces the error and leaves the task un-transitioned.
+func (m *BoardModel) mergePRCmd(taskID string, prURL string, fromDetail bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+
+		// Step 1: merge the PR via gh.
+		if err := m.ghMerger(ctx, prURL); err != nil {
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("PR merge failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
+		}
+
+		// Step 2: transition to done only after merge succeeds.
+		if err := m.client.TransitionTask(ctx, taskID, "done", nil); err != nil {
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+				msg := m.fetchTasksInline(ctx, fmt.Sprintf("transition 409: %s", apiErr.Message))
+				msg.fromDetail = fromDetail
+				return msg
+			}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("transition failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
+		}
+
+		// Success: refetch to reflect the updated board.
 		msg := m.fetchTasksInline(ctx, "")
 		msg.fromDetail = fromDetail
 		return msg
@@ -644,6 +688,36 @@ func (m *BoardModel) updateDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.reviewInput, cmd = m.reviewInput.Update(nil)
 			return m, cmd
 		}
+
+	// Merge PR and complete: only available for approved tasks.
+	case "m":
+		if m.detailTask.State == stateApproved {
+			// Find the PR link.
+			var prURL string
+			for _, link := range m.detailTask.Links {
+				if link.Kind == "pr" {
+					prURL = link.Value
+					break
+				}
+			}
+
+			if prURL == "" {
+				m.detailMessage = "no PR link on this task; cannot merge"
+				return m, nil
+			}
+
+			m.pendingTaskID = m.detailTask.ID
+			m.pendingPRURL = prURL
+			m.reviewFromDetail = true
+			m.reviewInput.Placeholder = fmt.Sprintf("merge %s and complete? [y/N]", prURL)
+			m.reviewInput.SetValue("")
+			m.reviewInput.Focus()
+			m.inputHint = ""
+			m.mode = modeMergeConfirm
+			var cmd tea.Cmd
+			m.reviewInput, cmd = m.reviewInput.Update(nil)
+			return m, cmd
+		}
 	}
 
 	return m, nil
@@ -715,6 +789,23 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.reviewInput, cmd = m.reviewInput.Update(msg)
 			return m, cmd
 		}
+
+	case modeMergeConfirm:
+		switch msg.String() {
+		case "esc", "n", "N":
+			// User declined or pressed escape — cancel.
+			m.cancelReviewMode()
+			return m, nil
+		case "y", "Y":
+			// Capture values before cancelReviewMode clears them.
+			taskID := m.pendingTaskID
+			prURL := m.pendingPRURL
+			originFromDetail := m.reviewFromDetail
+			m.cancelReviewMode()
+			return m, m.mergePRCmd(taskID, prURL, originFromDetail)
+		}
+		// Ignore all other keys in confirm mode.
+		return m, nil
 	}
 
 	return m, nil
@@ -730,6 +821,7 @@ func (m *BoardModel) cancelReviewMode() {
 	}
 	m.reviewFromDetail = false
 	m.pendingNote = nil
+	m.pendingPRURL = ""
 	m.pendingTaskID = ""
 	m.inputHint = ""
 	m.reviewInput.SetValue("")
@@ -840,6 +932,10 @@ func (m *BoardModel) renderReviewOverlay() string {
 			b.WriteString("hint: " + m.inputHint + "\n")
 		}
 		b.WriteString("(enter to submit, esc to cancel)\n")
+	case modeMergeConfirm:
+		b.WriteString(m.reviewInput.View())
+		b.WriteString("\n")
+		b.WriteString("(y to confirm merge and complete, n/esc to cancel)\n")
 	}
 	return b.String()
 }
