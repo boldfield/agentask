@@ -2408,3 +2408,165 @@ func TestBoardModel_ReviewHelpBar(t *testing.T) {
 		t.Errorf("Did not expect 'x reject' in help bar when NOT in review column, got:\n%s", nonReviewOutput)
 	}
 }
+
+// TestBoardModel_ProjectSwitch tests that the project switcher opens with 'P' key,
+// allows navigation, and properly switches projects while resetting board state.
+func TestBoardModel_ProjectSwitch(t *testing.T) {
+	mockClient := &tuiclient.MockClient{
+		Tasks: []tuiclient.Task{
+			{ID: "task-1", Title: "Task 1", State: "in_progress"},
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project1 := tuiclient.Project{ID: "project-1", Name: "Project 1"}
+	project2 := tuiclient.Project{ID: "project-2", Name: "Project 2"}
+
+	model := NewBoardModel(mockClient, config, project1)
+	model.width = 80
+	model.height = 24
+
+	// Initialize with projects
+	projects := []tuiclient.Project{project1, project2}
+	m, _ := model.Update(projectsFetchedMsg{projects: projects})
+	model = m.(*BoardModel)
+
+	// Initialize with tasks
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range stateOrder {
+		bucketed[state] = []tuiclient.Task{}
+	}
+	bucketed["in_progress"] = []tuiclient.Task{{ID: "task-1", Title: "Task 1", State: "in_progress"}}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Select a task
+	model.selectedTaskID = "task-1"
+	model.selectedIndex = 0
+
+	// Verify initial state
+	if model.project.ID != project1.ID {
+		t.Errorf("Expected initial project to be %s, got %s", project1.ID, model.project.ID)
+	}
+	if model.selectedTaskID != "task-1" {
+		t.Errorf("Expected selectedTaskID to be 'task-1', got %s", model.selectedTaskID)
+	}
+
+	// Press 'P' to open project switcher
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeProjectSwitch {
+		t.Errorf("Expected mode to be modeProjectSwitch, got %d", model.mode)
+	}
+
+	// Navigate to second project
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = m.(*BoardModel)
+
+	if model.projectSwitchIndex != 1 {
+		t.Errorf("Expected projectSwitchIndex to be 1, got %d", model.projectSwitchIndex)
+	}
+
+	// Select the second project (press enter)
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+
+	// Verify project switched
+	if model.project.ID != project2.ID {
+		t.Errorf("Expected project to be %s, got %s", project2.ID, model.project.ID)
+	}
+
+	// Verify mode returned to normal
+	if model.mode != modeNormal {
+		t.Errorf("Expected mode to be modeNormal after switch, got %d", model.mode)
+	}
+
+	// Verify selection state was reset
+	if model.selectedTaskID != "" {
+		t.Errorf("Expected selectedTaskID to be empty after project switch, got %s", model.selectedTaskID)
+	}
+
+	if model.selectedIndex != 0 {
+		t.Errorf("Expected selectedIndex to be 0 after project switch, got %d", model.selectedIndex)
+	}
+
+	if model.selectedColumn != 2 {
+		t.Errorf("Expected selectedColumn to be 2 after project switch, got %d", model.selectedColumn)
+	}
+
+	// Verify tasks were cleared and fetch was triggered
+	if len(model.tasks) != 0 || model.loading != true {
+		t.Errorf("Expected tasks to be cleared and loading=true, got tasks=%v loading=%v", model.tasks, model.loading)
+	}
+}
+
+// TestBoardModel_ProjectSwitchSameProject tests that selecting the current project is a no-op.
+func TestBoardModel_ProjectSwitchSameProject(t *testing.T) {
+	mockClient := &tuiclient.MockClient{
+		Tasks: []tuiclient.Task{
+			{ID: "task-1", Title: "Task 1", State: "in_progress"},
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project1 := tuiclient.Project{ID: "project-1", Name: "Project 1"}
+	project2 := tuiclient.Project{ID: "project-2", Name: "Project 2"}
+
+	model := NewBoardModel(mockClient, config, project1)
+	model.width = 80
+	model.height = 24
+
+	// Initialize with projects
+	projects := []tuiclient.Project{project1, project2}
+	m, _ := model.Update(projectsFetchedMsg{projects: projects})
+	model = m.(*BoardModel)
+
+	// Initialize with tasks
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range stateOrder {
+		bucketed[state] = []tuiclient.Task{}
+	}
+	bucketed["in_progress"] = []tuiclient.Task{{ID: "task-1", Title: "Task 1", State: "in_progress"}}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Select a task
+	model.selectedTaskID = "task-1"
+	model.selectedIndex = 0
+
+	// Open project switcher
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	model = m.(*BoardModel)
+
+	// Select the same project (first one is already selected)
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+
+	// Verify project is still project1
+	if model.project.ID != project1.ID {
+		t.Errorf("Expected project to be %s, got %s", project1.ID, model.project.ID)
+	}
+
+	// Verify mode returned to normal
+	if model.mode != modeNormal {
+		t.Errorf("Expected mode to be modeNormal, got %d", model.mode)
+	}
+
+	// Verify selection was NOT reset (same project is a no-op)
+	if model.selectedTaskID != "task-1" {
+		t.Errorf("Expected selectedTaskID to remain 'task-1', got %s", model.selectedTaskID)
+	}
+}
