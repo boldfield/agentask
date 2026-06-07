@@ -129,8 +129,8 @@ func TestMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations: %v", err)
 	}
-	if migrationCount != 3 {
-		t.Errorf("expected 3 migrations to be recorded, but got %d", migrationCount)
+	if migrationCount != 4 {
+		t.Errorf("expected 4 migrations to be recorded, but got %d", migrationCount)
 	}
 
 	// Verify idempotency: re-open the same database and it should work
@@ -145,8 +145,8 @@ func TestMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after re-open: %v", err)
 	}
-	if migrationCount != 3 {
-		t.Errorf("expected 3 migrations after re-open (idempotency), but got %d", migrationCount)
+	if migrationCount != 4 {
+		t.Errorf("expected 4 migrations after re-open (idempotency), but got %d", migrationCount)
 	}
 }
 
@@ -242,8 +242,8 @@ func TestOpenSamePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after second open: %v", err)
 	}
-	if migrationCount != 3 {
-		t.Errorf("expected 3 migrations after second open, but got %d", migrationCount)
+	if migrationCount != 4 {
+		t.Errorf("expected 4 migrations after second open, but got %d", migrationCount)
 	}
 }
 
@@ -1423,5 +1423,284 @@ func TestMigration0003ApprovedState(t *testing.T) {
 	}
 	if approvedCount != 2 {
 		t.Errorf("expected 2 approved tasks, got %d", approvedCount)
+	}
+}
+
+// TestMigration0004AddTaskColumns verifies that migration 0004 (adding model, kind, review_models, review_round, target_task_id, verdict columns):
+// 1. Applies cleanly to a database populated with tasks
+// 2. All existing rows remain intact
+// 3. New columns exist with correct defaults (model='haiku', kind='implement', review_round=0, nullable columns empty)
+// 4. The model-matched claimable index exists
+// 5. Foreign keys still resolve
+func TestMigration0004AddTaskColumns(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "migration_0004_test.db")
+
+	// Step 1: Build a fresh DB at PRE-0004 schema by executing 0001, 0002, and 0003 migrations
+	conn, err := sql.Open("sqlite", buildDSN(dbPath))
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer conn.Close()
+
+	conn.SetMaxOpenConns(1)
+
+	// Disable FK for initial schema creation
+	if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("failed to disable foreign keys: %v", err)
+	}
+
+	// Execute 0001 migration
+	migration0001, err := fs.ReadFile(migrationsFS, "migrations/0001_init.sql")
+	if err != nil {
+		t.Fatalf("failed to read migration 0001: %v", err)
+	}
+	for _, stmt := range splitStatements(string(migration0001)) {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatalf("failed to execute 0001: %v", err)
+		}
+	}
+
+	// Execute 0002 migration
+	migration0002, err := fs.ReadFile(migrationsFS, "migrations/0002_document_one_design.sql")
+	if err != nil {
+		t.Fatalf("failed to read migration 0002: %v", err)
+	}
+	for _, stmt := range splitStatements(string(migration0002)) {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatalf("failed to execute 0002: %v", err)
+		}
+	}
+
+	// Execute 0003 migration (table rebuild for 'approved' state)
+	migration0003, err := fs.ReadFile(migrationsFS, "migrations/0003_approved_state.sql")
+	if err != nil {
+		t.Fatalf("failed to read migration 0003: %v", err)
+	}
+	for _, stmt := range splitStatements(string(migration0003)) {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatalf("failed to execute 0003: %v", err)
+		}
+	}
+
+	// Record that 0001, 0002, 0003 were applied
+	if _, err := conn.Exec(`
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			version TEXT PRIMARY KEY,
+			applied_at TEXT NOT NULL
+		)
+	`); err != nil {
+		t.Fatalf("failed to create schema_migrations: %v", err)
+	}
+	now := nowTimestamp()
+	for _, version := range []string{"0001", "0002", "0003"} {
+		if _, err := conn.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", version, now); err != nil {
+			t.Fatalf("failed to record %s: %v", version, err)
+		}
+	}
+
+	// Re-enable FK for data validation
+	if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatalf("failed to enable foreign keys: %v", err)
+	}
+
+	// Step 2: Seed test data into the PRE-0004 schema
+	// Create project
+	if _, err := conn.Exec(`
+		INSERT INTO project (id, name, repo, created_at) VALUES (?, ?, ?, ?)
+	`, "proj-0004", "test-repo", "https://example.com/repo", now); err != nil {
+		t.Fatalf("failed to insert project: %v", err)
+	}
+
+	// Create document
+	if _, err := conn.Exec(`
+		INSERT INTO document (id, project_id, kind, title, ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)
+	`, "doc-0004", "proj-0004", "design", "Design", "DESIGN.md", now, now); err != nil {
+		t.Fatalf("failed to insert document: %v", err)
+	}
+
+	// Create tasks in various states
+	taskData := []struct {
+		id    string
+		state string
+	}{
+		{"task-0004-1", "backlog"},
+		{"task-0004-2", "ready"},
+		{"task-0004-3", "in_progress"},
+		{"task-0004-4", "review"},
+		{"task-0004-5", "approved"},
+		{"task-0004-6", "done"},
+	}
+
+	for _, td := range taskData {
+		if _, err := conn.Exec(`
+			INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+		`, td.id, "proj-0004", "doc-0004", td.id, "spec for "+td.id, td.state, now, now); err != nil {
+			t.Fatalf("failed to insert task %s: %v", td.id, err)
+		}
+	}
+
+	// Record initial row counts
+	var initialTaskCount int
+	if err := conn.QueryRow("SELECT COUNT(*) FROM task").Scan(&initialTaskCount); err != nil {
+		t.Fatalf("failed to count initial tasks: %v", err)
+	}
+
+	// Step 3: Apply migration 0004 to the populated database
+	if _, err := conn.Exec("PRAGMA foreign_keys = OFF"); err != nil {
+		t.Fatalf("failed to disable FK for migration: %v", err)
+	}
+
+	migration0004, err := fs.ReadFile(migrationsFS, "migrations/0004_add_task_columns.sql")
+	if err != nil {
+		t.Fatalf("failed to read migration 0004: %v", err)
+	}
+	for _, stmt := range splitStatements(string(migration0004)) {
+		if strings.TrimSpace(stmt) == "" {
+			continue
+		}
+		if _, err := conn.Exec(stmt); err != nil {
+			t.Fatalf("failed to execute 0004: %v", err)
+		}
+	}
+
+	// Re-enable FK and check integrity
+	if _, err := conn.Exec("PRAGMA foreign_keys = ON"); err != nil {
+		t.Fatalf("failed to enable FK after migration: %v", err)
+	}
+
+	// Record that 0004 was applied
+	if _, err := conn.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)", "0004", now); err != nil {
+		t.Fatalf("failed to record 0004: %v", err)
+	}
+
+	// Step 4: Verify row counts survived
+	var finalTaskCount int
+	if err := conn.QueryRow("SELECT COUNT(*) FROM task").Scan(&finalTaskCount); err != nil {
+		t.Fatalf("failed to count final tasks: %v", err)
+	}
+	if finalTaskCount != initialTaskCount {
+		t.Errorf("task count mismatch after 0004: initial=%d, final=%d", initialTaskCount, finalTaskCount)
+	}
+
+	// Step 5: Verify new columns exist with correct defaults
+	type TaskWithNewColumns struct {
+		id           string
+		model        string
+		kind         string
+		reviewModels sql.NullString
+		reviewRound  int
+		targetTaskID sql.NullString
+		verdict      sql.NullString
+	}
+
+	rows, err := conn.Query(`
+		SELECT id, model, kind, review_models, review_round, target_task_id, verdict
+		FROM task ORDER BY id
+	`)
+	if err != nil {
+		t.Fatalf("failed to query tasks with new columns: %v", err)
+	}
+	defer rows.Close()
+
+	var tasksWithNewCols []TaskWithNewColumns
+	for rows.Next() {
+		var row TaskWithNewColumns
+		if err := rows.Scan(&row.id, &row.model, &row.kind, &row.reviewModels, &row.reviewRound, &row.targetTaskID, &row.verdict); err != nil {
+			t.Fatalf("failed to scan task: %v", err)
+		}
+		tasksWithNewCols = append(tasksWithNewCols, row)
+	}
+
+	if len(tasksWithNewCols) != initialTaskCount {
+		t.Errorf("expected %d tasks, got %d", initialTaskCount, len(tasksWithNewCols))
+	}
+
+	// Verify defaults on all tasks
+	for _, task := range tasksWithNewCols {
+		if task.model != "haiku" {
+			t.Errorf("task %s model: expected 'haiku', got '%s'", task.id, task.model)
+		}
+		if task.kind != "implement" {
+			t.Errorf("task %s kind: expected 'implement', got '%s'", task.id, task.kind)
+		}
+		if task.reviewRound != 0 {
+			t.Errorf("task %s review_round: expected 0, got %d", task.id, task.reviewRound)
+		}
+		if task.reviewModels.Valid || task.targetTaskID.Valid || task.verdict.Valid {
+			t.Errorf("task %s nullable columns should be NULL: review_models.Valid=%v, target_task_id.Valid=%v, verdict.Valid=%v",
+				task.id, task.reviewModels.Valid, task.targetTaskID.Valid, task.verdict.Valid)
+		}
+	}
+
+	// Step 6: Verify the model-matched claimable index exists
+	var indexCount int
+	err = conn.QueryRow(`
+		SELECT COUNT(*) FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_task_claimable'
+	`).Scan(&indexCount)
+	if err != nil {
+		t.Fatalf("failed to check for idx_task_claimable: %v", err)
+	}
+	if indexCount != 1 {
+		t.Errorf("expected idx_task_claimable to exist, but count=%d", indexCount)
+	}
+
+	// Step 7: Verify FK integrity
+	fkRows, err := conn.Query("PRAGMA foreign_key_check")
+	if err != nil {
+		t.Fatalf("failed to run foreign_key_check: %v", err)
+	}
+	defer fkRows.Close()
+
+	fkViolationCount := 0
+	for fkRows.Next() {
+		fkViolationCount++
+	}
+	if fkViolationCount > 0 {
+		t.Errorf("found %d foreign key violations after migration 0004", fkViolationCount)
+	}
+
+	// Step 8: Verify FK constraints still enforced
+	_, err = conn.Exec(`
+		INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+	`, "bad-task", "non-existent-proj", "non-existent-doc", "Bad Task", "bad spec", "ready", now, now)
+	if err == nil {
+		t.Error("expected FK constraint violation after 0004, but insert succeeded")
+	}
+
+	// Step 9: Verify target_task_id FK works
+	// First insert a task that will be the target
+	if _, err := conn.Exec(`
+		INSERT INTO task (id, project_id, document_id, title, spec, state, created_at, updated_at, kind)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, "task-0004-review", "proj-0004", "doc-0004", "Review Task", "review spec", "ready", now, now, "review"); err != nil {
+		t.Fatalf("failed to insert review task: %v", err)
+	}
+
+	// Update it with a valid target_task_id FK
+	if _, err := conn.Exec(`
+		UPDATE task SET target_task_id = ? WHERE id = ?
+	`, "task-0004-1", "task-0004-review"); err != nil {
+		t.Fatalf("failed to set target_task_id with valid FK: %v", err)
+	}
+
+	// Verify the FK is enforced
+	_, err = conn.Exec(`
+		UPDATE task SET target_task_id = ? WHERE id = ?
+	`, "non-existent-task", "task-0004-review")
+	if err == nil {
+		t.Error("expected FK constraint violation for target_task_id, but update succeeded")
 	}
 }
