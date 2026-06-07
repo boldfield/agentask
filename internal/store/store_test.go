@@ -1704,3 +1704,127 @@ func TestMigration0004AddTaskColumns(t *testing.T) {
 		t.Error("expected FK constraint violation for target_task_id, but update succeeded")
 	}
 }
+
+// TestTaskFieldsRoundTrip verifies that the new fields (model, kind, review_models, review_round, target_task_id)
+// are properly persisted and retrieved through the Go layer.
+func TestTaskFieldsRoundTrip(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Test 1: Create task with explicit model and review_models
+	reviewModels := []string{"opus", "sonnet"}
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Task with model",
+			Spec:         "Test spec",
+			DocumentID:   doc.ID,
+			Model:        "sonnet",
+			ReviewModels: reviewModels,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	taskWithModel := tasks[0]
+	if taskWithModel.Model != "sonnet" {
+		t.Errorf("expected model='sonnet', got '%s'", taskWithModel.Model)
+	}
+	if taskWithModel.Kind != "implement" {
+		t.Errorf("expected kind='implement', got '%s'", taskWithModel.Kind)
+	}
+	if len(taskWithModel.ReviewModels) != 2 || taskWithModel.ReviewModels[0] != "opus" || taskWithModel.ReviewModels[1] != "sonnet" {
+		t.Errorf("expected review_models=['opus','sonnet'], got %v", taskWithModel.ReviewModels)
+	}
+	if taskWithModel.ReviewRound != 0 {
+		t.Errorf("expected review_round=0, got %d", taskWithModel.ReviewRound)
+	}
+	if taskWithModel.TargetTaskID != nil {
+		t.Errorf("expected target_task_id=nil, got %v", taskWithModel.TargetTaskID)
+	}
+
+	// Test 2: GetTask and verify fields are returned
+	retrieved, err := store.GetTask(ctx, taskWithModel.ID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+
+	if retrieved.Model != "sonnet" {
+		t.Errorf("GetTask: expected model='sonnet', got '%s'", retrieved.Model)
+	}
+	if retrieved.Kind != "implement" {
+		t.Errorf("GetTask: expected kind='implement', got '%s'", retrieved.Kind)
+	}
+	if len(retrieved.ReviewModels) != 2 || retrieved.ReviewModels[0] != "opus" || retrieved.ReviewModels[1] != "sonnet" {
+		t.Errorf("GetTask: expected review_models=['opus','sonnet'], got %v", retrieved.ReviewModels)
+	}
+	if retrieved.ReviewRound != 0 {
+		t.Errorf("GetTask: expected review_round=0, got %d", retrieved.ReviewRound)
+	}
+	if retrieved.TargetTaskID != nil {
+		t.Errorf("GetTask: expected target_task_id=nil, got %v", retrieved.TargetTaskID)
+	}
+
+	// Test 3: ListTasks and verify fields are returned
+	listedTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	if len(listedTasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(listedTasks))
+	}
+
+	listedTask := listedTasks[0]
+	if listedTask.Model != "sonnet" {
+		t.Errorf("ListTasks: expected model='sonnet', got '%s'", listedTask.Model)
+	}
+	if listedTask.Kind != "implement" {
+		t.Errorf("ListTasks: expected kind='implement', got '%s'", listedTask.Kind)
+	}
+	if len(listedTask.ReviewModels) != 2 || listedTask.ReviewModels[0] != "opus" || listedTask.ReviewModels[1] != "sonnet" {
+		t.Errorf("ListTasks: expected review_models=['opus','sonnet'], got %v", listedTask.ReviewModels)
+	}
+
+	// Test 4: Create task with default model (no explicit value)
+	defaultTasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:      "Task with default model",
+			Spec:       "Test spec",
+			DocumentID: doc.ID,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task with defaults: %v", err)
+	}
+
+	defaultTask := defaultTasks[0]
+	if defaultTask.Model != "haiku" {
+		t.Errorf("expected default model='haiku', got '%s'", defaultTask.Model)
+	}
+	if defaultTask.Kind != "implement" {
+		t.Errorf("expected default kind='implement', got '%s'", defaultTask.Kind)
+	}
+	if len(defaultTask.ReviewModels) != 0 {
+		t.Errorf("expected empty review_models when not specified, got %v", defaultTask.ReviewModels)
+	}
+	if defaultTask.ReviewRound != 0 {
+		t.Errorf("expected default review_round=0, got %d", defaultTask.ReviewRound)
+	}
+}
