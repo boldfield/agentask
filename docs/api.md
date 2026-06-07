@@ -207,13 +207,16 @@ Bulk-create tasks for a project.
     "key": "task1",
     "title": "Implement authentication",
     "spec": "Add bearer token authentication to all endpoints",
-    "document_id": "660e8400-e29b-41d4-a716-446655440001"
+    "document_id": "660e8400-e29b-41d4-a716-446655440001",
+    "model": "haiku",
+    "review_models": ["opus", "sonnet"]
   },
   {
     "key": "task2",
     "title": "Add task claiming",
     "spec": "Implement atomic task claiming with leases",
     "document_id": "660e8400-e29b-41d4-a716-446655440001",
+    "model": "haiku",
     "depends_on": ["task1"]
   }
 ]
@@ -224,6 +227,8 @@ Bulk-create tasks for a project.
 - `title` (required): Task title
 - `spec` (required): Task specification/description
 - `document_id` (required): ID of the design or feature document this task is decomposed from
+- `model` (optional): Assigned model (e.g., `haiku`, `sonnet`, `opus`); must be in the deployment allowlist if provided. If omitted or empty, defaults to the deployment default model.
+- `review_models` (optional): List of reviewer models for this task (e.g., `["opus", "sonnet"]`); each must be in the allowlist. Default is `["opus"]` if unset/empty. Ignored for review tasks (auto-spawned only).
 - `depends_on` (optional): Array of task IDs or keys (if using intra-batch references) that must be done before this task is claimable
 
 **Response (201 Created):**
@@ -236,6 +241,10 @@ Bulk-create tasks for a project.
     "title": "Implement authentication",
     "spec": "Add bearer token authentication to all endpoints",
     "state": "backlog",
+    "kind": "implement",
+    "model": "haiku",
+    "review_models": ["opus", "sonnet"],
+    "review_round": 0,
     "assignee": null,
     "lease_expires_at": null,
     "result": null,
@@ -249,6 +258,10 @@ Bulk-create tasks for a project.
     "title": "Add task claiming",
     "spec": "Implement atomic task claiming with leases",
     "state": "backlog",
+    "kind": "implement",
+    "model": "haiku",
+    "review_models": ["opus"],
+    "review_round": 0,
     "assignee": null,
     "lease_expires_at": null,
     "result": null,
@@ -261,11 +274,12 @@ Bulk-create tasks for a project.
 **Status Codes:**
 - `201 Created`: Tasks successfully created
 - `400 INVALID_DOCUMENT_ID`: One or more document IDs do not exist
+- `400 UNKNOWN_MODEL`: The `model` or a `review_models` entry is not in the deployment allowlist
 - `400 JSON_DECODE_ERROR`: Invalid JSON in request body
 - `400 <other validation errors>`: Client input validation errors
 - `500 CREATE_ERROR`: Server error creating tasks
 
-**Note:** All tasks begin in the `backlog` state and must be promoted to `ready` before they can be claimed.
+**Note:** All tasks begin in the `backlog` state and must be promoted to `ready` before they can be claimed. All tasks default to `kind: implement` if not auto-spawned as review tasks.
 
 ---
 
@@ -283,17 +297,22 @@ curl -H "Authorization: Bearer token" \
 curl -H "Authorization: Bearer token" \
   "https://api.example.com/projects/550e8400-e29b-41d4-a716-446655440000/tasks?state=in_progress"
 
+# Filter by model
+curl -H "Authorization: Bearer token" \
+  "https://api.example.com/projects/550e8400-e29b-41d4-a716-446655440000/tasks?model=haiku"
+
 # Filter by assignee
 curl -H "Authorization: Bearer token" \
   "https://api.example.com/projects/550e8400-e29b-41d4-a716-446655440000/tasks?assignee=agent-1"
 
-# Filter by claimable
+# Filter by claimable and model (worker polls for its own work)
 curl -H "Authorization: Bearer token" \
-  "https://api.example.com/projects/550e8400-e29b-41d4-a716-446655440000/tasks?claimable=true"
+  "https://api.example.com/projects/550e8400-e29b-41d4-a716-446655440000/tasks?claimable=true&model=haiku"
 ```
 
 **Query Parameters:**
-- `state` (optional): Filter by task state (`backlog`, `ready`, `in_progress`, `review`, `done`, `blocked`, `failed`)
+- `state` (optional): Filter by task state (`backlog`, `ready`, `in_progress`, `review`, `approved`, `done`, `blocked`, `failed`)
+- `model` (optional): Filter by assigned model (e.g., `haiku`, `sonnet`, `opus`)
 - `assignee` (optional): Filter by agent ID
 - `claimable` (optional): If `true`, only return tasks that can be claimed (in `ready` state with no live lease and all dependencies done)
 
@@ -307,6 +326,10 @@ curl -H "Authorization: Bearer token" \
     "title": "Implement authentication",
     "spec": "Add bearer token authentication to all endpoints",
     "state": "ready",
+    "kind": "implement",
+    "model": "haiku",
+    "review_models": ["opus"],
+    "review_round": 0,
     "assignee": null,
     "lease_expires_at": null,
     "result": null,
@@ -320,7 +343,7 @@ curl -H "Authorization: Bearer token" \
 - `200 OK`: Tasks retrieved
 - `500 LIST_ERROR`: Server error listing tasks
 
-**Note:** Response contains an empty array if no tasks match the filters. Tasks can only be claimed if they are in the `ready` state, have no active lease, and all their dependencies are `done`.
+**Note:** Response contains an empty array if no tasks match the filters. Tasks can only be claimed if they are in the `ready` state, have no active lease, and all their dependencies are `done`. All tasks have a `kind` (implement or review) and a `model`; review tasks additionally have a `target_task_id` pointing to their parent implement task.
 
 ---
 
@@ -343,6 +366,11 @@ curl -H "Authorization: Bearer token" \
   "title": "Implement authentication",
   "spec": "Add bearer token authentication to all endpoints",
   "state": "done",
+  "kind": "implement",
+  "model": "haiku",
+  "review_models": ["opus"],
+  "review_round": 1,
+  "target_task_id": null,
   "assignee": "agent-1",
   "lease_expires_at": null,
   "result": "Completed successfully",
@@ -396,6 +424,10 @@ curl -X POST -H "Authorization: Bearer token" \
   "title": "Implement authentication",
   "spec": "Add bearer token authentication to all endpoints",
   "state": "ready",
+  "kind": "implement",
+  "model": "haiku",
+  "review_models": ["opus"],
+  "review_round": 0,
   "assignee": null,
   "lease_expires_at": null,
   "result": null,
@@ -421,12 +453,14 @@ Claim a task and move it to `in_progress` state with a lease.
 **Request:**
 ```json
 {
-  "agent_id": "agent-1"
+  "agent_id": "agent-1",
+  "model": "haiku"
 }
 ```
 
 **Parameters:**
 - `agent_id` (required): The ID of the agent claiming the task (non-empty string)
+- `model` (required): The model assigned to the claiming agent (e.g., `haiku`, `sonnet`, `opus`); must match the task's model
 
 **Response (200 OK):**
 ```json
@@ -437,6 +471,10 @@ Claim a task and move it to `in_progress` state with a lease.
   "title": "Implement authentication",
   "spec": "Add bearer token authentication to all endpoints",
   "state": "in_progress",
+  "kind": "implement",
+  "model": "haiku",
+  "review_models": ["opus"],
+  "review_round": 0,
   "assignee": "agent-1",
   "lease_expires_at": "2026-06-05T21:05:00.000000000Z",
   "result": null,
@@ -448,9 +486,11 @@ Claim a task and move it to `in_progress` state with a lease.
 **Status Codes:**
 - `200 OK`: Task claimed successfully
 - `400 EMPTY_AGENT_ID`: agent_id cannot be empty
+- `400 EMPTY_MODEL`: model cannot be empty
 - `400 JSON_DECODE_ERROR`: Invalid JSON in request body
 - `404 NOT_FOUND`: Task not found
 - `409 CONFLICT`: Task is not claimable (not in ready state, has an active lease, or has undone dependencies)
+- `409 MODEL_MISMATCH`: The task's model does not match the declared model
 - `500 CLAIM_ERROR`: Server error claiming task
 
 **Claimability Rules:**
@@ -458,8 +498,9 @@ A task is claimable only if:
 1. It is in the `ready` state
 2. No active lease exists (or the lease has expired)
 3. All tasks in its `depends_on` set are in the `done` state
+4. The task's `model` matches the agent's declared model (server enforced)
 
-The claim is atomic — implemented as a conditional UPDATE statement. If the claim succeeds, `rowsAffected == 1` and the task is guaranteed to be in `in_progress` with a fresh lease. If `rowsAffected == 0`, the client lost the race (another agent claimed it first) and should retry with a different task.
+The claim is atomic — implemented as a conditional UPDATE statement. If the claim succeeds, `rowsAffected == 1` and the task is guaranteed to be in `in_progress` with a fresh lease. If `rowsAffected == 0`, the client lost the race (another agent claimed it first) or the model didn't match, and should retry with a different task.
 
 ---
 
@@ -486,6 +527,10 @@ Extend the lease on a task claimed by an agent.
   "title": "Implement authentication",
   "spec": "Add bearer token authentication to all endpoints",
   "state": "in_progress",
+  "kind": "implement",
+  "model": "haiku",
+  "review_models": ["opus"],
+  "review_round": 0,
   "assignee": "agent-1",
   "lease_expires_at": "2026-06-05T21:10:00.000000000Z",
   "result": null,
@@ -508,7 +553,9 @@ Extend the lease on a task claimed by an agent.
 
 #### `POST /tasks/{id}/submit`
 
-Submit a task for review and transition it from `in_progress` to `review` state.
+Submit a task for review (implement tasks) or submit a verdict (review tasks). Behavior depends on task kind.
+
+**For `kind: implement` tasks** — Submit for review with work links:
 
 **Request:**
 ```json
@@ -532,6 +579,7 @@ Submit a task for review and transition it from `in_progress` to `review` state.
 - `agent_id` (required): The ID of the agent submitting (must match the task's assignee)
 - `result` (required): Summary of work completed
 - `links` (optional): Array of external resource references
+- `verdict` (forbidden): Must not be present for implement tasks
 
 **Link Types:**
 - `pr`: Pull request reference (e.g., `#123` or `owner/repo#123`)
@@ -548,6 +596,10 @@ Submit a task for review and transition it from `in_progress` to `review` state.
   "title": "Implement authentication",
   "spec": "Add bearer token authentication to all endpoints",
   "state": "review",
+  "kind": "implement",
+  "model": "haiku",
+  "review_models": ["opus"],
+  "review_round": 1,
   "assignee": "agent-1",
   "lease_expires_at": null,
   "result": "Task completed successfully. Implemented bearer token auth on all endpoints.",
@@ -571,16 +623,65 @@ Submit a task for review and transition it from `in_progress` to `review` state.
 }
 ```
 
-**Status Codes:**
-- `200 OK`: Task submitted successfully
+---
+
+**For `kind: review` tasks** — Submit a verdict:
+
+**Request:**
+```json
+{
+  "agent_id": "opus-reviewer-1",
+  "verdict": "approve",
+  "result": "Code review passed. Well-structured and thoroughly tested. One minor comment on error handling."
+}
+```
+
+**Parameters:**
+- `agent_id` (required): The ID of the reviewing agent (must match the task's assignee)
+- `verdict` (required): Either `"approve"` or `"reject"`
+- `result` (optional): Review writeup or detailed feedback
+
+**Response (200 OK):**
+```json
+{
+  "id": "aa0e8400-e29b-41d4-a716-446655440006",
+  "project_id": "550e8400-e29b-41d4-a716-446655440000",
+  "document_id": "660e8400-e29b-41d4-a716-446655440001",
+  "title": "Review: Implement authentication [opus]",
+  "spec": "...",
+  "state": "done",
+  "kind": "review",
+  "model": "opus",
+  "review_models": null,
+  "review_round": 1,
+  "target_task_id": "770e8400-e29b-41d4-a716-446655440002",
+  "assignee": "opus-reviewer-1",
+  "lease_expires_at": null,
+  "result": "Code review passed. Well-structured and thoroughly tested. One minor comment on error handling.",
+  "created_at": "2026-06-05T21:03:00.000000000Z",
+  "updated_at": "2026-06-05T21:04:30.000000000Z"
+}
+```
+
+The response includes the review task's own `id` and the parent implement task's `id` in `target_task_id`. If this verdict completes the current review round (all reviewers have verdicted), the parent task will also be automatically transitioned:
+- All approve → parent moves to `approved`
+- Any reject → parent moves to `ready` for rework
+
+---
+
+**Status Codes (both kinds):**
+- `200 OK`: Submit successful
 - `400 EMPTY_AGENT_ID`: agent_id cannot be empty
 - `400 INVALID_LINK_KIND`: One or more link kinds are invalid (must be pr, branch, commit, or ci)
+- `400 INVALID_VERDICT`: verdict must be "approve" or "reject" (review only)
+- `400 FORBIDDEN_VERDICT`: verdict must not be present for implement tasks
+- `400 MISSING_VERDICT`: verdict is required for review tasks
 - `400 JSON_DECODE_ERROR`: Invalid JSON in request body
 - `404 NOT_FOUND`: Task not found
 - `409 CONFLICT`: Task is not in_progress or is not assigned to the provided agent_id
 - `500 SUBMIT_ERROR`: Server error submitting task
 
-**Note:** Links are indexed on `(kind, value)` to enable reverse lookup — for example, a CI webhook can arrive with a commit SHA and find the associated task.
+**Note:** Links are indexed on `(kind, value)` to enable reverse lookup. Review verdicts are recorded as events on the parent implement task for audit purposes.
 
 ---
 
@@ -630,18 +731,19 @@ Post a review verdict on a task in the `review` state.
 
 #### `POST /tasks/{id}/transition`
 
-Transition a task to a new state (manual state machine operation).
+Transition a task to a new state (manual state machine operation). Typically used by humans
+to drain the `approved` lane by merging and marking done, or to override an approval.
 
 **Request:**
 ```json
 {
   "to": "done",
-  "note": "Approved and merged to main"
+  "note": "Reviewed and merged to main"
 }
 ```
 
 **Parameters:**
-- `to` (required): Target state (`done`, `blocked`, or `failed`)
+- `to` (required): Target state (`done`, `blocked`, `ready`, or `failed`)
 - `note` (optional): Reason or context for the transition
 
 **Response (200 OK):**
@@ -653,6 +755,10 @@ Transition a task to a new state (manual state machine operation).
   "title": "Implement authentication",
   "spec": "Add bearer token authentication to all endpoints",
   "state": "done",
+  "kind": "implement",
+  "model": "haiku",
+  "review_models": ["opus"],
+  "review_round": 1,
   "assignee": "agent-1",
   "lease_expires_at": null,
   "result": "Task completed successfully. Implemented bearer token auth on all endpoints.",
@@ -672,17 +778,24 @@ Transition a task to a new state (manual state machine operation).
 **Valid Transitions:**
 The state machine enforces these rules:
 - `ready` → `in_progress` (via claim)
-- `in_progress` → `review` (via submit)
-- `review` → `ready` (via transition on reject)
-- `review` → `done` (via transition on approve)
-- Any state → `blocked` (off-ramp)
-- Any state → `failed` (off-ramp)
+- `in_progress` → `review` (via submit for implement tasks)
+- `review` → `approved` (when all reviewers approve; automatic, via verdict)
+- `review` → `ready` (when any reviewer rejects; automatic, via verdict)
+- `approved` → `done` (human merges PR)
+- `approved` → `ready` (human disagrees with reviewers, requests rework)
+- Any active state → `blocked` (off-ramp: external blocker)
+- Any active state → `failed` (off-ramp: task cannot be done as specified)
+
+Note: `review` → `done` is no longer a direct transition. All paths to `done` now go through
+`approved`. The `approved` state is the human merge gate.
 
 ---
 
 ## Full Lifecycle Walkthrough
 
-Below is a copy-paste example of the complete task lifecycle from creation through completion and review approval:
+Below is a copy-paste example of the complete task lifecycle using the modern model-assigned,
+review-as-a-task flow. A Haiku worker implements a feature, Opus reviewers approve it
+in parallel, and a human drains the `approved` lane to merge.
 
 ```bash
 #!/bin/bash
@@ -711,7 +824,7 @@ DOC=$(curl -s -X POST "$BASE/projects/$PROJECT_ID/documents" \
 echo "$DOC" | jq .
 DOC_ID=$(echo "$DOC" | jq -r '.ID')
 
-echo "=== 4. Bulk-create tasks with dependencies ==="
+echo "=== 4. Bulk-create tasks with model assignment ==="
 TASKS=$(curl -s -X POST "$BASE/projects/$PROJECT_ID/tasks" \
   -H "Content-Type: application/json" \
   -H "$AUTH" \
@@ -720,18 +833,21 @@ TASKS=$(curl -s -X POST "$BASE/projects/$PROJECT_ID/tasks" \
       \"key\":\"task1\",
       \"title\":\"Implement feature\",
       \"spec\":\"Add new functionality\",
-      \"document_id\":\"$DOC_ID\"
+      \"document_id\":\"$DOC_ID\",
+      \"model\":\"haiku\",
+      \"review_models\":[\"opus\"]
     },
     {
       \"key\":\"task2\",
       \"title\":\"Write tests\",
       \"spec\":\"Add test coverage\",
       \"document_id\":\"$DOC_ID\",
+      \"model\":\"haiku\",
       \"depends_on\":[\"task1\"]
     }
   ]")
 echo "$TASKS" | jq .
-TASK_ID=$(echo "$TASKS" | jq -r '.[0].ID')
+TASK_ID=$(echo "$TASKS" | jq -r '.[0].id')
 
 echo "=== 5. List backlog tasks ==="
 curl -s "$BASE/projects/$PROJECT_ID/tasks?state=backlog" -H "$AUTH" | jq .
@@ -740,11 +856,11 @@ echo "=== 6. Promote task to ready ==="
 TASK=$(curl -s -X POST "$BASE/tasks/$TASK_ID/promote" -H "$AUTH")
 echo "$TASK" | jq .
 
-echo "=== 7. Claim task as agent ==="
+echo "=== 7. Claim task as Haiku worker (model-matched) ==="
 TASK=$(curl -s -X POST "$BASE/tasks/$TASK_ID/claim" \
   -H "Content-Type: application/json" \
   -H "$AUTH" \
-  -d '{"agent_id":"agent-1"}')
+  -d '{"agent_id":"haiku-1","model":"haiku"}')
 echo "$TASK" | jq .
 
 echo "=== 8. Send heartbeat to extend lease ==="
@@ -754,12 +870,12 @@ TASK=$(curl -s -X POST "$BASE/tasks/$TASK_ID/heartbeat" \
   -d '{"agent_id":"agent-1"}')
 echo "$TASK" | jq .
 
-echo "=== 9. Submit task for review with links ==="
+echo "=== 9. Submit implement task for review with PR links ==="
 TASK=$(curl -s -X POST "$BASE/tasks/$TASK_ID/submit" \
   -H "Content-Type: application/json" \
   -H "$AUTH" \
   -d '{
-    "agent_id":"agent-1",
+    "agent_id":"haiku-1",
     "result":"Feature implemented and tested",
     "links":[
       {"kind":"pr","value":"#123"},
@@ -767,36 +883,61 @@ TASK=$(curl -s -X POST "$BASE/tasks/$TASK_ID/submit" \
     ]
   }')
 echo "$TASK" | jq .
+echo "(Auto-spawned review tasks are now ready for Opus reviewers)"
 
-echo "=== 10. Post review verdict ==="
-REVIEW=$(curl -s -X POST "$BASE/tasks/$TASK_ID/review" \
+echo "=== 10. List review tasks claimable by Opus ==="
+REVIEW_TASKS=$(curl -s "$BASE/projects/$PROJECT_ID/tasks?claimable=true&model=opus" -H "$AUTH")
+echo "$REVIEW_TASKS" | jq .
+REVIEW_TASK_ID=$(echo "$REVIEW_TASKS" | jq -r '.[0].id')
+
+echo "=== 11. Opus reviewer claims the review task ==="
+REVIEW_TASK=$(curl -s -X POST "$BASE/tasks/$REVIEW_TASK_ID/claim" \
+  -H "Content-Type: application/json" \
+  -H "$AUTH" \
+  -d '{"agent_id":"opus-1","model":"opus"}')
+echo "$REVIEW_TASK" | jq .
+
+echo "=== 12. Opus reviewer submits verdict (approve) ==="
+VERDICT=$(curl -s -X POST "$BASE/tasks/$REVIEW_TASK_ID/submit" \
   -H "Content-Type: application/json" \
   -H "$AUTH" \
   -d '{
-    "actor":"reviewer@example.com",
+    "agent_id":"opus-1",
     "verdict":"approve",
-    "note":"Great work!"
+    "result":"Code looks good. Well tested and documented."
   }')
-echo "$REVIEW" | jq .
+echo "$VERDICT" | jq .
+echo "(The parent task automatically moves to 'approved' since all reviewers approved)"
 
-echo "=== 11. Transition task to done ==="
+echo "=== 13. Check that parent task is now approved ==="
+PARENT=$(curl -s "$BASE/tasks/$TASK_ID" -H "$AUTH")
+echo "$PARENT" | jq '{state, kind}'
+
+echo "=== 14. Human drains approved lane: merge the PR ==="
+echo "(Human would run: git pull && git merge --ff-only pr/feature && git push)"
+
+echo "=== 15. Human transitions approved task to done ==="
 TASK=$(curl -s -X POST "$BASE/tasks/$TASK_ID/transition" \
   -H "Content-Type: application/json" \
   -H "$AUTH" \
   -d '{"to":"done","note":"Merged to main"}')
 echo "$TASK" | jq .
 
-echo "=== 12. Retrieve final task state ==="
+echo "=== 16. Retrieve final task state ==="
 curl -s "$BASE/tasks/$TASK_ID" -H "$AUTH" | jq .
 ```
 
 **Key Points:**
-1. The first task starts in `backlog` and must be promoted to `ready` before claiming
-2. Claiming is atomic — if you lose the race, `409 CONFLICT` is returned
-3. Agents extend their lease via heartbeat to prevent task expiry
-4. Submitting the task moves it to `review` and records work links (PR, commit, etc.)
-5. Review is posted as an event; the human gate explicitly transitions to `done` via a separate call
-6. The second task `task2` cannot be claimed until `task1` is `done` (due to `depends_on`)
+1. Tasks are created with a `model` field; workers claim by declaring their model (e.g., `haiku`, `opus`)
+2. Claiming is atomic and model-matched — if the model doesn't match, you get `409 MODEL_MISMATCH`
+3. Implement tasks (the default `kind`) transition `in_progress` → `review` → `approved` → `done`
+4. Submitting an implement task auto-spawns review tasks for each required reviewer (default: Opus)
+5. Review tasks are claimed and completed by reviewers submitting verdicts (approve or reject)
+6. When all reviewers of a round approve, the parent moves to `approved`; if any reject, it goes to `ready`
+7. The human gates the final merge: tasks in `approved` are merged and transitioned to `done` by humans
+8. Workers extend their lease via heartbeat to prevent task expiry
+9. Dependencies are enforced at claim time — tasks with undone deps cannot be claimed
+10. The second task `task2` cannot be claimed until `task1` is `done` (due to `depends_on`)
 
 ---
 
@@ -818,10 +959,14 @@ All error responses follow a consistent format:
 - `INVALID_AUTH_FORMAT` (401): Authorization header malformed
 - `INVALID_TOKEN` (401): Token does not match server token
 - `NOT_FOUND` (404): Resource not found
-- `CONFLICT` (409): State transition or constraint violation
+- `CONFLICT` (409): State transition or constraint violation (generic)
+- `MODEL_MISMATCH` (409): Task's model doesn't match declared model on claim
+- `UNKNOWN_MODEL` (400): Model is not in the deployment allowlist (create time)
 - `JSON_DECODE_ERROR` (400): Invalid JSON in request body
 - `EMPTY_<FIELD>` (400): Required field is empty
-- `INVALID_<FIELD>` (400): Field value is invalid
+- `INVALID_<FIELD>` (400): Field value is invalid (e.g., verdict not "approve" or "reject")
+- `FORBIDDEN_VERDICT` (400): Verdict provided for an implement task (forbidden)
+- `MISSING_VERDICT` (400): Verdict missing for a review task (required)
 - `CREATE_ERROR` (500): Server error during creation
 - `GET_ERROR` (500): Server error retrieving resource
 - `LIST_ERROR` (500): Server error listing resources
@@ -829,30 +974,50 @@ All error responses follow a consistent format:
 - `SUBMIT_ERROR` (500): Server error during submit
 - `HEARTBEAT_ERROR` (500): Server error during heartbeat
 - `PROMOTE_ERROR` (500): Server error promoting task
-- `REVIEW_ERROR` (500): Server error recording review
+- `REVIEW_ERROR` (500): Server error recording review (legacy endpoint)
 - `TRANSITION_ERROR` (500): Server error transitioning task
 
 ---
 
 ## State Machine
 
-Tasks follow this state machine:
+Implement tasks follow this state machine:
 
 ```
-backlog ──promote──► ready ──claim──► in_progress ──submit──► review ──approve──► done
-                       ▲                    │                     │
-                       └──── lease expiry ──┘             reject──┘ (→ ready)
+backlog ──promote──► ready ──claim──► in_progress ──submit──► review ──┐
+                       ▲                    │                        │
+                       │                    │      all approve       ▼
+                       │              lease expiry       ┌──────► approved ──human──► done
+                       │                    │           │            │
+                       └────────────────────┴──────────┴ any reject  │
+                                                                     │
+                                           human disagrees ◄────────┘
 
 blocked / failed are off-ramps from any active state.
 ```
 
+**For implement tasks:**
 - `backlog`: Initial state; tasks are not yet ready for work
 - `ready`: Promoted and ready to claim; dependencies met
 - `in_progress`: Claimed by an agent; work is in progress; lease-based crash recovery
-- `review`: Work submitted; awaiting human approval
-- `done`: Approved; task is complete
+- `review`: Work submitted; reviewers are working; auto-spawned review tasks are claimable
+- `approved`: All reviewers approved; awaiting human merge
+- `done`: Approved and merged; task is complete
 - `blocked`: Off-ramp; task cannot proceed (blocked on external dependency)
 - `failed`: Off-ramp; task attempt failed; consider rework or cancellation
+
+**For review tasks** (auto-spawned when parent enters `review`):
+```
+ready ──claim──► in_progress ──submit verdict──► done
+           │                        │
+           └────── lease expiry ────┘
+
+blocked / failed are off-ramps.
+```
+
+- `ready`: Just spawned; claimable by the assigned reviewer model
+- `in_progress`: Reviewer is conducting review; lease prevents concurrent reviews
+- `done`: Verdict submitted; moving to `done` doesn't transition the parent (aggregation does)
 
 ---
 
