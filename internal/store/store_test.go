@@ -2152,6 +2152,458 @@ func TestCreateTasksWithConfiguredAllowlist(t *testing.T) {
 	}
 }
 
+func TestSubmitImplementTaskAutoSpawnsReviewTasks_MultiReviewer(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project, document, and implement task with two reviewers
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implementation task",
+			Spec:         "Implement feature X",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus", "sonnet"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote and claim the task
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Submit the task
+	result := "Implementation complete"
+	links := []LinkInput{{Kind: "pr", Value: "#123"}}
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", result, nil, links)
+	if err != nil {
+		t.Fatalf("failed to submit task: %v", err)
+	}
+
+	// Verify the task is in review and review_round is 1
+	if submitted.State != "review" {
+		t.Errorf("expected state='review', got '%s'", submitted.State)
+	}
+	if submitted.ReviewRound != 1 {
+		t.Errorf("expected review_round=1, got %d", submitted.ReviewRound)
+	}
+
+	// Verify exactly 2 review tasks were created with the correct models
+	reviewTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	reviewTaskModels := []string{}
+	reviewTasksForParent := 0
+	for _, rt := range reviewTasks {
+		if rt.Kind == "review" && rt.TargetTaskID != nil && *rt.TargetTaskID == taskID {
+			reviewTasksForParent++
+			reviewTaskModels = append(reviewTaskModels, rt.Model)
+
+			// Verify the review task properties
+			if rt.State != "ready" {
+				t.Errorf("expected review task state='ready', got '%s'", rt.State)
+			}
+			if rt.ReviewRound != 1 {
+				t.Errorf("expected review task review_round=1, got %d", rt.ReviewRound)
+			}
+		}
+	}
+
+	if reviewTasksForParent != 2 {
+		t.Errorf("expected 2 review tasks, got %d", reviewTasksForParent)
+	}
+
+	// Verify the exact set of models: one opus and one sonnet
+	sort.Strings(reviewTaskModels)
+	expectedModels := []string{"opus", "sonnet"}
+	modelsMatch := len(reviewTaskModels) == 2 && reviewTaskModels[0] == expectedModels[0] && reviewTaskModels[1] == expectedModels[1]
+	if !modelsMatch {
+		t.Errorf("expected review task models to be [opus, sonnet], got %v", reviewTaskModels)
+	}
+
+	// Verify a spawn_review event was recorded
+	events, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+
+	spawnReviewFound := false
+	for _, e := range events {
+		if e.Kind == "spawn_review" {
+			spawnReviewFound = true
+			break
+		}
+	}
+	if !spawnReviewFound {
+		t.Error("expected spawn_review event not found")
+	}
+}
+
+// TestSubmitImplementTaskAutoSpawnsReviewTasks_DefaultSingleOpus tests that submitting
+// an implement task with no reviewers specified creates exactly one Opus review task.
+func TestSubmitImplementTaskAutoSpawnsReviewTasks_DefaultSingleOpus(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project, document, and implement task with no review models specified
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:      "Implementation task",
+			Spec:       "Implement feature Y",
+			DocumentID: doc.ID,
+			Model:      "haiku",
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote and claim the task
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Submit the task
+	result := "Implementation complete"
+	links := []LinkInput{{Kind: "pr", Value: "#456"}}
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", result, nil, links)
+	if err != nil {
+		t.Fatalf("failed to submit task: %v", err)
+	}
+
+	// Verify the task is in review and review_round is 1
+	if submitted.State != "review" {
+		t.Errorf("expected state='review', got '%s'", submitted.State)
+	}
+	if submitted.ReviewRound != 1 {
+		t.Errorf("expected review_round=1, got %d", submitted.ReviewRound)
+	}
+
+	// Verify exactly 1 review task was created with model=opus
+	reviewTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	reviewTaskCount := 0
+	for _, rt := range reviewTasks {
+		if rt.Kind == "review" && rt.TargetTaskID != nil && *rt.TargetTaskID == taskID {
+			reviewTaskCount++
+			if rt.Model != "opus" {
+				t.Errorf("expected default review model to be 'opus', got '%s'", rt.Model)
+			}
+		}
+	}
+
+	if reviewTaskCount != 1 {
+		t.Errorf("expected 1 review task, got %d", reviewTaskCount)
+	}
+}
+
+// TestSubmitImplementTaskResubmitAfterBounce tests that resubmitting after a bounce
+// creates a fresh round and leaves the prior round's review tasks untouched.
+func TestSubmitImplementTaskResubmitAfterBounce(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project, document, and implement task
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implementation task",
+			Spec:         "Implement feature Z",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// First submission cycle
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", taskID)
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("first claim failed: %v", err)
+	}
+
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "First implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
+	if err != nil {
+		t.Fatalf("first submit failed: %v", err)
+	}
+
+	// Get the review task ID from round 1
+	var round1ReviewTaskID string
+	err = store.Conn().QueryRowContext(ctx, `
+		SELECT id FROM task WHERE kind='review' AND target_task_id=? AND review_round=1
+	`, taskID).Scan(&round1ReviewTaskID)
+	if err != nil {
+		t.Fatalf("failed to get round 1 review task: %v", err)
+	}
+
+	// Simulate a bounce back to ready
+	_, err = store.Conn().ExecContext(ctx, `
+		UPDATE task SET state='ready', assignee=NULL, lease_expires_at=NULL WHERE id=?
+	`, taskID)
+	if err != nil {
+		t.Fatalf("failed to bounce task: %v", err)
+	}
+
+	// Second submission cycle (rework)
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("second claim failed: %v", err)
+	}
+
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Fixed implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
+	if err != nil {
+		t.Fatalf("second submit failed: %v", err)
+	}
+
+	// Verify we now have review tasks from both rounds
+	reviewTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	round1Count := 0
+	round2Count := 0
+	for _, rt := range reviewTasks {
+		if rt.Kind == "review" && rt.TargetTaskID != nil && *rt.TargetTaskID == taskID {
+			if rt.ReviewRound == 1 {
+				round1Count++
+			} else if rt.ReviewRound == 2 {
+				round2Count++
+			}
+		}
+	}
+
+	if round1Count != 1 {
+		t.Errorf("expected 1 review task from round 1, got %d", round1Count)
+	}
+	if round2Count != 1 {
+		t.Errorf("expected 1 review task from round 2, got %d", round2Count)
+	}
+
+	// Verify the round 1 review task still exists
+	var stillExists int
+	err = store.Conn().QueryRowContext(ctx, `
+		SELECT COUNT(*) FROM task WHERE id=? AND review_round=1
+	`, round1ReviewTaskID).Scan(&stillExists)
+	if err != nil {
+		t.Fatalf("failed to check round 1 review task: %v", err)
+	}
+	if stillExists != 1 {
+		t.Error("round 1 review task should still exist")
+	}
+}
+
+// TestSubmitTaskIdempotentLinks verifies that submitting a task multiple times with the same
+// links does not create duplicate link rows.
+func TestSubmitTaskIdempotentLinks(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Feature", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create a task
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:      "Test Task",
+			Spec:       "Test spec",
+			DocumentID: doc.ID,
+			Model:      "opus",
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	task := tasks[0]
+
+	// Promote task from backlog to ready
+	task, err = store.PromoteTask(ctx, task.ID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	// Claim the task
+	claimedTask, err := store.ClaimTask(ctx, task.ID, "agent-1", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	if claimedTask.State != "in_progress" {
+		t.Errorf("expected task state 'in_progress', got %s", claimedTask.State)
+	}
+
+	// First submission with PR and branch links
+	links := []LinkInput{
+		{Kind: "pr", Value: "https://github.com/test/repo/pull/123"},
+		{Kind: "branch", Value: "feature/test-branch"},
+	}
+	submittedTask, err := store.SubmitTask(ctx, task.ID, "agent-1", "result of work", nil, links)
+	if err != nil {
+		t.Fatalf("first submit failed: %v", err)
+	}
+	if submittedTask.State != "review" {
+		t.Errorf("expected task state 'review', got %s", submittedTask.State)
+	}
+
+	// Verify we have exactly 2 links after first submission
+	if len(submittedTask.Links) != 2 {
+		t.Errorf("expected 2 links after first submission, got %d", len(submittedTask.Links))
+	}
+
+	// Verify the link values are correct
+	linkMap := make(map[string]string)
+	for _, link := range submittedTask.Links {
+		linkMap[link.Kind] = link.Value
+	}
+	if linkMap["pr"] != "https://github.com/test/repo/pull/123" {
+		t.Errorf("PR link mismatch: got %s", linkMap["pr"])
+	}
+	if linkMap["branch"] != "feature/test-branch" {
+		t.Errorf("branch link mismatch: got %s", linkMap["branch"])
+	}
+
+	// Move task back to in_progress to simulate rework
+	now := nowTimestamp()
+	leaseExpiry := leaseExpiryTimestamp(5 * time.Minute)
+	_, err = store.Conn().ExecContext(ctx, `
+		UPDATE task SET state='in_progress', assignee='agent-1', lease_expires_at=?, updated_at=? WHERE id=?
+	`, leaseExpiry, now, task.ID)
+	if err != nil {
+		t.Fatalf("failed to reset task state: %v", err)
+	}
+
+	// Second submission with same links (testing idempotency)
+	submittedTask2, err := store.SubmitTask(ctx, task.ID, "agent-1", "updated result", nil, links)
+	if err != nil {
+		t.Fatalf("second submit failed: %v", err)
+	}
+
+	// Verify we still have exactly 2 links (not 4)
+	if len(submittedTask2.Links) != 2 {
+		t.Errorf("expected 2 links after second submission with same links, got %d", len(submittedTask2.Links))
+	}
+
+	// Move task back to in_progress again for a third submission with a new link
+	_, err = store.Conn().ExecContext(ctx, `
+		UPDATE task SET state='in_progress', assignee='agent-1', lease_expires_at=?, updated_at=? WHERE id=?
+	`, leaseExpiry, now, task.ID)
+	if err != nil {
+		t.Fatalf("failed to reset task state for third submission: %v", err)
+	}
+
+	// Third submission: same PR/branch links + a new commit link
+	linksWithCommit := []LinkInput{
+		{Kind: "pr", Value: "https://github.com/test/repo/pull/123"},
+		{Kind: "branch", Value: "feature/test-branch"},
+		{Kind: "commit", Value: "abc123def456"},
+	}
+	submittedTask3, err := store.SubmitTask(ctx, task.ID, "agent-1", "result with commit", nil, linksWithCommit)
+	if err != nil {
+		t.Fatalf("third submit failed: %v", err)
+	}
+
+	// Verify we now have exactly 3 links (old PR and branch + new commit)
+	if len(submittedTask3.Links) != 3 {
+		t.Errorf("expected 3 links after adding new commit link, got %d", len(submittedTask3.Links))
+	}
+
+	// Verify all three links are present
+	linkMap = make(map[string]string)
+	for _, link := range submittedTask3.Links {
+		linkMap[link.Kind] = link.Value
+	}
+	if linkMap["pr"] != "https://github.com/test/repo/pull/123" {
+		t.Errorf("PR link missing or wrong: got %s", linkMap["pr"])
+	}
+	if linkMap["branch"] != "feature/test-branch" {
+		t.Errorf("branch link missing or wrong: got %s", linkMap["branch"])
+	}
+	if linkMap["commit"] != "abc123def456" {
+		t.Errorf("commit link missing or wrong: got %s", linkMap["commit"])
+	}
+}
+
 // TestReviewVerdictSubmission verifies review task verdict submission behavior.
 func TestReviewVerdictSubmission(t *testing.T) {
 	ctx := context.Background()
