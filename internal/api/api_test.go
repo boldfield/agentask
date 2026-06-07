@@ -1194,7 +1194,7 @@ func setupClaimedTask(t *testing.T, server *Server, authHeader string) (string, 
 	server.mux.ServeHTTP(promoteW, promoteReq)
 
 	// Claim the task
-	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimPayload := map[string]string{"agent_id": "test-agent", "model": "haiku"}
 	claimBody, _ := json.Marshal(claimPayload)
 	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
 	claimReq.Header.Set("Authorization", authHeader)
@@ -1764,7 +1764,7 @@ func TestSubmitEmptyAgentIDReturns400(t *testing.T) {
 	server.mux.ServeHTTP(promoteW, promoteReq)
 
 	// Claim the task
-	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimPayload := map[string]string{"agent_id": "test-agent", "model": "haiku"}
 	claimBody, _ := json.Marshal(claimPayload)
 	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
 	claimReq.Header.Set("Authorization", authHeader)
@@ -1847,7 +1847,7 @@ func setupTaskInReview(t *testing.T, server *Server, authHeader string) string {
 	server.mux.ServeHTTP(promoteW, promoteReq)
 
 	// Claim the task
-	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimPayload := map[string]string{"agent_id": "test-agent", "model": "haiku"}
 	claimBody, _ := json.Marshal(claimPayload)
 	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
 	claimReq.Header.Set("Authorization", authHeader)
@@ -2040,7 +2040,7 @@ func TestTransitionToReadyFromReviewReturnsToClaimablePool(t *testing.T) {
 	}
 
 	// Verify it can be claimed again
-	claimPayload := map[string]string{"agent_id": "test-agent-2"}
+	claimPayload := map[string]string{"agent_id": "test-agent-2", "model": "haiku"}
 	claimBody, _ := json.Marshal(claimPayload)
 	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
 	claimReq.Header.Set("Authorization", authHeader)
@@ -2189,7 +2189,7 @@ func TestTransitionToBlockedFromActiveStateSucceeds(t *testing.T) {
 	promoteW := httptest.NewRecorder()
 	server.mux.ServeHTTP(promoteW, promoteReq)
 
-	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimPayload := map[string]string{"agent_id": "test-agent", "model": "haiku"}
 	claimBody, _ := json.Marshal(claimPayload)
 	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
 	claimReq.Header.Set("Authorization", authHeader)

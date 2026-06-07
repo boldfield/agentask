@@ -558,7 +558,7 @@ func TestClaimTaskSuccessful(t *testing.T) {
 	// Claim the task
 	agentID := "test-agent"
 	leaseTTL := 5 * time.Minute
-	claimedTask, err := store.ClaimTask(ctx, taskID, agentID, leaseTTL)
+	claimedTask, err := store.ClaimTask(ctx, taskID, agentID, "haiku", leaseTTL)
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
@@ -626,13 +626,13 @@ func TestClaimTaskAlreadyClaimed(t *testing.T) {
 	}
 
 	// Claim the task once
-	_, err = store.ClaimTask(ctx, taskID, "agent-1", 5*time.Minute)
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
 	if err != nil {
 		t.Fatalf("first claim failed: %v", err)
 	}
 
 	// Try to claim it again
-	_, err = store.ClaimTask(ctx, taskID, "agent-2", 5*time.Minute)
+	_, err = store.ClaimTask(ctx, taskID, "agent-2", "haiku", 5*time.Minute)
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("expected ErrConflict on second claim, got %v", err)
 	}
@@ -678,7 +678,7 @@ func TestClaimTaskWithUnfinishedDependency(t *testing.T) {
 	}
 
 	// Try to claim dependent task (should fail because dependency is not done)
-	_, err = store.ClaimTask(ctx, dependentTaskID, "agent-1", 5*time.Minute)
+	_, err = store.ClaimTask(ctx, dependentTaskID, "agent-1", "haiku", 5*time.Minute)
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("expected ErrConflict when dependency is not done, got %v", err)
 	}
@@ -690,7 +690,7 @@ func TestClaimTaskWithUnfinishedDependency(t *testing.T) {
 	}
 
 	// Now claiming should succeed
-	_, err = store.ClaimTask(ctx, dependentTaskID, "agent-1", 5*time.Minute)
+	_, err = store.ClaimTask(ctx, dependentTaskID, "agent-1", "haiku", 5*time.Minute)
 	if err != nil {
 		t.Errorf("claim should succeed after dependency is done, got error: %v", err)
 	}
@@ -707,7 +707,7 @@ func TestClaimTaskNotFound(t *testing.T) {
 	ctx := context.Background()
 
 	// Try to claim a non-existent task
-	_, err = store.ClaimTask(ctx, "non-existent-task", "agent-1", 5*time.Minute)
+	_, err = store.ClaimTask(ctx, "non-existent-task", "agent-1", "haiku", 5*time.Minute)
 	if !errors.Is(err, ErrNotFound) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
@@ -760,7 +760,7 @@ func TestClaimTaskConcurrency(t *testing.T) {
 		go func(index int) {
 			defer wg.Done()
 			agentID := fmt.Sprintf("agent-%d", index)
-			_, err := store.ClaimTask(ctx, taskID, agentID, 5*time.Minute)
+			_, err := store.ClaimTask(ctx, taskID, agentID, "haiku", 5*time.Minute)
 			results[index] = err
 		}(i)
 	}
@@ -840,7 +840,7 @@ func TestClaimTaskExpiredLease(t *testing.T) {
 	}
 
 	// Try to claim the task (should succeed because lease is expired)
-	claimedTask, err := store.ClaimTask(ctx, taskID, "new-agent", 5*time.Minute)
+	claimedTask, err := store.ClaimTask(ctx, taskID, "new-agent", "haiku", 5*time.Minute)
 	if err != nil {
 		t.Errorf("expected to claim task with expired lease, got error: %v", err)
 	}
@@ -848,6 +848,167 @@ func TestClaimTaskExpiredLease(t *testing.T) {
 	// Verify the new agent is now the assignee
 	if claimedTask.Assignee == nil || *claimedTask.Assignee != "new-agent" {
 		t.Errorf("expected assignee='new-agent', got %v", claimedTask.Assignee)
+	}
+}
+
+// TestClaimTaskModelMismatch tests that claiming with a mismatched model returns MODEL_MISMATCH conflict.
+func TestClaimTaskModelMismatch(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project, document, and task with model='sonnet'
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Test spec", DocumentID: doc.ID, Model: "sonnet"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote to ready
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", taskID)
+	if err != nil {
+		t.Fatalf("failed to set task to ready: %v", err)
+	}
+
+	// Try to claim with haiku model (mismatch)
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	var conflictErr *ConflictError
+	if !errors.As(err, &conflictErr) || conflictErr.Code != "MODEL_MISMATCH" {
+		t.Errorf("expected MODEL_MISMATCH conflict, got: %v", err)
+	}
+
+	// Try to claim with sonnet model (match) - should succeed
+	claimedTask, err := store.ClaimTask(ctx, taskID, "agent-2", "sonnet", 5*time.Minute)
+	if err != nil {
+		t.Errorf("expected to claim task with matching model, got error: %v", err)
+	}
+	if claimedTask.State != "in_progress" {
+		t.Errorf("expected state='in_progress', got '%s'", claimedTask.State)
+	}
+}
+
+// TestClaimTaskConcurrencyMixedModels tests concurrency with multiple models,
+// ensuring only matching-model agents can claim.
+func TestClaimTaskConcurrencyMixedModels(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared")
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create two tasks: one sonnet, one haiku
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Sonnet Task", Spec: "Test spec", DocumentID: doc.ID, Model: "sonnet"},
+		{Title: "Haiku Task", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	sonnetTaskID := tasks[0].ID
+	haikuTaskID := tasks[1].ID
+
+	// Promote both to ready
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id IN (?, ?)", "ready", sonnetTaskID, haikuTaskID)
+	if err != nil {
+		t.Fatalf("failed to set tasks to ready: %v", err)
+	}
+
+	// Launch 10 sonnet agents and 10 haiku agents
+	const numPerModel = 10
+	var wg sync.WaitGroup
+
+	sonnetResults := make([]error, numPerModel)
+	haikuResults := make([]error, numPerModel)
+
+	for i := 0; i < numPerModel; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			agentID := fmt.Sprintf("sonnet-agent-%d", index)
+			_, err := store.ClaimTask(ctx, sonnetTaskID, agentID, "sonnet", 5*time.Minute)
+			sonnetResults[index] = err
+		}(i)
+
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			agentID := fmt.Sprintf("haiku-agent-%d", index)
+			_, err := store.ClaimTask(ctx, haikuTaskID, agentID, "haiku", 5*time.Minute)
+			haikuResults[index] = err
+		}(i)
+	}
+
+	wg.Wait()
+
+	// Count successes and conflicts for each model
+	sonnetSuccess := 0
+	sonnetConflict := 0
+	for _, err := range sonnetResults {
+		if err == nil {
+			sonnetSuccess++
+		} else if errors.Is(err, ErrConflict) {
+			sonnetConflict++
+		} else {
+			t.Errorf("unexpected sonnet error: %v", err)
+		}
+	}
+
+	haikuSuccess := 0
+	haikuConflict := 0
+	for _, err := range haikuResults {
+		if err == nil {
+			haikuSuccess++
+		} else if errors.Is(err, ErrConflict) {
+			haikuConflict++
+		} else {
+			t.Errorf("unexpected haiku error: %v", err)
+		}
+	}
+
+	// Exactly one sonnet agent and one haiku agent should succeed
+	if sonnetSuccess != 1 {
+		t.Errorf("expected 1 sonnet success, got %d", sonnetSuccess)
+	}
+	if haikuSuccess != 1 {
+		t.Errorf("expected 1 haiku success, got %d", haikuSuccess)
+	}
+
+	// Rest should get conflicts
+	if sonnetConflict != numPerModel-1 {
+		t.Errorf("expected %d sonnet conflicts, got %d", numPerModel-1, sonnetConflict)
+	}
+	if haikuConflict != numPerModel-1 {
+		t.Errorf("expected %d haiku conflicts, got %d", numPerModel-1, haikuConflict)
 	}
 }
 

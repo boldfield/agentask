@@ -36,7 +36,7 @@ type Store interface {
 	CreateTasks(ctx context.Context, projectID string, tasks []TaskInput) ([]Task, error)
 	GetTask(ctx context.Context, id string) (TaskWithDepsAndLinks, error)
 	ListTasks(ctx context.Context, projectID string, filter TaskListFilter) ([]Task, error)
-	ClaimTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
+	ClaimTask(ctx context.Context, taskID, agentID, model string, leaseTTL time.Duration) (Task, error)
 	HeartbeatTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 	PromoteTask(ctx context.Context, taskID string) (Task, error)
 	SubmitTask(ctx context.Context, taskID, agentID, result string, links []LinkInput) (TaskWithDepsAndLinks, error)
@@ -485,6 +485,24 @@ var ErrNotFound = errors.New("not found")
 // ErrConflict is returned when a constraint is violated (e.g., second design per project).
 var ErrConflict = errors.New("conflict")
 
+// ConflictError is a typed conflict with an error code and message.
+// Handlers map it to HTTP 409 via errors.As.
+type ConflictError struct {
+	Code    string
+	Message string
+}
+
+func (e *ConflictError) Error() string {
+	if e.Message != "" {
+		return e.Message
+	}
+	return e.Code
+}
+
+func conflict(code, message string) error {
+	return &ConflictError{Code: code, Message: message}
+}
+
 // ValidationError is a client-input error. Handlers map it to HTTP 400 via errors.As,
 // surfacing Code and Message. Use invalid() to construct one. This is the validation
 // convention for all mutation endpoints — prefer it over bare fmt.Errorf so the
@@ -917,13 +935,13 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLi
 	}, nil
 }
 
-// claimableSQL is the SQL predicate for the claimable condition, reused by both GetTask and T09's claim.
+// claimableSQL is the SQL predicate for the claimable condition, reused by both ListTasks and ClaimTask.
 // A task is claimable iff:
 // - state = 'ready'
 // - all dependencies are done
 // - no live lease (lease_expires_at IS NULL OR lease_expires_at < now)
-// IMPORTANT: T09 (atomic claim) reuses this exact predicate in its UPDATE statement.
-// If you change this, update both places.
+// IMPORTANT: This predicate is reused in ListTasks and ClaimTask (in UPDATE statement).
+// If you change this, update all usages.
 const claimableSQL = `state = 'ready'
 	AND NOT EXISTS (
 		SELECT 1 FROM task_dep d
@@ -994,11 +1012,13 @@ func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter Ta
 
 // ClaimTask atomically claims a task as in_progress by a given agent.
 // It reuses the claimableSQL predicate to ensure the task is ready, has no unfinished deps,
-// and has no live lease. The claim is a single conditional UPDATE.
+// and has no live lease. The claim also checks that the task's model matches the declared model.
+// The claim is a single conditional UPDATE.
 // Returns the claimed Task on success (rowsAffected == 1).
 // Returns ErrNotFound if the task doesn't exist.
+// Returns MODEL_MISMATCH ConflictError if the task's model doesn't match.
 // Returns ErrConflict if the task is not claimable (already claimed, not ready, unfinished deps, etc).
-func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error) {
+func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID, model string, leaseTTL time.Duration) (Task, error) {
 	tx, err := s.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return Task{}, fmt.Errorf("failed to begin transaction: %w", err)
@@ -1008,12 +1028,12 @@ func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID string, lea
 	now := nowTimestamp()
 	leaseExpiry := leaseExpiryTimestamp(leaseTTL)
 
-	// Single conditional UPDATE reusing claimableSQL
+	// Single conditional UPDATE reusing claimableSQL with additional model check
 	result, err := tx.ExecContext(ctx, `
 		UPDATE task
 		SET state='in_progress', assignee=?, lease_expires_at=?, updated_at=?
-		WHERE id=? AND `+claimableSQL,
-		agentID, leaseExpiry, now, taskID, now)
+		WHERE id=? AND model=? AND `+claimableSQL,
+		agentID, leaseExpiry, now, taskID, model, now)
 	if err != nil {
 		return Task{}, fmt.Errorf("failed to claim task: %w", err)
 	}
@@ -1056,11 +1076,12 @@ func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID string, lea
 		return t, nil
 	}
 
-	// rowsAffected == 0: task was not claimable. Determine the cause for the right error.
+	// rowsAffected == 0: task was not claimed. Determine the cause for the right error.
 	var taskExists bool
-	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) > 0 FROM task WHERE id = ?", taskID).Scan(&taskExists)
-	if err != nil {
-		return Task{}, fmt.Errorf("failed to check task existence: %w", err)
+	var taskModel string
+	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) > 0, COALESCE(model, '') FROM task WHERE id = ? GROUP BY id", taskID).Scan(&taskExists, &taskModel)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return Task{}, fmt.Errorf("failed to check task: %w", err)
 	}
 
 	if !taskExists {
@@ -1069,7 +1090,13 @@ func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID string, lea
 		return Task{}, ErrNotFound
 	}
 
-	// Task exists but not claimable (not ready, unfinished deps, or live lease) -> ErrConflict
+	// Task exists. Check if the model doesn't match.
+	if taskModel != model {
+		tx.Rollback()
+		return Task{}, conflict("MODEL_MISMATCH", fmt.Sprintf("Task model '%s' does not match declared model '%s'", taskModel, model))
+	}
+
+	// Task exists and model matches, but not otherwise claimable (not ready, unfinished deps, or live lease) -> ErrConflict
 	tx.Rollback()
 	return Task{}, ErrConflict
 }
