@@ -483,6 +483,7 @@ type TaskListFilter struct {
 	State     *string
 	Assignee  *string
 	Model     *string
+	Kind      *string
 	Claimable bool
 }
 
@@ -1016,6 +1017,11 @@ func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter Ta
 	if filter.Model != nil {
 		query += ` AND model = ?`
 		args = append(args, *filter.Model)
+	}
+
+	if filter.Kind != nil {
+		query += ` AND kind = ?`
+		args = append(args, *filter.Kind)
 	}
 
 	if filter.Claimable {

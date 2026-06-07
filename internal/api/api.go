@@ -343,6 +343,14 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		filter.Model = &model
 	}
 
+	if kind := r.URL.Query().Get("kind"); kind != "" {
+		if kind != "implement" && kind != "review" {
+			s.errorResponse(w, http.StatusBadRequest, "INVALID_KIND", "kind must be 'implement' or 'review'")
+			return
+		}
+		filter.Kind = &kind
+	}
+
 	if claimable := r.URL.Query().Get("claimable"); claimable == "true" {
 		filter.Claimable = true
 	}
