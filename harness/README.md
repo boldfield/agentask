@@ -23,25 +23,24 @@ graceful stop (finishes the in-flight task; Ctrl-C again to force-quit).
 
 ## Code vs. state
 
-- **Code + prompts** (`agent.sh`, the wrappers, `worker-prompt.md`, `reviewer-prompt.md`) are
-  versioned here. The engine reads the prompt **fresh each dispatch**, so editing it applies to the
-  next task with no restart.
-- **State + config** lives under `$AGENTASK_HOME` (default `~/.agentask`), un-versioned: `env`
-  (URL / token / project), `agents/<slot>.id` (persistent ids), `wt-<slot>` (worktrees). Copy
-  `env.example` → `~/.agentask/env` and fill it in.
+The engine keeps **code** and **state** in separate trees, so they never mix:
 
-## Running from `~/.agentask` (symlinks)
+- **Code + prompts** (`agent.sh`, the wrappers, `worker-prompt.md`, `reviewer-prompt.md`) — versioned
+  *here*, in the repo. The engine finds them via its own location, and reads the prompt **fresh each
+  dispatch**, so editing it applies to the next task with no restart.
+- **State + config** — lives under `$AGENTASK_HOME` (default `~/.agentask`), un-versioned: `env`
+  (URL / token / project), `agents/<slot>.id` (persistent ids), `wt-*` (worktrees), and `repos/`
+  (on-demand repo clones in multi-project mode). Copy `env.example` → `~/.agentask/env` and fill it in.
 
-To keep `cd ~/.agentask && ./worker-haiku.sh …` working, symlink the scripts + prompts to this
-versioned copy (one source of truth, old paths still resolve):
+**Run the scripts straight from the repo — no symlinks.** Because the two trees are independent, you
+invoke the code from `harness/` and it uses `~/.agentask` purely for state:
 
-    cd ~/.agentask
-    for f in agent.sh worker-haiku.sh worker-opus.sh reviewer-opus.sh worker-prompt.md reviewer-prompt.md; do
-      ln -sf "$HOME/projects/agentask/harness/$f" "$f"
-    done
+    cd ~/projects/agentask/harness
+    AGENTASK_PROJECT=all ./worker-haiku.sh haiku-1
 
-This checkout must then stay on a branch that contains `harness/` (i.e. `main` after this merges) —
-otherwise the symlinks dangle.
+(Symlinking the wrappers *into* `~/.agentask` would drop code into the state tree next to `repos/`
+and `wt-*` — don't. If you want to invoke from anywhere, add `harness/` to `PATH` or alias the
+wrappers; `$AGENTASK_HOME` still points the engine at your state.)
 
 ## Project scope: single vs. multi
 
