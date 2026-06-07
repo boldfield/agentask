@@ -3140,3 +3140,123 @@ func TestBoardModel_FailFlow(t *testing.T) {
 		t.Errorf("Expected blocked(0) after fail, got:\n%s", output)
 	}
 }
+
+// TestDetail_ViewportOffsetClamping verifies that initDetailViewport clamps the carried-over
+// YOffset to the new content's valid range, preventing panics when opening a shorter task
+// after scrolling through a longer task.
+func TestDetail_ViewportOffsetClamping(t *testing.T) {
+	shortContent := "Short\nTask"
+	longContent := strings.Repeat("Line\n", 100) // 100-line content
+
+	mockClient := &tuiclient.MockClient{
+		GetTaskFunc: func(ctx context.Context, id string) (tuiclient.TaskDetail, error) {
+			if id == "long-task" {
+				return tuiclient.TaskDetail{
+					ID:        "long-task",
+					Title:     "Long Task",
+					Spec:      longContent,
+					State:     "in_progress",
+					CreatedAt: "2026-01-01T00:00:00Z",
+					UpdatedAt: "2026-01-01T00:00:00Z",
+				}, nil
+			}
+			return tuiclient.TaskDetail{
+				ID:        "short-task",
+				Title:     "Short Task",
+				Spec:      shortContent,
+				State:     "in_progress",
+				CreatedAt: "2026-01-01T00:00:00Z",
+				UpdatedAt: "2026-01-01T00:00:00Z",
+			}, nil
+		},
+		ListDocumentsFunc: func(ctx context.Context, projectID string) ([]tuiclient.Document, error) {
+			return nil, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "test-user",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Set up board tasks.
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range []string{"backlog", "ready", "in_progress", "review", "done"} {
+		bucketed[state] = []tuiclient.Task{}
+	}
+	bucketed["in_progress"] = []tuiclient.Task{
+		{ID: "long-task", Title: "Long Task", State: "in_progress"},
+		{ID: "short-task", Title: "Short Task", State: "in_progress"},
+	}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Open the long task detail.
+	model.selectedTaskID = "long-task"
+	m, detailCmd := model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+	if detailCmd != nil {
+		msg := detailCmd()
+		m, _ = model.Update(msg)
+		model = m.(*BoardModel)
+	}
+
+	// Verify we're in detail mode.
+	if model.mode != modeDetail {
+		t.Fatalf("Expected modeDetail, got %d", model.mode)
+	}
+
+	// Scroll down in the long task to set a large YOffset.
+	for i := 0; i < 10; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model = m.(*BoardModel)
+	}
+	largeOffset := model.detailViewport.YOffset
+	if largeOffset == 0 {
+		t.Fatalf("Expected YOffset > 0 after scrolling, got 0")
+	}
+	t.Logf("Scrolled to offset %d in long task", largeOffset)
+
+	// Go back to board.
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = m.(*BoardModel)
+
+	// Open the short task detail. This should clamp the carried-over YOffset.
+	model.selectedTaskID = "short-task"
+	m, detailCmd = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+	if detailCmd != nil {
+		msg := detailCmd()
+		m, _ = model.Update(msg)
+		model = m.(*BoardModel)
+	}
+
+	// Verify we're in detail mode with the short task.
+	if model.mode != modeDetail {
+		t.Fatalf("Expected modeDetail for short task, got %d", model.mode)
+	}
+
+	// The critical test: verify that the offset is clamped and doesn't exceed the valid range.
+	clampedOffset := model.detailViewport.YOffset
+	maxValidOffset := max(0, model.detailViewport.TotalLineCount()-model.detailViewport.VisibleLineCount())
+	if clampedOffset > maxValidOffset {
+		t.Errorf("YOffset %d exceeds max valid %d for content with %d lines and viewport height %d",
+			clampedOffset, maxValidOffset, model.detailViewport.TotalLineCount(), model.detailViewport.VisibleLineCount())
+	}
+	t.Logf("Clamped offset to %d (max valid: %d)", clampedOffset, maxValidOffset)
+
+	// The final test: render the view without panicking.
+	// This will panic if the slice bounds are out of range.
+	output := model.View()
+	if output == "" {
+		t.Errorf("Expected non-empty view output, got empty")
+	}
+}
