@@ -1079,7 +1079,11 @@ func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID, model stri
 	// rowsAffected == 0: task was not claimed. Determine the cause for the right error.
 	var taskExists bool
 	var taskModel string
-	err = tx.QueryRowContext(ctx, "SELECT COUNT(*) > 0, COALESCE(model, '') FROM task WHERE id = ? GROUP BY id", taskID).Scan(&taskExists, &taskModel)
+	var isOtherwiseClaimable bool
+	err = tx.QueryRowContext(ctx, `
+		SELECT COUNT(*) > 0, COALESCE(model, ''), EXISTS(SELECT 1 FROM task WHERE id = ? AND `+claimableSQL+`)
+		FROM task WHERE id = ?
+	`, taskID, now, taskID).Scan(&taskExists, &taskModel, &isOtherwiseClaimable)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
 		return Task{}, fmt.Errorf("failed to check task: %w", err)
 	}
@@ -1090,13 +1094,13 @@ func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID, model stri
 		return Task{}, ErrNotFound
 	}
 
-	// Task exists. Check if the model doesn't match.
-	if taskModel != model {
+	// Task exists. Check if the model doesn't match and the task is otherwise claimable.
+	if taskModel != model && isOtherwiseClaimable {
 		tx.Rollback()
 		return Task{}, conflict("MODEL_MISMATCH", fmt.Sprintf("Task model '%s' does not match declared model '%s'", taskModel, model))
 	}
 
-	// Task exists and model matches, but not otherwise claimable (not ready, unfinished deps, or live lease) -> ErrConflict
+	// Task exists but is not claimable for some reason (not ready, unfinished deps, live lease, or model mismatch) -> ErrConflict
 	tx.Rollback()
 	return Task{}, ErrConflict
 }

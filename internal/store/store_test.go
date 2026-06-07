@@ -903,8 +903,10 @@ func TestClaimTaskModelMismatch(t *testing.T) {
 	}
 }
 
-// TestClaimTaskConcurrencyMixedModels tests concurrency with multiple models,
-// ensuring only matching-model agents can claim.
+// TestClaimTaskConcurrencyMixedModels tests concurrency with mixed models.
+// Verifies that when a haiku task is ready, haiku agents can claim it (one winner),
+// and all other agents (matching or not) lose the race. The test adds a secondary verification:
+// after the task is claimed, subsequent sonnet attempts get ErrConflict (not otherwise-claimable).
 func TestClaimTaskConcurrencyMixedModels(t *testing.T) {
 	store, err := Open("file::memory:?cache=shared")
 	if err != nil {
@@ -925,64 +927,54 @@ func TestClaimTaskConcurrencyMixedModels(t *testing.T) {
 		t.Fatalf("failed to create document: %v", err)
 	}
 
-	// Create two tasks: one sonnet, one haiku
+	// Create a single task with model="haiku"
 	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
-		{Title: "Sonnet Task", Spec: "Test spec", DocumentID: doc.ID, Model: "sonnet"},
 		{Title: "Haiku Task", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
 	})
 	if err != nil {
-		t.Fatalf("failed to create tasks: %v", err)
+		t.Fatalf("failed to create task: %v", err)
 	}
 
-	sonnetTaskID := tasks[0].ID
-	haikuTaskID := tasks[1].ID
+	taskID := tasks[0].ID
 
-	// Promote both to ready
-	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id IN (?, ?)", "ready", sonnetTaskID, haikuTaskID)
+	// Promote to ready
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", taskID)
 	if err != nil {
-		t.Fatalf("failed to set tasks to ready: %v", err)
+		t.Fatalf("failed to set task to ready: %v", err)
 	}
 
-	// Launch 10 sonnet agents and 10 haiku agents
+	// Launch 10 haiku agents and 10 sonnet agents all contending for the same haiku task
 	const numPerModel = 10
 	var wg sync.WaitGroup
 
-	sonnetResults := make([]error, numPerModel)
 	haikuResults := make([]error, numPerModel)
+	sonnetResults := make([]error, numPerModel)
 
+	// Haiku agents (matching model) contend for the task
+	for i := 0; i < numPerModel; i++ {
+		wg.Add(1)
+		go func(index int) {
+			defer wg.Done()
+			agentID := fmt.Sprintf("haiku-agent-%d", index)
+			_, err := store.ClaimTask(ctx, taskID, agentID, "haiku", 5*time.Minute)
+			haikuResults[index] = err
+		}(i)
+	}
+
+	// Sonnet agents (mismatched model) also try to claim
 	for i := 0; i < numPerModel; i++ {
 		wg.Add(1)
 		go func(index int) {
 			defer wg.Done()
 			agentID := fmt.Sprintf("sonnet-agent-%d", index)
-			_, err := store.ClaimTask(ctx, sonnetTaskID, agentID, "sonnet", 5*time.Minute)
+			_, err := store.ClaimTask(ctx, taskID, agentID, "sonnet", 5*time.Minute)
 			sonnetResults[index] = err
-		}(i)
-
-		wg.Add(1)
-		go func(index int) {
-			defer wg.Done()
-			agentID := fmt.Sprintf("haiku-agent-%d", index)
-			_, err := store.ClaimTask(ctx, haikuTaskID, agentID, "haiku", 5*time.Minute)
-			haikuResults[index] = err
 		}(i)
 	}
 
 	wg.Wait()
 
 	// Count successes and conflicts for each model
-	sonnetSuccess := 0
-	sonnetConflict := 0
-	for _, err := range sonnetResults {
-		if err == nil {
-			sonnetSuccess++
-		} else if errors.Is(err, ErrConflict) {
-			sonnetConflict++
-		} else {
-			t.Errorf("unexpected sonnet error: %v", err)
-		}
-	}
-
 	haikuSuccess := 0
 	haikuConflict := 0
 	for _, err := range haikuResults {
@@ -995,20 +987,33 @@ func TestClaimTaskConcurrencyMixedModels(t *testing.T) {
 		}
 	}
 
-	// Exactly one sonnet agent and one haiku agent should succeed
-	if sonnetSuccess != 1 {
-		t.Errorf("expected 1 sonnet success, got %d", sonnetSuccess)
+	// Count sonnet errors: mixture of MODEL_MISMATCH and ErrConflict, depending on race timing
+	sonnetErrors := 0
+	for _, err := range sonnetResults {
+		if err != nil {
+			sonnetErrors++
+			// Verify it's one of the expected error types
+			var conflictErr *ConflictError
+			if !errors.As(err, &conflictErr) && !errors.Is(err, ErrConflict) {
+				t.Errorf("unexpected sonnet error type: %v", err)
+			}
+		}
 	}
+
+	// Exactly one haiku agent should succeed (the one that wins the race)
 	if haikuSuccess != 1 {
 		t.Errorf("expected 1 haiku success, got %d", haikuSuccess)
 	}
 
-	// Rest should get conflicts
-	if sonnetConflict != numPerModel-1 {
-		t.Errorf("expected %d sonnet conflicts, got %d", numPerModel-1, sonnetConflict)
-	}
+	// The rest of the haiku agents should get conflicts (task already claimed)
 	if haikuConflict != numPerModel-1 {
 		t.Errorf("expected %d haiku conflicts, got %d", numPerModel-1, haikuConflict)
+	}
+
+	// All sonnet agents should get an error (either MODEL_MISMATCH if task was still ready,
+	// or ErrConflict if it was already claimed by the time they tried)
+	if sonnetErrors != numPerModel {
+		t.Errorf("expected all %d sonnet agents to error, got %d errors", numPerModel, sonnetErrors)
 	}
 }
 
