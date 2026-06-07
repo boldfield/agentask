@@ -3350,3 +3350,200 @@ func TestTransitionBlockedToReady(t *testing.T) {
 		t.Errorf("expected ready→done to return ErrConflict, got %v", err)
 	}
 }
+
+// TestListProjectsWithClaimableFilter verifies that ListProjects with filter.Claimable=true
+// returns only projects with at least one claimable task matching the model and kind.
+func TestListProjectsWithClaimableFilter(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Create two projects
+	proj1, err := store.CreateProject(ctx, "project-with-claimable", "https://github.com/example/repo1")
+	if err != nil {
+		t.Fatalf("failed to create project 1: %v", err)
+	}
+
+	proj2, err := store.CreateProject(ctx, "project-blocked-only", "https://github.com/example/repo2")
+	if err != nil {
+		t.Fatalf("failed to create project 2: %v", err)
+	}
+
+	// Create documents for both projects
+	doc1, err := store.CreateDocument(ctx, proj1.ID, "design", "DESIGN.md", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document 1: %v", err)
+	}
+
+	doc2, err := store.CreateDocument(ctx, proj2.ID, "design", "DESIGN.md", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document 2: %v", err)
+	}
+
+	// Create tasks in both projects
+	tasks1, err := store.CreateTasks(ctx, proj1.ID, []TaskInput{
+		{Title: "task1", Spec: "spec1", DocumentID: doc1.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks in project 1: %v", err)
+	}
+
+	tasks2, err := store.CreateTasks(ctx, proj2.ID, []TaskInput{
+		{Title: "task2", Spec: "spec2", DocumentID: doc2.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks in project 2: %v", err)
+	}
+
+	// Promote both tasks to ready
+	_, err = store.PromoteTask(ctx, tasks1[0].ID)
+	if err != nil {
+		t.Fatalf("failed to promote task 1: %v", err)
+	}
+
+	_, err = store.PromoteTask(ctx, tasks2[0].ID)
+	if err != nil {
+		t.Fatalf("failed to promote task 2: %v", err)
+	}
+
+	// Transition task 2 to blocked to exclude it from claimable results
+	_, err = store.TransitionTask(ctx, tasks2[0].ID, "blocked", nil)
+	if err != nil {
+		t.Fatalf("failed to transition task 2 to blocked: %v", err)
+	}
+
+	// List projects with claimable filter
+	filter := ProjectListFilter{Claimable: true, Model: &[]string{"haiku"}[0]}
+	projects, err := store.ListProjects(ctx, filter)
+	if err != nil {
+		t.Fatalf("failed to list projects: %v", err)
+	}
+
+	// Verify only proj1 is returned
+	if len(projects) != 1 {
+		t.Errorf("expected 1 project, got %d", len(projects))
+	}
+	if len(projects) > 0 && projects[0].ID != proj1.ID {
+		t.Errorf("expected project %q, got %q", proj1.ID, projects[0].ID)
+	}
+}
+
+// TestListProjectsClaimableFilterBothModelAndKind verifies that model and kind filters AND-compose.
+func TestListProjectsClaimableFilterBothModelAndKind(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Create a project
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	// Create a document
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "DESIGN.md", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create implement and review tasks
+	taskInputs := []TaskInput{
+		{Title: "implement-task", Spec: "spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "review-task", Spec: "spec", DocumentID: doc.ID, Model: "haiku", ReviewModels: []string{"sonnet"}},
+	}
+	tasks, err := store.CreateTasks(ctx, proj.ID, taskInputs)
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	// Promote both to ready
+	for _, task := range tasks {
+		_, err = store.PromoteTask(ctx, task.ID)
+		if err != nil {
+			t.Fatalf("failed to promote task: %v", err)
+		}
+	}
+
+	// Test 1: Filter for haiku implement - should return project
+	implementKind := "implement"
+	haikuModel := "haiku"
+	filter1 := ProjectListFilter{Claimable: true, Model: &haikuModel, Kind: &implementKind}
+	projects1, err := store.ListProjects(ctx, filter1)
+	if err != nil {
+		t.Fatalf("failed to list projects: %v", err)
+	}
+	if len(projects1) != 1 {
+		t.Errorf("expected 1 project for implement filter, got %d", len(projects1))
+	}
+
+	// Test 2: Filter for haiku review - should return project (review kind isn't created yet in this test, but the filter should work)
+	reviewKind := "review"
+	filter2 := ProjectListFilter{Claimable: true, Model: &haikuModel, Kind: &reviewKind}
+	projects2, err := store.ListProjects(ctx, filter2)
+	if err != nil {
+		t.Fatalf("failed to list projects: %v", err)
+	}
+	// The project should be included if there's a review task (but we only created implement tasks)
+	// In this case, there are no review tasks, so the project should not be returned
+	if len(projects2) != 0 {
+		t.Errorf("expected 0 projects for review filter, got %d (there should be no review tasks)", len(projects2))
+	}
+}
+
+// TestListProjectsWithoutClaimableFilterReturnAll verifies that ListProjects without
+// claimable filter returns all projects regardless of task state.
+func TestListProjectsWithoutClaimableFilterReturnAll(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Create two projects
+	proj1, err := store.CreateProject(ctx, "project1", "https://github.com/example/repo1")
+	if err != nil {
+		t.Fatalf("failed to create project 1: %v", err)
+	}
+
+	proj2, err := store.CreateProject(ctx, "project2", "https://github.com/example/repo2")
+	if err != nil {
+		t.Fatalf("failed to create project 2: %v", err)
+	}
+
+	// List projects without filter
+	filter := ProjectListFilter{}
+	projects, err := store.ListProjects(ctx, filter)
+	if err != nil {
+		t.Fatalf("failed to list projects: %v", err)
+	}
+
+	// Both projects should be returned
+	if len(projects) != 2 {
+		t.Errorf("expected 2 projects without filter, got %d", len(projects))
+	}
+
+	// Verify both projects are in the result
+	foundProj1 := false
+	foundProj2 := false
+	for _, p := range projects {
+		if p.ID == proj1.ID {
+			foundProj1 = true
+		}
+		if p.ID == proj2.ID {
+			foundProj2 = true
+		}
+	}
+	if !foundProj1 {
+		t.Errorf("project 1 not found in result")
+	}
+	if !foundProj2 {
+		t.Errorf("project 2 not found in result")
+	}
+}

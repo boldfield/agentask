@@ -186,9 +186,27 @@ func (s *Server) handleGetProject(w http.ResponseWriter, r *http.Request) {
 	s.encodeJSON(w, http.StatusOK, project)
 }
 
-// handleListProjects handles GET /projects to list all projects.
+// handleListProjects handles GET /projects to list projects with optional filters.
 func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
-	projects, err := s.store.ListProjects(r.Context())
+	filter := store.ProjectListFilter{}
+
+	if claimable := r.URL.Query().Get("claimable"); claimable == "true" {
+		filter.Claimable = true
+	}
+
+	if model := r.URL.Query().Get("model"); model != "" {
+		filter.Model = &model
+	}
+
+	if kind := r.URL.Query().Get("kind"); kind != "" {
+		if kind != "implement" && kind != "review" {
+			s.errorResponse(w, http.StatusBadRequest, "INVALID_KIND", "kind must be 'implement' or 'review'")
+			return
+		}
+		filter.Kind = &kind
+	}
+
+	projects, err := s.store.ListProjects(r.Context(), filter)
 	if err != nil {
 		s.errorResponse(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list projects")
 		return
