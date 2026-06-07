@@ -1194,7 +1194,7 @@ func setupClaimedTask(t *testing.T, server *Server, authHeader string) (string, 
 	server.mux.ServeHTTP(promoteW, promoteReq)
 
 	// Claim the task
-	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimPayload := map[string]string{"agent_id": "test-agent", "model": "haiku"}
 	claimBody, _ := json.Marshal(claimPayload)
 	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
 	claimReq.Header.Set("Authorization", authHeader)
@@ -1764,7 +1764,7 @@ func TestSubmitEmptyAgentIDReturns400(t *testing.T) {
 	server.mux.ServeHTTP(promoteW, promoteReq)
 
 	// Claim the task
-	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimPayload := map[string]string{"agent_id": "test-agent", "model": "haiku"}
 	claimBody, _ := json.Marshal(claimPayload)
 	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
 	claimReq.Header.Set("Authorization", authHeader)
@@ -1847,7 +1847,7 @@ func setupTaskInReview(t *testing.T, server *Server, authHeader string) string {
 	server.mux.ServeHTTP(promoteW, promoteReq)
 
 	// Claim the task
-	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimPayload := map[string]string{"agent_id": "test-agent", "model": "haiku"}
 	claimBody, _ := json.Marshal(claimPayload)
 	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
 	claimReq.Header.Set("Authorization", authHeader)
@@ -2040,7 +2040,7 @@ func TestTransitionToReadyFromReviewReturnsToClaimablePool(t *testing.T) {
 	}
 
 	// Verify it can be claimed again
-	claimPayload := map[string]string{"agent_id": "test-agent-2"}
+	claimPayload := map[string]string{"agent_id": "test-agent-2", "model": "haiku"}
 	claimBody, _ := json.Marshal(claimPayload)
 	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
 	claimReq.Header.Set("Authorization", authHeader)
@@ -2189,7 +2189,7 @@ func TestTransitionToBlockedFromActiveStateSucceeds(t *testing.T) {
 	promoteW := httptest.NewRecorder()
 	server.mux.ServeHTTP(promoteW, promoteReq)
 
-	claimPayload := map[string]string{"agent_id": "test-agent"}
+	claimPayload := map[string]string{"agent_id": "test-agent", "model": "haiku"}
 	claimBody, _ := json.Marshal(claimPayload)
 	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
 	claimReq.Header.Set("Authorization", authHeader)
@@ -2341,5 +2341,177 @@ func TestListProjectsReturnsEmptyArray(t *testing.T) {
 	}
 	if len(respProjects) != 0 {
 		t.Errorf("expected 0 projects, got %d", len(respProjects))
+	}
+}
+
+// TestClaimTaskWithModelMismatchReturns409ModelMismatch tests that claiming a task
+// with a mismatched model returns HTTP 409 with error code MODEL_MISMATCH.
+func TestClaimTaskWithModelMismatchReturns409ModelMismatch(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Create a project and document
+	projPayload := map[string]string{"name": "test-project", "repo": "https://github.com/example/repo"}
+	projBody, _ := json.Marshal(projPayload)
+	projReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(projBody))
+	projReq.Header.Set("Authorization", authHeader)
+	projReq.Header.Set("Content-Type", "application/json")
+	projW := httptest.NewRecorder()
+	server.mux.ServeHTTP(projW, projReq)
+
+	var proj store.Project
+	json.NewDecoder(projW.Body).Decode(&proj)
+
+	// Register a document
+	docPayload := map[string]string{
+		"kind":  "design",
+		"title": "DESIGN.md",
+		"ref":   "DESIGN.md",
+	}
+	docBody, _ := json.Marshal(docPayload)
+	docReq := httptest.NewRequest("POST", "/projects/"+proj.ID+"/documents", bytes.NewReader(docBody))
+	docReq.Header.Set("Authorization", authHeader)
+	docReq.Header.Set("Content-Type", "application/json")
+	docW := httptest.NewRecorder()
+	server.mux.ServeHTTP(docW, docReq)
+
+	var doc store.Document
+	json.NewDecoder(docW.Body).Decode(&doc)
+
+	// Create a task with model="haiku"
+	tasksPayload := []map[string]interface{}{
+		{
+			"title":       "Test Task",
+			"spec":        "Test spec",
+			"document_id": doc.ID,
+			"model":       "haiku",
+		},
+	}
+	tasksBody, _ := json.Marshal(tasksPayload)
+	tasksReq := httptest.NewRequest("POST", "/projects/"+proj.ID+"/tasks", bytes.NewReader(tasksBody))
+	tasksReq.Header.Set("Authorization", authHeader)
+	tasksReq.Header.Set("Content-Type", "application/json")
+	tasksW := httptest.NewRecorder()
+	server.mux.ServeHTTP(tasksW, tasksReq)
+
+	var tasks []store.Task
+	json.NewDecoder(tasksW.Body).Decode(&tasks)
+	taskID := tasks[0].ID
+
+	// Promote the task to ready
+	promoteReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	// Try to claim with mismatched model "sonnet"
+	claimPayload := map[string]string{"agent_id": "test-agent", "model": "sonnet"}
+	claimBody, _ := json.Marshal(claimPayload)
+	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
+	claimReq.Header.Set("Authorization", authHeader)
+	claimReq.Header.Set("Content-Type", "application/json")
+	claimW := httptest.NewRecorder()
+	server.mux.ServeHTTP(claimW, claimReq)
+
+	// Should return 409 Conflict with MODEL_MISMATCH error code
+	if claimW.Code != http.StatusConflict {
+		t.Errorf("expected status 409, got %d", claimW.Code)
+	}
+
+	var errResp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	json.NewDecoder(claimW.Body).Decode(&errResp)
+	if errResp.Error.Code != "MODEL_MISMATCH" {
+		t.Errorf("expected error code MODEL_MISMATCH, got %s", errResp.Error.Code)
+	}
+}
+
+// TestClaimTaskWithEmptyModelReturns400EmptyModel tests that claiming a task
+// with an empty model field returns HTTP 400 with error code EMPTY_MODEL.
+func TestClaimTaskWithEmptyModelReturns400EmptyModel(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Create a project and document
+	projPayload := map[string]string{"name": "test-project", "repo": "https://github.com/example/repo"}
+	projBody, _ := json.Marshal(projPayload)
+	projReq := httptest.NewRequest("POST", "/projects", bytes.NewReader(projBody))
+	projReq.Header.Set("Authorization", authHeader)
+	projReq.Header.Set("Content-Type", "application/json")
+	projW := httptest.NewRecorder()
+	server.mux.ServeHTTP(projW, projReq)
+
+	var proj store.Project
+	json.NewDecoder(projW.Body).Decode(&proj)
+
+	// Register a document
+	docPayload := map[string]string{
+		"kind":  "design",
+		"title": "DESIGN.md",
+		"ref":   "DESIGN.md",
+	}
+	docBody, _ := json.Marshal(docPayload)
+	docReq := httptest.NewRequest("POST", "/projects/"+proj.ID+"/documents", bytes.NewReader(docBody))
+	docReq.Header.Set("Authorization", authHeader)
+	docReq.Header.Set("Content-Type", "application/json")
+	docW := httptest.NewRecorder()
+	server.mux.ServeHTTP(docW, docReq)
+
+	var doc store.Document
+	json.NewDecoder(docW.Body).Decode(&doc)
+
+	// Create a task with model="haiku"
+	tasksPayload := []map[string]interface{}{
+		{
+			"title":       "Test Task",
+			"spec":        "Test spec",
+			"document_id": doc.ID,
+			"model":       "haiku",
+		},
+	}
+	tasksBody, _ := json.Marshal(tasksPayload)
+	tasksReq := httptest.NewRequest("POST", "/projects/"+proj.ID+"/tasks", bytes.NewReader(tasksBody))
+	tasksReq.Header.Set("Authorization", authHeader)
+	tasksReq.Header.Set("Content-Type", "application/json")
+	tasksW := httptest.NewRecorder()
+	server.mux.ServeHTTP(tasksW, tasksReq)
+
+	var tasks []store.Task
+	json.NewDecoder(tasksW.Body).Decode(&tasks)
+	taskID := tasks[0].ID
+
+	// Promote the task to ready
+	promoteReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	// Try to claim with empty model
+	claimPayload := map[string]string{"agent_id": "test-agent", "model": ""}
+	claimBody, _ := json.Marshal(claimPayload)
+	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
+	claimReq.Header.Set("Authorization", authHeader)
+	claimReq.Header.Set("Content-Type", "application/json")
+	claimW := httptest.NewRecorder()
+	server.mux.ServeHTTP(claimW, claimReq)
+
+	// Should return 400 Bad Request with EMPTY_MODEL error code
+	if claimW.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", claimW.Code)
+	}
+
+	var errResp struct {
+		Error struct {
+			Code    string `json:"code"`
+			Message string `json:"message"`
+		} `json:"error"`
+	}
+	json.NewDecoder(claimW.Body).Decode(&errResp)
+	if errResp.Error.Code != "EMPTY_MODEL" {
+		t.Errorf("expected error code EMPTY_MODEL, got %s", errResp.Error.Code)
 	}
 }

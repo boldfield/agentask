@@ -344,6 +344,7 @@ func (s *Server) handleClaimTask(w http.ResponseWriter, r *http.Request) {
 
 	var payload struct {
 		AgentID string `json:"agent_id"`
+		Model   string `json:"model"`
 	}
 
 	if err := s.decodeJSON(w, r, &payload); err != nil {
@@ -356,12 +357,26 @@ func (s *Server) handleClaimTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Validate model is non-empty
+	if payload.Model == "" {
+		s.errorResponse(w, http.StatusBadRequest, "EMPTY_MODEL", "model cannot be empty")
+		return
+	}
+
 	// Claim the task
-	task, err := s.store.ClaimTask(r.Context(), taskID, payload.AgentID, s.leaseTTL)
+	task, err := s.store.ClaimTask(r.Context(), taskID, payload.AgentID, payload.Model, s.leaseTTL)
 	if errors.Is(err, store.ErrNotFound) {
 		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
 		return
 	}
+
+	// Check for ConflictError with specific code
+	var conflictErr *store.ConflictError
+	if errors.As(err, &conflictErr) {
+		s.errorResponse(w, http.StatusConflict, conflictErr.Code, conflictErr.Message)
+		return
+	}
+
 	if errors.Is(err, store.ErrConflict) {
 		s.errorResponse(w, http.StatusConflict, "CONFLICT", "Task is not claimable")
 		return
