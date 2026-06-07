@@ -221,6 +221,15 @@ curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/transition" -d '{"to":"r
 This transitions the task back to `ready`, clears any stale assignee and lease, and allows a worker
 to claim it again.
 
+Alternatively, if a blocked task has become unrecoverable and should not be retried, transition it
+directly to `failed`:
+
+```bash
+curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$TASK_ID/transition" -d '{"to":"failed","note":"dead-end blocker; retiring without retry"}'
+```
+
+This retires the blocked task to terminal state without re-entering the ready queue.
+
 ## Rules
 
 - **One task at a time.** Finish, block, or fail it before touching another.
@@ -248,7 +257,10 @@ backlog ─promote→ ready ─claim→ in_progress ─submit→ review ─(all 
                   ▲ ▲                              │                                       │
                   │ └────── lease expiry ──────────┘            reject ─→ ready    human/agent_merge gate
                   │
-                  └─ blocked →unblock ─ (recoverable off-ramp; clears stale assignee/lease)
+                  └─ blocked ─→ ready (unblock / retry; clears stale assignee/lease)
+                        │
+                        └─→ failed (retire without retry; dead-end blocker)
                   
 blocked / failed are off-ramps from any active state. blocked is recoverable via → ready; done/failed are terminal.
+blocked → failed retires a dead-end blocked task cleanly without re-entering the queue.
 ```
