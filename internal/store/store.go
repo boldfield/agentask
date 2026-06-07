@@ -1347,15 +1347,27 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 	}
 
 	if rowsAffected == 1 {
-		// Submit succeeded. Insert task_link rows.
+		// Submit succeeded. Insert task_link rows (dedup by task_id, kind, value).
 		for _, link := range links {
-			linkID := GenerateID()
-			_, err := tx.ExecContext(ctx, `
-				INSERT INTO task_link (id, task_id, kind, value)
-				VALUES (?, ?, ?, ?)
-			`, linkID, taskID, link.Kind, link.Value)
+			// Check if this link already exists
+			var existingCount int
+			err := tx.QueryRowContext(ctx, `
+				SELECT COUNT(*) FROM task_link WHERE task_id = ? AND kind = ? AND value = ?
+			`, taskID, link.Kind, link.Value).Scan(&existingCount)
 			if err != nil {
-				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to insert link: %w", err)
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to check link existence: %w", err)
+			}
+
+			// Only insert if it doesn't exist
+			if existingCount == 0 {
+				linkID := GenerateID()
+				_, err := tx.ExecContext(ctx, `
+					INSERT INTO task_link (id, task_id, kind, value)
+					VALUES (?, ?, ?, ?)
+				`, linkID, taskID, link.Kind, link.Value)
+				if err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to insert link: %w", err)
+				}
 			}
 		}
 
@@ -1365,7 +1377,7 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append submit event: %w", err)
 		}
 
-		// SELECT the submitted task within the same transaction (reuse GetTask logic)
+		// Fetch the submitted task to check if it's an implement task
 		var t Task
 		var reviewModelsJSON *string
 		err = tx.QueryRowContext(ctx, `
@@ -1382,6 +1394,58 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			if err := json.Unmarshal([]byte(*reviewModelsJSON), &t.ReviewModels); err != nil {
 				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to unmarshal review_models: %w", err)
 			}
+		}
+
+		// If this is an implement task entering review, auto-spawn review tasks
+		if t.Kind == "implement" && t.State == "review" {
+			// Increment review_round
+			newReviewRound := t.ReviewRound + 1
+			_, err := tx.ExecContext(ctx, `
+				UPDATE task SET review_round = ?, updated_at = ? WHERE id = ?
+			`, newReviewRound, now, taskID)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to increment review_round: %w", err)
+			}
+
+			// Determine reviewers (default to ["opus"] if empty)
+			reviewers := t.ReviewModels
+			if len(reviewers) == 0 {
+				reviewers = []string{"opus"}
+			}
+
+			// Create a review task for each reviewer
+			for _, reviewerModel := range reviewers {
+				reviewTaskID := GenerateID()
+				reviewTitle := "Review: " + t.Title + " [" + reviewerModel + "]"
+
+				// Build the spec for the review task: a brief pointing at the parent's PR link
+				reviewSpec := "Review task for: " + t.Title + "\n\n"
+				reviewSpec += "Implementation PR: (see links)\n"
+				if t.Result != nil {
+					reviewSpec += "Submission: " + *t.Result + "\n\n"
+				}
+				reviewSpec += "Please provide approval or rejection with feedback."
+
+				reviewModelsJSON := (*string)(nil) // review tasks don't have review_models
+				_, err := tx.ExecContext(ctx, `
+					INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, review_models, review_round, target_task_id, created_at, updated_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, reviewTaskID, t.ProjectID, t.DocumentID, reviewTitle, reviewSpec, "ready", reviewerModel, "review", reviewModelsJSON, newReviewRound, &t.ID, now, now)
+				if err != nil {
+					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to create review task: %w", err)
+				}
+			}
+
+			// Append spawn_review event on the parent task
+			reviewersList, _ := json.Marshal(reviewers)
+			eventNote := "Round " + fmt.Sprintf("%d", newReviewRound) + " with models: " + string(reviewersList)
+			_, err = s.AppendEvent(ctx, tx, taskID, "system", "spawn_review", nil, &eventNote)
+			if err != nil {
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append spawn_review event: %w", err)
+			}
+
+			// Update t.ReviewRound for the response
+			t.ReviewRound = newReviewRound
 		}
 
 		// Fetch dependencies
