@@ -1347,27 +1347,15 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 	}
 
 	if rowsAffected == 1 {
-		// Submit succeeded. Insert task_link rows (dedup by task_id, kind, value).
+		// Submit succeeded. Insert task_link rows.
 		for _, link := range links {
-			// Check if this link already exists
-			var existingCount int
-			err := tx.QueryRowContext(ctx, `
-				SELECT COUNT(*) FROM task_link WHERE task_id = ? AND kind = ? AND value = ?
-			`, taskID, link.Kind, link.Value).Scan(&existingCount)
+			linkID := GenerateID()
+			_, err := tx.ExecContext(ctx, `
+				INSERT INTO task_link (id, task_id, kind, value)
+				VALUES (?, ?, ?, ?)
+			`, linkID, taskID, link.Kind, link.Value)
 			if err != nil {
-				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to check link existence: %w", err)
-			}
-
-			// Only insert if it doesn't exist
-			if existingCount == 0 {
-				linkID := GenerateID()
-				_, err := tx.ExecContext(ctx, `
-					INSERT INTO task_link (id, task_id, kind, value)
-					VALUES (?, ?, ?, ?)
-				`, linkID, taskID, link.Kind, link.Value)
-				if err != nil {
-					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to insert link: %w", err)
-				}
+				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to insert link: %w", err)
 			}
 		}
 
@@ -1397,14 +1385,23 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 		}
 
 		// If this is an implement task entering review, auto-spawn review tasks
-		if t.Kind == "implement" && t.State == "review" {
+		if t.Kind == "implement" {
 			// Increment review_round
 			newReviewRound := t.ReviewRound + 1
 			_, err := tx.ExecContext(ctx, `
-				UPDATE task SET review_round = ?, updated_at = ? WHERE id = ?
-			`, newReviewRound, now, taskID)
+				UPDATE task SET review_round = ? WHERE id = ?
+			`, newReviewRound, taskID)
 			if err != nil {
 				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to increment review_round: %w", err)
+			}
+
+			// Extract PR link from the submitted links
+			var prLink string
+			for _, link := range links {
+				if link.Kind == "pr" {
+					prLink = link.Value
+					break
+				}
 			}
 
 			// Determine reviewers (default to ["opus"] if empty)
@@ -1418,13 +1415,22 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 				reviewTaskID := GenerateID()
 				reviewTitle := "Review: " + t.Title + " [" + reviewerModel + "]"
 
-				// Build the spec for the review task: a brief pointing at the parent's PR link
-				reviewSpec := "Review task for: " + t.Title + "\n\n"
-				reviewSpec += "Implementation PR: (see links)\n"
-				if t.Result != nil {
-					reviewSpec += "Submission: " + *t.Result + "\n\n"
+				// Build the spec for the review task: a strict-review brief pointing at the parent's PR link
+				reviewSpec := "Review the implementation:\n\n"
+				if prLink != "" {
+					reviewSpec += "Implementation PR: " + prLink + "\n\n"
 				}
-				reviewSpec += "Please provide approval or rejection with feedback."
+				reviewSpec += "Parent task: " + t.ID + "\n\n"
+				reviewSpec += "## Instructions\n\n"
+				reviewSpec += "Examine the submitted implementation and provide approval or rejection with written feedback.\n\n"
+				reviewSpec += "Approve if:\n"
+				reviewSpec += "- The implementation matches the specification\n"
+				reviewSpec += "- The code is correct and follows the project conventions\n"
+				reviewSpec += "- Tests pass and coverage is adequate\n\n"
+				reviewSpec += "Reject if:\n"
+				reviewSpec += "- The implementation has issues or does not match the specification\n"
+				reviewSpec += "- Further work is needed before merging\n\n"
+				reviewSpec += "Provide your verdict: approve or reject"
 
 				reviewModelsJSON := (*string)(nil) // review tasks don't have review_models
 				_, err := tx.ExecContext(ctx, `

@@ -2215,16 +2215,18 @@ func TestSubmitImplementTaskAutoSpawnsReviewTasks_MultiReviewer(t *testing.T) {
 		t.Errorf("expected review_round=1, got %d", submitted.ReviewRound)
 	}
 
-	// Verify exactly 2 review tasks were created
+	// Verify exactly 2 review tasks were created with the correct models
 	reviewTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
 	if err != nil {
 		t.Fatalf("failed to list tasks: %v", err)
 	}
 
+	reviewTaskModels := []string{}
 	reviewTasksForParent := 0
 	for _, rt := range reviewTasks {
 		if rt.Kind == "review" && rt.TargetTaskID != nil && *rt.TargetTaskID == taskID {
 			reviewTasksForParent++
+			reviewTaskModels = append(reviewTaskModels, rt.Model)
 
 			// Verify the review task properties
 			if rt.State != "ready" {
@@ -2233,16 +2235,19 @@ func TestSubmitImplementTaskAutoSpawnsReviewTasks_MultiReviewer(t *testing.T) {
 			if rt.ReviewRound != 1 {
 				t.Errorf("expected review task review_round=1, got %d", rt.ReviewRound)
 			}
-
-			// Verify the model matches one of the reviewers
-			if rt.Model != "opus" && rt.Model != "sonnet" {
-				t.Errorf("expected review task model to be 'opus' or 'sonnet', got '%s'", rt.Model)
-			}
 		}
 	}
 
 	if reviewTasksForParent != 2 {
 		t.Errorf("expected 2 review tasks, got %d", reviewTasksForParent)
+	}
+
+	// Verify the exact set of models: one opus and one sonnet
+	sort.Strings(reviewTaskModels)
+	expectedModels := []string{"opus", "sonnet"}
+	modelsMatch := len(reviewTaskModels) == 2 && reviewTaskModels[0] == expectedModels[0] && reviewTaskModels[1] == expectedModels[1]
+	if !modelsMatch {
+		t.Errorf("expected review task models to be [opus, sonnet], got %v", reviewTaskModels)
 	}
 
 	// Verify a spawn_review event was recorded
