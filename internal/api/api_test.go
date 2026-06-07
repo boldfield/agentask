@@ -1922,33 +1922,24 @@ func TestReviewWithApproveVerdictSucceeds(t *testing.T) {
 	}
 }
 
-// TestTransitionToDoneAfterApproveSucceeds verifies that transition to done succeeds after an approve review.
+// TestTransitionToDoneAfterApproveSucceeds verifies that transition to done succeeds from approved state.
 func TestTransitionToDoneAfterApproveSucceeds(t *testing.T) {
 	server := setupTestServer(t, "test-token")
 	authHeader := "Bearer test-token"
 
 	taskID := setupTaskInReview(t, server, authHeader)
 
-	// Post an approve review
-	reviewPayload := map[string]interface{}{
-		"actor":   "reviewer-1",
-		"verdict": "approve",
-	}
-	reviewBody, _ := json.Marshal(reviewPayload)
-	reviewReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/review", bytes.NewReader(reviewBody))
-	reviewReq.Header.Set("Authorization", authHeader)
-	reviewReq.Header.Set("Content-Type", "application/json")
-	reviewW := httptest.NewRecorder()
-	server.mux.ServeHTTP(reviewW, reviewReq)
-
-	if reviewW.Code != http.StatusCreated {
-		t.Fatalf("failed to post review: got status %d", reviewW.Code)
+	// Manually set task state to approved (simulating MR-9 verdict aggregation)
+	_, err := server.store.Conn().ExecContext(context.Background(),
+		"UPDATE task SET state = ? WHERE id = ?", "approved", taskID)
+	if err != nil {
+		t.Fatalf("failed to set task to approved: %v", err)
 	}
 
-	// Transition to done
+	// Now transition from approved to done
 	transitionPayload := map[string]interface{}{
 		"to":   "done",
-		"note": "Approved and ready to close",
+		"note": "Approved and merged to main",
 	}
 	transitionBody, _ := json.Marshal(transitionPayload)
 	transitionReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/transition", bytes.NewReader(transitionBody))
@@ -1971,14 +1962,14 @@ func TestTransitionToDoneAfterApproveSucceeds(t *testing.T) {
 	}
 }
 
-// TestTransitionToDoneWithoutApproveReturns409 verifies that transition to done fails without an approve event.
+// TestTransitionToDoneFromReviewReturns409 verifies that transition to done from review state is no longer allowed.
 func TestTransitionToDoneWithoutApproveReturns409(t *testing.T) {
 	server := setupTestServer(t, "test-token")
 	authHeader := "Bearer test-token"
 
 	taskID := setupTaskInReview(t, server, authHeader)
 
-	// Try to transition to done WITHOUT any approve review
+	// Try to transition directly from review to done (should fail)
 	transitionPayload := map[string]interface{}{
 		"to": "done",
 	}
@@ -2007,14 +1998,21 @@ func TestTransitionToDoneWithoutApproveReturns409(t *testing.T) {
 	}
 }
 
-// TestTransitionToReadyFromReviewReturnsToClaimablePool verifies that transition to ready from review allows reclaiming.
+// TestTransitionToReadyFromReviewReturnsToClaimablePool verifies that transition to ready from approved allows reclaiming.
 func TestTransitionToReadyFromReviewReturnsToClaimablePool(t *testing.T) {
 	server := setupTestServer(t, "test-token")
 	authHeader := "Bearer test-token"
 
 	taskID := setupTaskInReview(t, server, authHeader)
 
-	// Transition back to ready (kick back for rework)
+	// Manually set task state to approved (simulating MR-9 verdict aggregation)
+	_, err := server.store.Conn().ExecContext(context.Background(),
+		"UPDATE task SET state = ? WHERE id = ?", "approved", taskID)
+	if err != nil {
+		t.Fatalf("failed to set task to approved: %v", err)
+	}
+
+	// Transition back to ready from approved (human overrides approval for rework)
 	transitionPayload := map[string]interface{}{
 		"to":   "ready",
 		"note": "Needs rework",

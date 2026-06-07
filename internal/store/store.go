@@ -1488,32 +1488,21 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 
 	switch to {
 	case "done":
-		// Allowed ONLY from 'review' AND at least one approve event exists
-		if taskState == "review" {
-			// Count approve review events
-			var approveCount int
-			err := tx.QueryRowContext(ctx, `
-				SELECT COUNT(*) FROM event
-				WHERE task_id = ? AND kind = 'review' AND verdict = 'approve'
-			`, taskID).Scan(&approveCount)
-			if err != nil {
-				return Task{}, fmt.Errorf("failed to count approve events: %w", err)
-			}
-			if approveCount > 0 {
-				canTransition = true
-			}
+		// Allowed from 'approved' (being in approved implies a passed review)
+		if taskState == "approved" {
+			canTransition = true
 		}
 
 	case "ready":
-		// Allowed ONLY from 'review'
-		if taskState == "review" {
+		// Allowed from 'approved'
+		if taskState == "approved" {
 			canTransition = true
 		}
 
 	case "blocked", "failed":
-		// Allowed from any active state (backlog, ready, in_progress, review)
+		// Allowed from any active state (backlog, ready, in_progress, review, approved)
 		// Terminal states are done, blocked, failed
-		activeStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true}
+		activeStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true, "approved": true}
 		if activeStates[taskState] {
 			canTransition = true
 		}
