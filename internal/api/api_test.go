@@ -2694,3 +2694,131 @@ func TestClaimTaskWithEmptyModelReturns400EmptyModel(t *testing.T) {
 		t.Errorf("expected error code EMPTY_MODEL, got %s", errResp.Error.Code)
 	}
 }
+
+// TestGetTaskEventsReturnsEmptyArray verifies GET /tasks/{id}/events returns [] for task with no events.
+func TestGetTaskEventsReturnsEmptyArray(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Test Task",
+			Spec:       "Test Spec",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var tasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&tasks)
+	taskID := tasks[0].ID
+
+	// Get events for a task with no events (still in backlog)
+	eventsReq := httptest.NewRequest("GET", "/tasks/"+taskID+"/events", nil)
+	eventsReq.Header.Set("Authorization", authHeader)
+	eventsW := httptest.NewRecorder()
+	server.mux.ServeHTTP(eventsW, eventsReq)
+
+	if eventsW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", eventsW.Code)
+	}
+
+	var events []store.Event
+	if err := json.NewDecoder(eventsW.Body).Decode(&events); err != nil {
+		t.Fatalf("failed to decode events: %v", err)
+	}
+
+	if events == nil {
+		t.Error("expected empty array, got nil")
+	}
+	if len(events) != 0 {
+		t.Errorf("expected 0 events, got %d", len(events))
+	}
+}
+
+// TestGetTaskEventsReturnsChronologicalOrder verifies events are in chronological order.
+func TestGetTaskEventsReturnsChronologicalOrder(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Use the helper to set up a claimed task
+	taskID, _ := setupClaimedTask(t, server, authHeader)
+
+	// Submit the task
+	submitBody, _ := json.Marshal(map[string]interface{}{
+		"agent_id": "test-agent",
+		"result":   "Completed",
+	})
+	submitReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+	if submitW.Code != http.StatusOK {
+		t.Errorf("submit failed with status %d", submitW.Code)
+	}
+
+	// Get events
+	eventsReq := httptest.NewRequest("GET", "/tasks/"+taskID+"/events", nil)
+	eventsReq.Header.Set("Authorization", authHeader)
+	eventsW := httptest.NewRecorder()
+	server.mux.ServeHTTP(eventsW, eventsReq)
+
+	if eventsW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", eventsW.Code)
+	}
+
+	var events []store.Event
+	if err := json.NewDecoder(eventsW.Body).Decode(&events); err != nil {
+		t.Fatalf("failed to decode events: %v", err)
+	}
+
+	if events == nil {
+		t.Error("expected array, got nil")
+	}
+
+	if len(events) < 3 {
+		t.Errorf("expected at least 3 events (promote, claim, submit), got %d", len(events))
+	}
+
+	// Verify chronological order (string comparison works for RFC3339 timestamps)
+	for i := 1; i < len(events); i++ {
+		if events[i].CreatedAt < events[i-1].CreatedAt {
+			t.Errorf("events not in chronological order: event %d (%s) is before event %d (%s)", i, events[i].CreatedAt, i-1, events[i-1].CreatedAt)
+		}
+	}
+
+	// Verify expected event kinds exist
+	kinds := make(map[string]bool)
+	for _, event := range events {
+		kinds[event.Kind] = true
+	}
+
+	expectedKinds := []string{"transition", "claim", "submit"}
+	for _, kind := range expectedKinds {
+		if !kinds[kind] {
+			t.Errorf("expected event kind %q not found", kind)
+		}
+	}
+}
+
+// TestGetTaskEventsRequiresAuth verifies GET /tasks/{id}/events requires authentication.
+func TestGetTaskEventsRequiresAuth(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+
+	eventsReq := httptest.NewRequest("GET", "/tasks/some-id/events", nil)
+	// No Authorization header
+	eventsW := httptest.NewRecorder()
+	server.mux.ServeHTTP(eventsW, eventsReq)
+
+	if eventsW.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", eventsW.Code)
+	}
+}

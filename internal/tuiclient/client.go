@@ -15,6 +15,7 @@ type Client interface {
 	ListProjects(ctx context.Context) ([]Project, error)
 	ListTasks(ctx context.Context, projectID string) ([]Task, error)
 	GetTask(ctx context.Context, id string) (TaskDetail, error)
+	ListEvents(ctx context.Context, taskID string) ([]Event, error)
 	ListDocuments(ctx context.Context, projectID string) ([]Document, error)
 	PromoteTask(ctx context.Context, id string) error
 	ReviewTask(ctx context.Context, id, actor, verdict string, note *string) error
@@ -76,6 +77,16 @@ type Document struct {
 	Commit    *string `json:"commit"`
 	CreatedAt string  `json:"created_at"`
 	UpdatedAt string  `json:"updated_at"`
+}
+
+type Event struct {
+	ID        string  `json:"id"`
+	TaskID    string  `json:"task_id"`
+	Actor     string  `json:"actor"`
+	Kind      string  `json:"kind"`
+	Verdict   *string `json:"verdict"`
+	Note      *string `json:"note"`
+	CreatedAt string  `json:"created_at"`
 }
 
 // HTTPClient implements the Client interface.
@@ -221,6 +232,22 @@ func (c *HTTPClient) GetTask(ctx context.Context, id string) (TaskDetail, error)
 	}
 
 	return task, nil
+}
+
+// ListEvents fetches all events for a task.
+func (c *HTTPClient) ListEvents(ctx context.Context, taskID string) ([]Event, error) {
+	resp, err := c.do(ctx, "GET", fmt.Sprintf("/tasks/%s/events", taskID), nil)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var events []Event
+	if err := json.NewDecoder(resp.Body).Decode(&events); err != nil {
+		return nil, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return events, nil
 }
 
 // ListDocuments fetches all documents for a project.

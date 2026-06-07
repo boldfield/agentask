@@ -14,10 +14,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// detailFetchedMsg carries the result of a GetTask + ListDocuments call for the detail view.
+// detailFetchedMsg carries the result of a GetTask + ListDocuments + ListEvents call for the detail view.
 type detailFetchedMsg struct {
 	task      tuiclient.TaskDetail
 	documents []tuiclient.Document
+	events    []tuiclient.Event
 	err       error
 }
 
@@ -27,7 +28,7 @@ type openerResultMsg struct {
 	message string
 }
 
-// fetchDetailCmd creates a command that fetches full task detail and the project's document list.
+// fetchDetailCmd creates a command that fetches full task detail, the project's document list, and task events.
 func (m *BoardModel) fetchDetailCmd(taskID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -44,7 +45,13 @@ func (m *BoardModel) fetchDetailCmd(taskID string) tea.Cmd {
 			docs = nil
 		}
 
-		return detailFetchedMsg{task: task, documents: docs}
+		events, err := m.client.ListEvents(ctx, taskID)
+		if err != nil {
+			// Non-fatal: we still show the task; event timeline will be empty.
+			events = nil
+		}
+
+		return detailFetchedMsg{task: task, documents: docs, events: events}
 	}
 }
 
@@ -207,6 +214,22 @@ func (m *BoardModel) renderDetailView() string {
 		}
 	}
 
+	// Events timeline
+	if len(m.detailEvents) > 0 {
+		b.WriteString("Events:\n")
+		for _, event := range m.detailEvents {
+			timeStr := m.formatAbsTime(event.CreatedAt)
+			b.WriteString(fmt.Sprintf("  [%s] %s: %s", timeStr, event.Actor, event.Kind))
+			if event.Verdict != nil {
+				b.WriteString(fmt.Sprintf(" (%s)", *event.Verdict))
+			}
+			b.WriteString("\n")
+			if event.Note != nil && *event.Note != "" {
+				b.WriteString(fmt.Sprintf("    %s\n", wrapText(*event.Note, m.width-4)))
+			}
+		}
+	}
+
 	// Result (wrapped to the view width so long summaries are fully readable, not truncated)
 	if task.Result != nil && *task.Result != "" {
 		b.WriteString("Result:\n")
@@ -306,6 +329,9 @@ func (m *BoardModel) renderDetailHelpBar() string {
 	if m.detailTask.State == stateReview {
 		base += "   a approve   x reject"
 	}
+	if m.detailTask.State == stateApproved {
+		base += "   m merge & complete"
+	}
 	return base
 }
 
@@ -327,4 +353,20 @@ func defaultURLOpener(rawURL string) error {
 	}
 
 	return fmt.Errorf("no browser found: set $BROWSER or install xdg-open")
+}
+
+// defaultGHMerger merges a PR via `gh pr merge <prURL> --squash`.
+// Returns an error if gh is not found or the merge fails.
+func defaultGHMerger(ctx context.Context, prURL string) error {
+	if _, err := exec.LookPath("gh"); err != nil {
+		return fmt.Errorf("gh command not found: install GitHub CLI (https://cli.github.com)")
+	}
+
+	// Run gh pr merge with the PR URL and squash flag.
+	// The PR URL is expected to be in the form "owner/repo#PR_NUMBER" or a full GitHub URL.
+	cmd := exec.CommandContext(ctx, "gh", "pr", "merge", prURL, "--squash")
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("gh pr merge failed: %w", err)
+	}
+	return nil
 }

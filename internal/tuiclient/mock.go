@@ -9,6 +9,7 @@ type MockClient struct {
 	ListProjectsFunc   func(ctx context.Context) ([]Project, error)
 	ListTasksFunc      func(ctx context.Context, projectID string) ([]Task, error)
 	GetTaskFunc        func(ctx context.Context, id string) (TaskDetail, error)
+	ListEventsFunc     func(ctx context.Context, taskID string) ([]Event, error)
 	ListDocumentsFunc  func(ctx context.Context, projectID string) ([]Document, error)
 	PromoteTaskFunc    func(ctx context.Context, id string) error
 	ReviewTaskFunc     func(ctx context.Context, id, actor, verdict string, note *string) error
@@ -32,6 +33,13 @@ func (m *MockClient) GetTask(ctx context.Context, id string) (TaskDetail, error)
 		return m.GetTaskFunc(ctx, id)
 	}
 	return TaskDetail{}, nil
+}
+
+func (m *MockClient) ListEvents(ctx context.Context, taskID string) ([]Event, error) {
+	if m.ListEventsFunc != nil {
+		return m.ListEventsFunc(ctx, taskID)
+	}
+	return nil, nil
 }
 
 func (m *MockClient) ListDocuments(ctx context.Context, projectID string) ([]Document, error) {

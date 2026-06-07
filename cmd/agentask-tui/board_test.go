@@ -2373,7 +2373,7 @@ func TestBoardModel_ReviewHelpBar(t *testing.T) {
 	model = m.(*BoardModel)
 
 	bucketed := make(map[string][]tuiclient.Task)
-	for _, s := range []string{"backlog", "ready", "in_progress", "done"} {
+	for _, s := range []string{"backlog", "ready", "in_progress", "review", "approved", "done"} {
 		bucketed[s] = []tuiclient.Task{}
 	}
 	bucketed["review"] = []tuiclient.Task{{ID: "r1", Title: "R1", State: "review"}}
