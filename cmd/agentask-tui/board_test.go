@@ -3044,3 +3044,99 @@ func TestBoardModel_UnblockFlow(t *testing.T) {
 		t.Errorf("Expected ready(1) after unblock, got:\n%s", output)
 	}
 }
+
+// TestBoardModel_FailFlow tests the full fail flow with an optional note.
+func TestBoardModel_FailFlow(t *testing.T) {
+	var callLog []string
+	var capturedTransitionID, capturedTransitionTo string
+	var capturedTransitionNote *string
+
+	mockClient := &tuiclient.MockClient{
+		TransitionTaskFunc: func(ctx context.Context, id, to string, note *string) error {
+			callLog = append(callLog, "transition")
+			capturedTransitionID = id
+			capturedTransitionTo = to
+			capturedTransitionNote = note
+			return nil
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			callLog = append(callLog, "refetch")
+			// After fail, the task should be in failed.
+			return []tuiclient.Task{
+				{ID: "blocked-task-1", Title: "Blocked Task", State: "failed"},
+			}, nil
+		},
+	}
+
+	model := buildBlockedModel(t, mockClient)
+
+	// Press 'f' to start fail flow.
+	m, _ := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeFailNote {
+		t.Fatalf("Expected modeFailNote after 'f', got mode %d", model.mode)
+	}
+
+	// Type a note.
+	for _, ch := range "Unresolvable" {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		model = m.(*BoardModel)
+	}
+
+	// Press enter to advance to confirm step.
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+
+	if model.mode != modeFailConfirm {
+		t.Fatalf("Expected modeFailConfirm after enter, got mode %d", model.mode)
+	}
+
+	// Verify the render output contains the confirm prompt (non-empty).
+	output := model.View()
+	if output == "" {
+		t.Errorf("Expected non-empty render output in modeFailConfirm, got blank")
+	}
+	if !strings.Contains(output, "→ failed?") {
+		t.Errorf("Expected confirm prompt in view, got:\n%s", output)
+	}
+
+	// Press 'y' to confirm.
+	m, failCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after confirm, got mode %d", model.mode)
+	}
+
+	// Execute the fail command (runs TransitionTask then refetch inline).
+	model = executeReviewCmd(t, model, failCmd)
+
+	// Verify call order: transition → refetch.
+	if len(callLog) != 2 {
+		t.Fatalf("Expected 2 calls (transition, refetch), got %d: %v", len(callLog), callLog)
+	}
+	if callLog[0] != "transition" {
+		t.Errorf("Expected first call to be 'transition', got %q", callLog[0])
+	}
+	if callLog[1] != "refetch" {
+		t.Errorf("Expected second call to be 'refetch', got %q", callLog[1])
+	}
+
+	// Verify TransitionTask arguments.
+	if capturedTransitionID != "blocked-task-1" {
+		t.Errorf("TransitionTask: expected task ID blocked-task-1, got %q", capturedTransitionID)
+	}
+	if capturedTransitionTo != "failed" {
+		t.Errorf("TransitionTask: expected to=failed, got %q", capturedTransitionTo)
+	}
+	if capturedTransitionNote == nil || *capturedTransitionNote != "Unresolvable" {
+		t.Errorf("TransitionTask: expected note 'Unresolvable', got %v", capturedTransitionNote)
+	}
+
+	// Board should now show the task in failed (not visible in blocked column anymore).
+	output = model.View()
+	if !strings.Contains(output, "blocked(0)") {
+		t.Errorf("Expected blocked(0) after fail, got:\n%s", output)
+	}
+}

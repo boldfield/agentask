@@ -44,6 +44,10 @@ const (
 	modeUnblockNote
 	// modeUnblockConfirm is the "Unblock → ready? [y/N]" confirmation step.
 	modeUnblockConfirm
+	// modeFailNote is the optional note input step for a fail action.
+	modeFailNote
+	// modeFailConfirm is the "Fail → failed? [y/N]" confirmation step.
+	modeFailConfirm
 )
 
 // BoardModel is the Bubble Tea model for the task board view.
@@ -350,6 +354,30 @@ func (m *BoardModel) unblockCmd(taskID string, note *string, fromDetail bool) te
 				return msg
 			}
 			msg := m.fetchTasksInline(ctx, fmt.Sprintf("unblock transition failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
+		}
+
+		msg := m.fetchTasksInline(ctx, "")
+		msg.fromDetail = fromDetail
+		return msg
+	}
+}
+
+func (m *BoardModel) failCmd(taskID string, note *string, fromDetail bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Transition directly without recording a review verdict.
+		if err := m.client.TransitionTask(ctx, taskID, "failed", note); err != nil {
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+				msg := m.fetchTasksInline(ctx, fmt.Sprintf("fail transition 409: %s", apiErr.Message))
+				msg.fromDetail = fromDetail
+				return msg
+			}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("fail transition failed: %v", err))
 			msg.fromDetail = fromDetail
 			return msg
 		}
@@ -684,6 +712,19 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.reviewInput.Focus()
 				m.inputHint = ""
 				m.mode = modeUnblockNote
+				var cmd tea.Cmd
+				m.reviewInput, cmd = m.reviewInput.Update(nil)
+				return m, cmd
+			}
+
+		case "f":
+			if m.selectedColumn == 6 && m.selectedTaskID != "" {
+				m.pendingTaskID = m.selectedTaskID
+				m.reviewInput.Placeholder = "optional note (enter to skip)"
+				m.reviewInput.SetValue("")
+				m.reviewInput.Focus()
+				m.inputHint = ""
+				m.mode = modeFailNote
 				var cmd tea.Cmd
 				m.reviewInput, cmd = m.reviewInput.Update(nil)
 				return m, cmd
@@ -1099,6 +1140,46 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Ignore all other keys in confirm mode.
 		return m, nil
+
+	case modeFailNote:
+		switch msg.String() {
+		case "esc":
+			// Cancel the fail action entirely.
+			m.cancelReviewMode()
+			return m, nil
+		case "enter":
+			// Capture the note (nil if empty), then move to confirm step.
+			noteValue := strings.TrimSpace(m.reviewInput.Value())
+			if noteValue == "" {
+				m.pendingNote = nil
+			} else {
+				m.pendingNote = &noteValue
+			}
+			m.mode = modeFailConfirm
+			return m, nil
+		default:
+			// Pass the key to the text input.
+			var cmd tea.Cmd
+			m.reviewInput, cmd = m.reviewInput.Update(msg)
+			return m, cmd
+		}
+
+	case modeFailConfirm:
+		switch msg.String() {
+		case "esc", "n", "N":
+			// User declined or pressed escape — cancel.
+			m.cancelReviewMode()
+			return m, nil
+		case "y", "Y":
+			// Capture origin before cancelReviewMode clears it.
+			taskID := m.pendingTaskID
+			note := m.pendingNote
+			originFromDetail := m.reviewFromDetail
+			m.cancelReviewMode()
+			return m, m.failCmd(taskID, note, originFromDetail)
+		}
+		// Ignore all other keys in confirm mode.
+		return m, nil
 	}
 
 	return m, nil
@@ -1272,6 +1353,18 @@ func (m *BoardModel) renderReviewOverlay() string {
 		}
 		b.WriteString(fmt.Sprintf("Unblock %s → ready? [y/N] ", taskID))
 		b.WriteString("(y to confirm, n/esc to cancel)\n")
+	case modeFailNote:
+		b.WriteString("Fail — add an optional note:\n")
+		b.WriteString(m.reviewInput.View())
+		b.WriteString("\n")
+		b.WriteString("(enter to continue, esc to cancel)\n")
+	case modeFailConfirm:
+		taskID := m.pendingTaskID
+		if len(taskID) > 8 {
+			taskID = taskID[:8]
+		}
+		b.WriteString(fmt.Sprintf("Fail %s → failed? [y/N] ", taskID))
+		b.WriteString("(failed is terminal, y to confirm, n/esc to cancel)\n")
 	}
 	return b.String()
 }
@@ -1441,7 +1534,7 @@ func (m *BoardModel) renderHelpBar() string {
 	case 4: // approved
 		return "←/→ column   ↑/↓ select   enter detail   b bounce   P switch project   r refresh   q quit"
 	case 6: // blocked
-		return "←/→ column   ↑/↓ select   enter detail   u unblock   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   u unblock   f fail   P switch project   r refresh   q quit"
 	default:
 		return "←/→ column   ↑/↓ select   enter detail   P switch project   r refresh   q quit"
 	}
