@@ -2202,7 +2202,7 @@ func TestSubmitImplementTaskAutoSpawnsReviewTasks_MultiReviewer(t *testing.T) {
 	// Submit the task
 	result := "Implementation complete"
 	links := []LinkInput{{Kind: "pr", Value: "#123"}}
-	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", result, links)
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", result, nil, links)
 	if err != nil {
 		t.Fatalf("failed to submit task: %v", err)
 	}
@@ -2317,7 +2317,7 @@ func TestSubmitImplementTaskAutoSpawnsReviewTasks_DefaultSingleOpus(t *testing.T
 	// Submit the task
 	result := "Implementation complete"
 	links := []LinkInput{{Kind: "pr", Value: "#456"}}
-	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", result, links)
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", result, nil, links)
 	if err != nil {
 		t.Fatalf("failed to submit task: %v", err)
 	}
@@ -2394,7 +2394,7 @@ func TestSubmitImplementTaskResubmitAfterBounce(t *testing.T) {
 		t.Fatalf("first claim failed: %v", err)
 	}
 
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "First implementation", []LinkInput{{Kind: "pr", Value: "#100"}})
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "First implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
 	if err != nil {
 		t.Fatalf("first submit failed: %v", err)
 	}
@@ -2422,7 +2422,7 @@ func TestSubmitImplementTaskResubmitAfterBounce(t *testing.T) {
 		t.Fatalf("second claim failed: %v", err)
 	}
 
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Fixed implementation", []LinkInput{{Kind: "pr", Value: "#100"}})
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Fixed implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
 	if err != nil {
 		t.Fatalf("second submit failed: %v", err)
 	}
@@ -2520,7 +2520,7 @@ func TestSubmitTaskIdempotentLinks(t *testing.T) {
 		{Kind: "pr", Value: "https://github.com/test/repo/pull/123"},
 		{Kind: "branch", Value: "feature/test-branch"},
 	}
-	submittedTask, err := store.SubmitTask(ctx, task.ID, "agent-1", "result of work", links)
+	submittedTask, err := store.SubmitTask(ctx, task.ID, "agent-1", "result of work", nil, links)
 	if err != nil {
 		t.Fatalf("first submit failed: %v", err)
 	}
@@ -2556,7 +2556,7 @@ func TestSubmitTaskIdempotentLinks(t *testing.T) {
 	}
 
 	// Second submission with same links (testing idempotency)
-	submittedTask2, err := store.SubmitTask(ctx, task.ID, "agent-1", "updated result", links)
+	submittedTask2, err := store.SubmitTask(ctx, task.ID, "agent-1", "updated result", nil, links)
 	if err != nil {
 		t.Fatalf("second submit failed: %v", err)
 	}
@@ -2580,7 +2580,7 @@ func TestSubmitTaskIdempotentLinks(t *testing.T) {
 		{Kind: "branch", Value: "feature/test-branch"},
 		{Kind: "commit", Value: "abc123def456"},
 	}
-	submittedTask3, err := store.SubmitTask(ctx, task.ID, "agent-1", "result with commit", linksWithCommit)
+	submittedTask3, err := store.SubmitTask(ctx, task.ID, "agent-1", "result with commit", nil, linksWithCommit)
 	if err != nil {
 		t.Fatalf("third submit failed: %v", err)
 	}
@@ -2603,5 +2603,358 @@ func TestSubmitTaskIdempotentLinks(t *testing.T) {
 	}
 	if linkMap["commit"] != "abc123def456" {
 		t.Errorf("commit link missing or wrong: got %s", linkMap["commit"])
+	}
+}
+
+// TestSubmitReviewTaskWithVerdictApprove tests submitting a review task with approve verdict.
+func TestSubmitReviewTaskWithVerdictApprove(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create project, doc, implement task, claim it, and submit to review
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create implement task
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote, claim, and submit the implement task
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Verify review task was created
+	if submitted.ReviewRound != 1 {
+		t.Errorf("expected review_round=1, got %d", submitted.ReviewRound)
+	}
+
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("review task not found")
+	}
+
+	// Claim and submit the review task with approve verdict (review tasks are already in ready state)
+	_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+
+	approve := "approve"
+	reviewResult, err := store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{})
+	if err != nil {
+		t.Fatalf("failed to submit review task with verdict: %v", err)
+	}
+
+	// Verify review task is in done state with verdict stored
+	if reviewResult.State != "done" {
+		t.Errorf("expected review task state='done', got '%s'", reviewResult.State)
+	}
+	if reviewResult.Verdict == nil || *reviewResult.Verdict != "approve" {
+		t.Errorf("expected verdict='approve', got %v", reviewResult.Verdict)
+	}
+
+	// Verify a review event was appended on the parent task
+	events, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+
+	var reviewEvent *Event
+	for i := range events {
+		if events[i].Kind == "review" {
+			reviewEvent = &events[i]
+			break
+		}
+	}
+	if reviewEvent == nil {
+		t.Fatalf("review event not found on parent task")
+	}
+	if reviewEvent.Verdict == nil || *reviewEvent.Verdict != "approve" {
+		t.Errorf("expected review event verdict='approve', got %v", reviewEvent.Verdict)
+	}
+
+	// Verify parent task is still in review state
+	parentTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "review" {
+		t.Errorf("expected parent task state='review', got '%s'", parentTask.State)
+	}
+}
+
+// TestSubmitReviewTaskWithVerdictReject tests submitting a review task with reject verdict.
+func TestSubmitReviewTaskWithVerdictReject(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create project, doc, implement task, claim it, and submit to review
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Get the review task
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("review task not found")
+	}
+
+	// Claim and submit review task with reject verdict (review tasks are already in ready state)
+	_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+
+	reject := "reject"
+	reviewResult, err := store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{})
+	if err != nil {
+		t.Fatalf("failed to submit review task with verdict: %v", err)
+	}
+
+	// Verify review task is in done state with verdict stored
+	if reviewResult.State != "done" {
+		t.Errorf("expected review task state='done', got '%s'", reviewResult.State)
+	}
+	if reviewResult.Verdict == nil || *reviewResult.Verdict != "reject" {
+		t.Errorf("expected verdict='reject', got %v", reviewResult.Verdict)
+	}
+
+	// Verify parent task is still in review state (aggregation happens in MR-9)
+	parentTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "review" {
+		t.Errorf("expected parent task state='review', got '%s'", parentTask.State)
+	}
+}
+
+// TestSubmitImplementTaskRejectsVerdict tests that submitting an implement task with a verdict is rejected.
+func TestSubmitImplementTaskRejectsVerdict(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:      "Implement feature",
+			Spec:       "Do the thing",
+			DocumentID: doc.ID,
+			Model:      "haiku",
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Try to submit an implement task with a verdict - should be rejected
+	approve := "approve"
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", &approve, []LinkInput{{Kind: "pr", Value: "#100"}})
+	if err == nil {
+		t.Fatalf("expected error when submitting implement task with verdict")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Code != "FORBIDDEN_VERDICT" {
+		t.Errorf("expected FORBIDDEN_VERDICT validation error, got: %v", err)
+	}
+}
+
+// TestSubmitReviewTaskWithoutVerdictRejected tests that submitting a review task without a verdict is rejected.
+func TestSubmitReviewTaskWithoutVerdictRejected(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Get the review task
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("review task not found")
+	}
+
+	// Claim the review task (review tasks are already in ready state)
+	_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+
+	// Try to submit a review task without a verdict - should be rejected
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Reviewed", nil, []LinkInput{})
+	if err == nil {
+		t.Fatalf("expected error when submitting review task without verdict")
+	}
+
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Code != "MISSING_VERDICT" {
+		t.Errorf("expected MISSING_VERDICT validation error, got: %v", err)
 	}
 }
