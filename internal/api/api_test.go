@@ -1021,6 +1021,299 @@ func TestListTasksWithModelAndClaimableFilters(t *testing.T) {
 	}
 }
 
+// TestListTasksWithKindFilter verifies that the kind filter works.
+func TestListTasksWithKindFilter(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create tasks (all default to implement kind)
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Implement Task 1",
+			Spec:       "Spec 1",
+			DocumentID: docID,
+		},
+		{
+			Title:      "Implement Task 2",
+			Spec:       "Spec 2",
+			DocumentID: docID,
+		},
+		{
+			Title:      "Task to be Review",
+			Spec:       "Spec 3",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	if createW.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d", createW.Code)
+	}
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+
+	// Manually convert one task to review kind
+	conn := server.store.Conn()
+	reviewTaskID := createdTasks[2].ID
+	_, err := conn.ExecContext(context.Background(), "UPDATE task SET kind = 'review' WHERE id = ?", reviewTaskID)
+	if err != nil {
+		t.Fatalf("failed to set task to review kind: %v", err)
+	}
+
+	// List with kind=implement filter
+	listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?kind=implement", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var tasks []store.Task
+	if err := json.NewDecoder(listW.Body).Decode(&tasks); err != nil {
+		t.Fatalf("failed to decode tasks: %v", err)
+	}
+
+	if len(tasks) != 2 {
+		t.Errorf("expected 2 implement tasks, got %d", len(tasks))
+	}
+
+	for _, task := range tasks {
+		if task.Kind != "implement" {
+			t.Errorf("expected kind 'implement', got %q", task.Kind)
+		}
+	}
+
+	// List with kind=review filter
+	listReq2 := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?kind=review", nil)
+	listReq2.Header.Set("Authorization", authHeader)
+	listW2 := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW2, listReq2)
+
+	var reviewTasks []store.Task
+	if err := json.NewDecoder(listW2.Body).Decode(&reviewTasks); err != nil {
+		t.Fatalf("failed to decode tasks: %v", err)
+	}
+
+	if len(reviewTasks) != 1 {
+		t.Errorf("expected 1 review task, got %d", len(reviewTasks))
+	}
+
+	if reviewTasks[0].Kind != "review" {
+		t.Errorf("expected kind 'review', got %q", reviewTasks[0].Kind)
+	}
+}
+
+// TestListTasksWithKindAndModelFilters verifies that kind and model filters compose (AND).
+func TestListTasksWithKindAndModelFilters(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create tasks with different models
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Opus Implement Task",
+			Spec:       "Spec 1",
+			DocumentID: docID,
+			Model:      "opus",
+		},
+		{
+			Title:      "Opus Task to be Review",
+			Spec:       "Spec 2",
+			DocumentID: docID,
+			Model:      "opus",
+		},
+		{
+			Title:      "Haiku Implement Task",
+			Spec:       "Spec 3",
+			DocumentID: docID,
+			Model:      "haiku",
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	if createW.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d", createW.Code)
+	}
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+
+	// Manually convert one opus task to review kind
+	conn := server.store.Conn()
+	reviewTaskID := createdTasks[1].ID
+	_, err := conn.ExecContext(context.Background(), "UPDATE task SET kind = 'review' WHERE id = ?", reviewTaskID)
+	if err != nil {
+		t.Fatalf("failed to set task to review kind: %v", err)
+	}
+
+	// List with model=opus and kind=review (should return only 1 task)
+	listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?model=opus&kind=review", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var tasks []store.Task
+	if err := json.NewDecoder(listW.Body).Decode(&tasks); err != nil {
+		t.Fatalf("failed to decode tasks: %v", err)
+	}
+
+	if len(tasks) != 1 {
+		t.Errorf("expected 1 task (opus review), got %d", len(tasks))
+	}
+
+	if tasks[0].Model != "opus" || tasks[0].Kind != "review" {
+		t.Errorf("expected model='opus' and kind='review', got model=%q, kind=%q", tasks[0].Model, tasks[0].Kind)
+	}
+
+	// List with model=opus (no kind filter) - should return 2 opus tasks of any kind
+	listReq2 := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?model=opus", nil)
+	listReq2.Header.Set("Authorization", authHeader)
+	listW2 := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW2, listReq2)
+
+	var opusTasks []store.Task
+	if err := json.NewDecoder(listW2.Body).Decode(&opusTasks); err != nil {
+		t.Fatalf("failed to decode tasks: %v", err)
+	}
+
+	if len(opusTasks) != 2 {
+		t.Errorf("expected 2 opus tasks (no kind filter), got %d", len(opusTasks))
+	}
+}
+
+// TestListTasksNoKindFilter verifies that omitting kind returns all kinds (unchanged behavior).
+func TestListTasksNoKindFilter(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create tasks (all default to implement kind)
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Implement Task",
+			Spec:       "Spec 1",
+			DocumentID: docID,
+		},
+		{
+			Title:      "Task to be Review",
+			Spec:       "Spec 2",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	if createW.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d", createW.Code)
+	}
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+
+	// Manually convert one task to review kind
+	conn := server.store.Conn()
+	reviewTaskID := createdTasks[1].ID
+	_, err := conn.ExecContext(context.Background(), "UPDATE task SET kind = 'review' WHERE id = ?", reviewTaskID)
+	if err != nil {
+		t.Fatalf("failed to set task to review kind: %v", err)
+	}
+
+	// List without kind filter - should return both tasks
+	listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var tasks []store.Task
+	if err := json.NewDecoder(listW.Body).Decode(&tasks); err != nil {
+		t.Fatalf("failed to decode tasks: %v", err)
+	}
+
+	if len(tasks) != 2 {
+		t.Errorf("expected 2 tasks (no kind filter), got %d", len(tasks))
+	}
+
+	// Verify we got both kinds
+	foundImplement := false
+	foundReview := false
+	for _, task := range tasks {
+		if task.Kind == "implement" {
+			foundImplement = true
+		}
+		if task.Kind == "review" {
+			foundReview = true
+		}
+	}
+	if !foundImplement {
+		t.Error("expected to find an 'implement' task in results")
+	}
+	if !foundReview {
+		t.Error("expected to find a 'review' task in results")
+	}
+}
+
+// TestListTasksWithInvalidKind verifies that an invalid kind returns 400.
+func TestListTasksWithInvalidKind(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, _ := setupProjectAndDocument(t, server, authHeader)
+
+	// List with invalid kind filter
+	listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?kind=invalid_kind", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusBadRequest {
+		t.Errorf("expected status 400, got %d", listW.Code)
+	}
+
+	var errResp map[string]interface{}
+	if err := json.NewDecoder(listW.Body).Decode(&errResp); err != nil {
+		t.Fatalf("failed to decode error response: %v", err)
+	}
+
+	errObj, ok := errResp["error"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("error response missing 'error' field")
+	}
+
+	if code, ok := errObj["code"].(string); !ok || code != "INVALID_KIND" {
+		t.Errorf("expected error code 'INVALID_KIND', got %q", code)
+	}
+}
+
 // TestCreateTasksUnknownDependency returns 400.
 func TestCreateTasksUnknownDependency(t *testing.T) {
 	server := setupTestServer(t, "test-token")
