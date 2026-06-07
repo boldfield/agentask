@@ -135,8 +135,8 @@ func TestMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations: %v", err)
 	}
-	if migrationCount != 4 {
-		t.Errorf("expected 4 migrations to be recorded, but got %d", migrationCount)
+	if migrationCount != 5 {
+		t.Errorf("expected 5 migrations to be recorded, but got %d", migrationCount)
 	}
 
 	// Verify idempotency: re-open the same database and it should work
@@ -146,13 +146,13 @@ func TestMigrations(t *testing.T) {
 	}
 	defer store2.Close()
 
-	// Verify that we still have exactly 3 migrations recorded (idempotency)
+	// Verify that we still have exactly 5 migrations recorded (idempotency)
 	err = store2.Conn().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount)
 	if err != nil {
 		t.Fatalf("failed to count migrations after re-open: %v", err)
 	}
-	if migrationCount != 4 {
-		t.Errorf("expected 4 migrations after re-open (idempotency), but got %d", migrationCount)
+	if migrationCount != 5 {
+		t.Errorf("expected 5 migrations after re-open (idempotency), but got %d", migrationCount)
 	}
 }
 
@@ -248,8 +248,8 @@ func TestOpenSamePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after second open: %v", err)
 	}
-	if migrationCount != 4 {
-		t.Errorf("expected 4 migrations after second open, but got %d", migrationCount)
+	if migrationCount != 5 {
+		t.Errorf("expected 5 migrations after second open, but got %d", migrationCount)
 	}
 }
 

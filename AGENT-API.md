@@ -148,6 +148,37 @@ Do not push partial guesses. A human decides next steps.
 - **Stay in scope.** Build what the spec says. Ambiguous or wrong → Blocked, don't improvise.
 - **Never self-merge.** Your terminal state is `review`.
 
+## Reviewer auto-merge contract (`agent_merge` flag)
+
+Each task has an optional `agent_merge` boolean flag (defaults to `false`). This flag is **immutable** — set at task creation and never changed.
+
+**When `agent_merge` is `true`:** After a passing review verdict (`approve`), the reviewer (Opus, running with local `gh`) automatically merges the PR:
+
+```bash
+gh pr merge --auto
+```
+
+The merge is **CI-gated**: it succeeds only if required CI checks have passed. If the merge fails (red checks, branch protection, conflicts, etc.), the task remains in `approved` state — the human must intervene.
+
+If the merge succeeds, the reviewer then transitions the task to `done` via `POST /tasks/{id}/transition` (`to: done`).
+
+**When `agent_merge` is `false` (default):** The task stays in `approved` after a passing review. The human gates the merge via the standard merge workflow; no automatic merge happens.
+
+### Task creation with `agent_merge`
+
+Agents creating tasks (or humans via the API) include `agent_merge: true` in the task input to opt in:
+
+```json
+{
+  "title": "Low-risk feature",
+  "spec": "...",
+  "document_id": "...",
+  "agent_merge": true
+}
+```
+
+Omitting it defaults to `false`.
+
 ## Status / HTTP code reference
 
 | Code | Meaning in this API |
