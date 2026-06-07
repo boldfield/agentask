@@ -14,10 +14,11 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// detailFetchedMsg carries the result of a GetTask + ListDocuments call for the detail view.
+// detailFetchedMsg carries the result of a GetTask + ListDocuments + ListEvents call for the detail view.
 type detailFetchedMsg struct {
 	task      tuiclient.TaskDetail
 	documents []tuiclient.Document
+	events    []tuiclient.Event
 	err       error
 }
 
@@ -27,7 +28,7 @@ type openerResultMsg struct {
 	message string
 }
 
-// fetchDetailCmd creates a command that fetches full task detail and the project's document list.
+// fetchDetailCmd creates a command that fetches full task detail, the project's document list, and task events.
 func (m *BoardModel) fetchDetailCmd(taskID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -44,7 +45,13 @@ func (m *BoardModel) fetchDetailCmd(taskID string) tea.Cmd {
 			docs = nil
 		}
 
-		return detailFetchedMsg{task: task, documents: docs}
+		events, err := m.client.ListEvents(ctx, taskID)
+		if err != nil {
+			// Non-fatal: we still show the task; event timeline will be empty.
+			events = nil
+		}
+
+		return detailFetchedMsg{task: task, documents: docs, events: events}
 	}
 }
 
@@ -204,6 +211,22 @@ func (m *BoardModel) renderDetailView() string {
 		b.WriteString("Links:\n")
 		for _, link := range task.Links {
 			b.WriteString(fmt.Sprintf("  [%s] %s\n", link.Kind, link.Value))
+		}
+	}
+
+	// Events timeline
+	if len(m.detailEvents) > 0 {
+		b.WriteString("Events:\n")
+		for _, event := range m.detailEvents {
+			timeStr := m.formatAbsTime(event.CreatedAt)
+			b.WriteString(fmt.Sprintf("  [%s] %s: %s", timeStr, event.Actor, event.Kind))
+			if event.Verdict != nil {
+				b.WriteString(fmt.Sprintf(" (%s)", *event.Verdict))
+			}
+			b.WriteString("\n")
+			if event.Note != nil && *event.Note != "" {
+				b.WriteString(fmt.Sprintf("    %s\n", wrapText(*event.Note, m.width-4)))
+			}
 		}
 	}
 

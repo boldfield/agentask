@@ -47,6 +47,7 @@ func New(s store.Store, authToken string, leaseTTL time.Duration) *Server {
 	mux.HandleFunc("POST /projects/{id}/tasks", server.authMiddleware(server.handleCreateTasks))
 	mux.HandleFunc("GET /projects/{id}/tasks", server.authMiddleware(server.handleListTasks))
 	mux.HandleFunc("GET /tasks/{id}", server.authMiddleware(server.handleGetTask))
+	mux.HandleFunc("GET /tasks/{id}/events", server.authMiddleware(server.handleGetTaskEvents))
 	mux.HandleFunc("POST /tasks/{id}/claim", server.authMiddleware(server.handleClaimTask))
 	mux.HandleFunc("POST /tasks/{id}/heartbeat", server.authMiddleware(server.handleHeartbeat))
 	mux.HandleFunc("POST /tasks/{id}/promote", server.authMiddleware(server.handlePromoteTask))
@@ -304,6 +305,19 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleGetTaskEvents handles GET /tasks/{id}/events to retrieve the task's event log.
+func (s *Server) handleGetTaskEvents(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+
+	events, err := s.store.ListEvents(r.Context(), id)
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "GET_ERROR", "Failed to get task events")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, events)
 }
 
 // handleListTasks handles GET /projects/{id}/tasks with optional filters.
