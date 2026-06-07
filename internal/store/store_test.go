@@ -3199,3 +3199,154 @@ func TestWaitForAllAggregation_ApproveAndReject(t *testing.T) {
 		t.Errorf("expected parent task state='ready' after reject, got '%s'", parentTask.State)
 	}
 }
+
+// TestTransitionBlockedToReady tests that blocked tasks can transition to ready,
+// become claimable with no stale assignee/lease, and that other transitions still work as expected.
+func TestTransitionBlockedToReady(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	// Create a document
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create tasks in backlog state
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 1 - Blocked", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 2 - Approved", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	taskID1 := tasks[0].ID
+	taskID2 := tasks[1].ID
+
+	// Transition task 1 to blocked state (from backlog)
+	blockedNote := "blocker: dependency failed"
+	task1, err := store.TransitionTask(ctx, taskID1, "blocked", &blockedNote)
+	if err != nil {
+		t.Fatalf("failed to transition to blocked: %v", err)
+	}
+	if task1.State != "blocked" {
+		t.Errorf("expected task state='blocked', got '%s'", task1.State)
+	}
+
+	// Manually update task 1 to have stale assignee and expired lease
+	pastTime := time.Now().UTC().Add(-1 * time.Hour).Format(timestampLayout)
+	_, err = store.Conn().ExecContext(ctx, `
+		UPDATE task SET assignee = ?, lease_expires_at = ? WHERE id = ?
+	`, "stale-agent", pastTime, taskID1)
+	if err != nil {
+		t.Fatalf("failed to set stale assignee and lease: %v", err)
+	}
+
+	// Verify task 1 has stale assignee/lease
+	stalledTask, err := store.GetTask(ctx, taskID1)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+	if stalledTask.Assignee == nil || *stalledTask.Assignee != "stale-agent" {
+		t.Errorf("expected task assignee='stale-agent', got %v", stalledTask.Assignee)
+	}
+	if stalledTask.LeaseExpiresAt == nil {
+		t.Errorf("expected task to have lease_expires_at, got nil")
+	}
+
+	// Test 1: Transition blocked→ready succeeds and clears assignee/lease
+	unblockNote := "blocker cleared"
+	unblocked, err := store.TransitionTask(ctx, taskID1, "ready", &unblockNote)
+	if err != nil {
+		t.Fatalf("failed to transition blocked→ready: %v", err)
+	}
+	if unblocked.State != "ready" {
+		t.Errorf("expected task state='ready' after transition, got '%s'", unblocked.State)
+	}
+	if unblocked.Assignee != nil {
+		t.Errorf("expected task assignee=nil after blocked→ready, got %v", unblocked.Assignee)
+	}
+	if unblocked.LeaseExpiresAt != nil {
+		t.Errorf("expected task lease_expires_at=nil after blocked→ready, got %v", unblocked.LeaseExpiresAt)
+	}
+
+	// Test 2: Transition event is recorded with the note
+	events, err := store.ListEvents(ctx, taskID1)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+	if len(events) < 2 {
+		t.Fatalf("expected at least 2 events (transition to blocked + transition to ready), got %d", len(events))
+	}
+	lastEvent := events[len(events)-1]
+	if lastEvent.Kind != "transition" {
+		t.Errorf("expected last event kind='transition', got '%s'", lastEvent.Kind)
+	}
+	if lastEvent.Note == nil || *lastEvent.Note != unblockNote {
+		t.Errorf("expected event note='%s', got %v", unblockNote, lastEvent.Note)
+	}
+
+	// Test 3: approved→ready still works (unchanged behavior)
+	// Manually update task 2 to approved state
+	_, err = store.Conn().ExecContext(ctx, `
+		UPDATE task SET state = 'approved' WHERE id = ?
+	`, taskID2)
+	if err != nil {
+		t.Fatalf("failed to set task to approved: %v", err)
+	}
+
+	approvedNote := "ready to claim"
+	readyFromApproved, err := store.TransitionTask(ctx, taskID2, "ready", &approvedNote)
+	if err != nil {
+		t.Fatalf("failed to transition approved→ready: %v", err)
+	}
+	if readyFromApproved.State != "ready" {
+		t.Errorf("expected task state='ready' after approved→ready, got '%s'", readyFromApproved.State)
+	}
+
+	// Test 4: Illegal transitions still return 409
+	// Create another task and transition it to done
+	tasks2, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 3 - Done", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task 3: %v", err)
+	}
+	taskID3 := tasks2[0].ID
+
+	// Manually set it to approved, then to done
+	_, err = store.Conn().ExecContext(ctx, `
+		UPDATE task SET state = 'approved' WHERE id = ?
+	`, taskID3)
+	if err != nil {
+		t.Fatalf("failed to set task to approved: %v", err)
+	}
+	_, err = store.TransitionTask(ctx, taskID3, "done", nil)
+	if err != nil {
+		t.Fatalf("failed to transition to done: %v", err)
+	}
+
+	// Try to transition done→ready (should fail)
+	_, err = store.TransitionTask(ctx, taskID3, "ready", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected done→ready to return ErrConflict, got %v", err)
+	}
+
+	// Try to transition ready→done (should fail - task 1 is in ready state)
+	_, err = store.TransitionTask(ctx, taskID1, "done", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected ready→done to return ErrConflict, got %v", err)
+	}
+}
