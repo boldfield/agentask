@@ -86,8 +86,10 @@ repo_slug() { norm_repo "$1" | tr '/' '-'; }                                    
 FORGE_TOKENS="$AGENTASK_HOME/forge-tokens"
 token_for_owner() {
   [ -f "$FORGE_TOKENS" ] || return 0
+  # case-insensitive owner match — GitHub owners are case-insensitive (fAIctory == faictory), and the
+  # owner derived from the repo URL may differ in case from the forge-tokens entry.
   sed -E 's/[[:space:]]*#.*$//' "$FORGE_TOKENS" 2>/dev/null \
-    | grep -E "^[[:space:]]*$1[[:space:]]*=" | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//'
+    | grep -iE "^[[:space:]]*$1[[:space:]]*=" | head -1 | sed -E 's/^[^=]*=[[:space:]]*//; s/[[:space:]]*$//'
 }
 # Set GH_TOKEN for a repo owner from the map, or fall back to the operator's default gh auth.
 apply_owner_token() {
