@@ -11,7 +11,10 @@ set -uo pipefail
 : "${AGENTASK_TOKEN:?set AGENTASK_TOKEN to the bearer token}"
 
 _auth=(-H "Authorization: Bearer $AGENTASK_TOKEN" -H "Content-Type: application/json")
-_api() { curl -fsS --max-time 30 "${_auth[@]}" "$@"; }
+# --fail-with-body: non-zero exit on HTTP >=400 BUT still print the body, so the API's structured
+# error (UNKNOWN_MODEL, UNKNOWN_DEPENDENCY, DOCUMENT_NOT_IN_PROJECT, ...) survives. Plain -f would
+# discard it and reduce every failure to "error: 400" — defeating the point of the helper.
+_api() { curl --fail-with-body -sS --max-time 30 "${_auth[@]}" "$@"; }
 
 usage() {
   cat <<'USAGE'
@@ -26,9 +29,10 @@ Usage:
   agentask.sh get <task-id>                                      -> task
 
 Task object for the create-tasks file (a JSON array of these). depends_on entries are
-either an intra-batch "key" or an existing task id:
+either an intra-batch "key" or an existing task id, and must be ACYCLIC:
   { "key": "slug", "title": "...", "spec": "<prose, NO code>", "document_id": "<doc id>",
-    "depends_on": ["other-key"], "model": "haiku", "agent_merge": false }
+    "depends_on": ["other-key"], "model": "haiku", "review_models": ["opus"], "agent_merge": false }
+  (review_models is optional, defaults to ["opus"]; agent_merge defaults to false.)
 USAGE
 }
 

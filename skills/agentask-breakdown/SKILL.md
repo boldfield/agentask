@@ -80,7 +80,8 @@ Non-negotiable decomposition rules:
   Opus reviews and gates, it does not implement.
 - **Dependency-order to serialize file overlap.** Two tasks that touch the same file must be
   ordered by a dependency, never left concurrent — that is the merge-conflict trap. Tasks can have
-  multiple dependencies.
+  multiple dependencies, but the graph must be a **DAG**: a cycle (A→B, B→A) leaves both tasks
+  permanently unclaimable, and the server rejects only self-deps, not cycles — so catch them here.
 - Keep each spec to one change; prefer a `file:line` pattern-pointer over prose where it says more.
 
 ## Phase 5 — Register + hand off
@@ -91,9 +92,12 @@ Using `scripts/agentask.sh`:
 2. Create the document (`kind` = `design` | `feature_spec`, with its repo ref).
 3. Bulk-create the tasks — dependencies by intra-batch `key`, plus `model` and `agent_merge`.
 4. **Promote milestone-by-milestone — NOT the whole backlog at once.** There is no `ready→backlog`
-   demote: once promoted, a task can only be stopped by killing it (terminal `blocked`/`failed`).
-   Promote the first milestone; promote the next when its predecessor has merged. Fine-grained deps
-   let later work jump the queue otherwise.
+   demote; to halt a promoted task, transition it to `blocked` (reversible — `blocked→ready`
+   re-readies it and clears its stale lease) or `failed` (terminal). Promote the first milestone,
+   then the next once its predecessor has merged — this is a **human checkpoint** between milestones
+   (review milestone 1's approach before milestone 2's leaves auto-flow), NOT a dependency-safety
+   measure: the `claimable` filter already gates every task on its deps being `done`, regardless of
+   what's been promoted.
 
 Report the project id, document id, and task ids, and tell the human how to point the fleet at the
 board (`AGENTASK_PROJECT=<id>` + the worker/reviewer loops).

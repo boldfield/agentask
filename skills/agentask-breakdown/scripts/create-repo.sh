@@ -24,6 +24,9 @@ dir="./$leaf"
 [ -e "$dir" ] && { echo "target already exists: $dir" >&2; exit 1; }
 
 mkdir -p "$dir"
+# If anything below fails (e.g. `gh repo create`), remove the partial local dir so a retry isn't
+# blocked by the "target already exists" guard above. Kept on success — it's your working clone.
+trap 'rc=$?; [ "$rc" -ne 0 ] && rm -rf "$dir"; exit "$rc"' EXIT
 cp "$doc" "$dir/DESIGN.md"
 git -C "$dir" init -q
 git -C "$dir" add DESIGN.md
