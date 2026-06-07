@@ -423,6 +423,7 @@ type Task struct {
 	ReviewRound    int      `db:"review_round" json:"review_round"`
 	TargetTaskID   *string  `db:"target_task_id" json:"target_task_id"` // nullable
 	Verdict        *string  `db:"verdict" json:"verdict"`               // nullable
+	AgentMerge     bool     `db:"agent_merge" json:"agent_merge"`
 	CreatedAt      string   `db:"created_at" json:"created_at"`
 	UpdatedAt      string   `db:"updated_at" json:"updated_at"`
 }
@@ -444,6 +445,7 @@ type TaskInput struct {
 	DependsOn    []string `json:"depends_on"` // refs to task ids or keys in the batch
 	Model        string   `json:"model"`
 	ReviewModels []string `json:"review_models"`
+	AgentMerge   bool     `json:"agent_merge"`
 }
 
 // LinkInput is the input format for task links during submission.
@@ -469,6 +471,7 @@ type TaskWithDepsAndLinks struct {
 	ReviewRound    int        `json:"review_round"`
 	TargetTaskID   *string    `json:"target_task_id"`
 	Verdict        *string    `json:"verdict"`
+	AgentMerge     bool       `json:"agent_merge"`
 	CreatedAt      string     `json:"created_at"`
 	UpdatedAt      string     `json:"updated_at"`
 	DependsOn      []string   `json:"depends_on"`
@@ -811,6 +814,7 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 			ReviewModels: input.ReviewModels,
 			ReviewRound:  0,
 			TargetTaskID: nil,
+			AgentMerge:   input.AgentMerge,
 			CreatedAt:    now,
 			UpdatedAt:    now,
 		}
@@ -822,9 +826,9 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 
 		// Insert task
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, review_models, review_round, target_task_id, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, task.ID, task.ProjectID, task.DocumentID, task.Title, task.Spec, task.State, task.Model, task.Kind, reviewModelsJSON, task.ReviewRound, task.TargetTaskID, task.CreatedAt, task.UpdatedAt)
+			INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, review_models, review_round, target_task_id, agent_merge, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, task.ID, task.ProjectID, task.DocumentID, task.Title, task.Spec, task.State, task.Model, task.Kind, reviewModelsJSON, task.ReviewRound, task.TargetTaskID, task.AgentMerge, task.CreatedAt, task.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to insert task: %w", err)
 		}
@@ -891,9 +895,9 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLi
 	var t Task
 	var reviewModelsJSON *string
 	err := s.conn.QueryRowContext(ctx, `
-		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
+		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, created_at, updated_at
 		FROM task WHERE id = ?
-	`, id).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
+	`, id).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.CreatedAt, &t.UpdatedAt)
 
 	if errors.Is(err, sql.ErrNoRows) {
 		return TaskWithDepsAndLinks{}, ErrNotFound
@@ -968,6 +972,7 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLi
 		ReviewRound:    t.ReviewRound,
 		TargetTaskID:   t.TargetTaskID,
 		Verdict:        t.Verdict,
+		AgentMerge:     t.AgentMerge,
 		CreatedAt:      t.CreatedAt,
 		UpdatedAt:      t.UpdatedAt,
 		DependsOn:      dependsOn,
@@ -993,7 +998,7 @@ const claimableSQL = `state = 'ready'
 // ListTasks retrieves tasks for a project with optional filters.
 // Filters compose with AND logic.
 func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter TaskListFilter) ([]Task, error) {
-	query := `SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
+	query := `SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, created_at, updated_at
 		FROM task
 		WHERE project_id = ?`
 	args := []interface{}{projectID}
@@ -1030,7 +1035,7 @@ func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter Ta
 	for rows.Next() {
 		var t Task
 		var reviewModelsJSON *string
-		if err := rows.Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt); err != nil {
+		if err := rows.Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.CreatedAt, &t.UpdatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan task: %w", err)
 		}
 		// Unmarshal review_models from JSON
@@ -1094,9 +1099,9 @@ func (s *sqliteStore) ClaimTask(ctx context.Context, taskID, agentID, model stri
 		var t Task
 		var reviewModelsJSON *string
 		err = tx.QueryRowContext(ctx, `
-			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, created_at, updated_at
 			FROM task WHERE id = ?
-		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.CreatedAt, &t.UpdatedAt)
 		if err != nil {
 			return Task{}, fmt.Errorf("failed to fetch claimed task: %w", err)
 		}
@@ -1187,9 +1192,9 @@ func (s *sqliteStore) HeartbeatTask(ctx context.Context, taskID, agentID string,
 		var t Task
 		var reviewModelsJSON *string
 		err = tx.QueryRowContext(ctx, `
-			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, created_at, updated_at
 			FROM task WHERE id = ?
-		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.CreatedAt, &t.UpdatedAt)
 		if err != nil {
 			return Task{}, fmt.Errorf("failed to fetch updated task: %w", err)
 		}
@@ -1269,9 +1274,9 @@ func (s *sqliteStore) PromoteTask(ctx context.Context, taskID string) (Task, err
 		var t Task
 		var reviewModelsJSON *string
 		err = tx.QueryRowContext(ctx, `
-			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, created_at, updated_at
 			FROM task WHERE id = ?
-		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.CreatedAt, &t.UpdatedAt)
 		if err != nil {
 			return Task{}, fmt.Errorf("failed to fetch promoted task: %w", err)
 		}
@@ -1435,9 +1440,9 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 		var t Task
 		var reviewModelsJSON *string
 		err = tx.QueryRowContext(ctx, `
-			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
+			SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, created_at, updated_at
 			FROM task WHERE id = ?
-		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
+		`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.CreatedAt, &t.UpdatedAt)
 		if err != nil {
 			return TaskWithDepsAndLinks{}, fmt.Errorf("failed to fetch submitted task: %w", err)
 		}
@@ -1500,9 +1505,9 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 
 				reviewModelsJSON := (*string)(nil) // review tasks don't have review_models
 				_, err := tx.ExecContext(ctx, `
-					INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, review_models, review_round, target_task_id, created_at, updated_at)
-					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-				`, reviewTaskID, t.ProjectID, t.DocumentID, reviewTitle, reviewSpec, "ready", reviewerModel, "review", reviewModelsJSON, newReviewRound, &t.ID, now, now)
+					INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, review_models, review_round, target_task_id, agent_merge, created_at, updated_at)
+					VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`, reviewTaskID, t.ProjectID, t.DocumentID, reviewTitle, reviewSpec, "ready", reviewerModel, "review", reviewModelsJSON, newReviewRound, &t.ID, false, now, now)
 				if err != nil {
 					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to create review task: %w", err)
 				}
@@ -1588,6 +1593,7 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			ReviewRound:    t.ReviewRound,
 			TargetTaskID:   t.TargetTaskID,
 			Verdict:        t.Verdict,
+			AgentMerge:     t.AgentMerge,
 			CreatedAt:      t.CreatedAt,
 			UpdatedAt:      t.UpdatedAt,
 			DependsOn:      dependsOn,
@@ -1754,9 +1760,9 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 	var t Task
 	var reviewModelsJSON *string
 	err = tx.QueryRowContext(ctx, `
-		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, created_at, updated_at
+		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, created_at, updated_at
 		FROM task WHERE id = ?
-	`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.CreatedAt, &t.UpdatedAt)
+	`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.CreatedAt, &t.UpdatedAt)
 	if err != nil {
 		return Task{}, fmt.Errorf("failed to fetch transitioned task: %w", err)
 	}
