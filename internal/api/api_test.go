@@ -862,6 +862,161 @@ func TestClaimableFilterExcludesUnfinishedDeps(t *testing.T) {
 	}
 }
 
+// TestListTasksWithModelFilter verifies model filter works.
+func TestListTasksWithModelFilter(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create tasks with different models
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Haiku Task",
+			Spec:       "Spec 1",
+			DocumentID: docID,
+			Model:      "haiku",
+		},
+		{
+			Title:      "Sonnet Task",
+			Spec:       "Spec 2",
+			DocumentID: docID,
+			Model:      "sonnet",
+		},
+		{
+			Title:      "Opus Task",
+			Spec:       "Spec 3",
+			DocumentID: docID,
+			Model:      "opus",
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	// List with model=haiku filter
+	listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?model=haiku", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var tasks []store.Task
+	if err := json.NewDecoder(listW.Body).Decode(&tasks); err != nil {
+		t.Fatalf("failed to decode tasks: %v", err)
+	}
+
+	if len(tasks) != 1 {
+		t.Errorf("expected 1 haiku task, got %d", len(tasks))
+	}
+
+	if tasks[0].Model != "haiku" {
+		t.Errorf("expected model 'haiku', got %q", tasks[0].Model)
+	}
+
+	// List with model=sonnet filter
+	listReq2 := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?model=sonnet", nil)
+	listReq2.Header.Set("Authorization", authHeader)
+	listW2 := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW2, listReq2)
+
+	var tasks2 []store.Task
+	if err := json.NewDecoder(listW2.Body).Decode(&tasks2); err != nil {
+		t.Fatalf("failed to decode tasks: %v", err)
+	}
+
+	if len(tasks2) != 1 {
+		t.Errorf("expected 1 sonnet task, got %d", len(tasks2))
+	}
+
+	if tasks2[0].Model != "sonnet" {
+		t.Errorf("expected model 'sonnet', got %q", tasks2[0].Model)
+	}
+}
+
+// TestListTasksWithModelAndClaimableFilters verifies model and claimable filters compose.
+func TestListTasksWithModelAndClaimableFilters(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create tasks with different models
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Haiku Task 1",
+			Spec:       "Spec 1",
+			DocumentID: docID,
+			Model:      "haiku",
+		},
+		{
+			Title:      "Haiku Task 2",
+			Spec:       "Spec 2",
+			DocumentID: docID,
+			Model:      "haiku",
+		},
+		{
+			Title:      "Sonnet Task",
+			Spec:       "Spec 3",
+			DocumentID: docID,
+			Model:      "sonnet",
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+
+	// Promote all tasks to ready state
+	conn := server.store.Conn()
+	for _, task := range createdTasks {
+		_, err := conn.ExecContext(context.Background(), "UPDATE task SET state = 'ready' WHERE id = ?", task.ID)
+		if err != nil {
+			t.Fatalf("failed to promote task: %v", err)
+		}
+	}
+
+	// List with model=haiku and claimable=true
+	listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?model=haiku&claimable=true", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	if listW.Code != http.StatusOK {
+		t.Errorf("expected status 200, got %d", listW.Code)
+	}
+
+	var tasks []store.Task
+	if err := json.NewDecoder(listW.Body).Decode(&tasks); err != nil {
+		t.Fatalf("failed to decode tasks: %v", err)
+	}
+
+	// Should get 2 claimable haiku tasks and 0 sonnet tasks
+	if len(tasks) != 2 {
+		t.Errorf("expected 2 claimable haiku tasks, got %d", len(tasks))
+	}
+
+	for _, task := range tasks {
+		if task.Model != "haiku" {
+			t.Errorf("expected model 'haiku', got %q", task.Model)
+		}
+		if task.State != "ready" {
+			t.Errorf("expected state 'ready', got %q", task.State)
+		}
+	}
+}
+
 // TestCreateTasksUnknownDependency returns 400.
 func TestCreateTasksUnknownDependency(t *testing.T) {
 	server := setupTestServer(t, "test-token")

@@ -320,6 +320,10 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 		filter.Assignee = &assignee
 	}
 
+	if model := r.URL.Query().Get("model"); model != "" {
+		filter.Model = &model
+	}
+
 	if claimable := r.URL.Query().Get("claimable"); claimable == "true" {
 		filter.Claimable = true
 	}
