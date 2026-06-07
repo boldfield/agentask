@@ -1451,9 +1451,9 @@ func (s *sqliteStore) AddReview(ctx context.Context, taskID, actor, verdict stri
 
 // TransitionTask moves a task to a new state according to the transition rules.
 // Valid transitions:
-//   - to='done': allowed ONLY from 'review', AND only if at least one approve review event exists
-//   - to='ready': allowed ONLY from 'review'
-//   - to='blocked' or 'failed': allowed from any ACTIVE state (backlog, ready, in_progress, review)
+//   - to='done': allowed ONLY from 'approved'
+//   - to='ready': allowed ONLY from 'approved'
+//   - to='blocked' or 'failed': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved)
 //   - anything else: ErrConflict
 //
 // Returns the updated Task on success.

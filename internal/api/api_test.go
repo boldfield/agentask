@@ -1963,7 +1963,7 @@ func TestTransitionToDoneAfterApproveSucceeds(t *testing.T) {
 }
 
 // TestTransitionToDoneFromReviewReturns409 verifies that transition to done from review state is no longer allowed.
-func TestTransitionToDoneWithoutApproveReturns409(t *testing.T) {
+func TestTransitionFromReviewToDoneReturns409(t *testing.T) {
 	server := setupTestServer(t, "test-token")
 	authHeader := "Bearer test-token"
 
@@ -1998,8 +1998,30 @@ func TestTransitionToDoneWithoutApproveReturns409(t *testing.T) {
 	}
 }
 
-// TestTransitionToReadyFromReviewReturnsToClaimablePool verifies that transition to ready from approved allows reclaiming.
-func TestTransitionToReadyFromReviewReturnsToClaimablePool(t *testing.T) {
+func TestTransitionFromReviewToReadyReturns409(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	taskID := setupTaskInReview(t, server, authHeader)
+
+	// Try to transition from review to ready (should fail, only allowed from approved)
+	transitionPayload := map[string]interface{}{
+		"to": "ready",
+	}
+	transitionBody, _ := json.Marshal(transitionPayload)
+	transitionReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/transition", bytes.NewReader(transitionBody))
+	transitionReq.Header.Set("Authorization", authHeader)
+	transitionReq.Header.Set("Content-Type", "application/json")
+	transitionW := httptest.NewRecorder()
+	server.mux.ServeHTTP(transitionW, transitionReq)
+
+	if transitionW.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d", transitionW.Code)
+	}
+}
+
+// TestTransitionToReadyFromApprovedReturnsToClaimablePool verifies that transition to ready from approved allows reclaiming.
+func TestTransitionToReadyFromApprovedReturnsToClaimablePool(t *testing.T) {
 	server := setupTestServer(t, "test-token")
 	authHeader := "Bearer test-token"
 
