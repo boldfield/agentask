@@ -52,6 +52,10 @@ const (
 	modeArchiveTaskConfirm
 	// modeArchiveProjectConfirm is the "Archive project? [y/N]" confirmation step.
 	modeArchiveProjectConfirm
+	// modeHoldTaskConfirm is the "Hold task? [y/N]" confirmation step.
+	modeHoldTaskConfirm
+	// modeReleaseTaskConfirm is the "Release task? [y/N]" confirmation step.
+	modeReleaseTaskConfirm
 )
 
 // BoardModel is the Bubble Tea model for the task board view.
@@ -444,6 +448,56 @@ func (m *BoardModel) archiveProjectCmd(projectID string) tea.Cmd {
 	}
 }
 
+// holdTaskCmd creates a command that holds a task (pins it out of automated flow).
+func (m *BoardModel) holdTaskCmd(taskID string, fromDetail bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := m.client.HoldTask(ctx, taskID); err != nil {
+			// Check if it's an API error
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) {
+				msg := m.fetchTasksInline(ctx, fmt.Sprintf("hold 409: %s", apiErr.Message))
+				msg.fromDetail = fromDetail
+				return msg
+			}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("hold failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
+		}
+
+		msg := m.fetchTasksInline(ctx, "")
+		msg.fromDetail = fromDetail
+		return msg
+	}
+}
+
+// releaseTaskCmd creates a command that releases a task (restores automated flow).
+func (m *BoardModel) releaseTaskCmd(taskID string, fromDetail bool) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := m.client.ReleaseTask(ctx, taskID); err != nil {
+			// Check if it's an API error
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) {
+				msg := m.fetchTasksInline(ctx, fmt.Sprintf("release 409: %s", apiErr.Message))
+				msg.fromDetail = fromDetail
+				return msg
+			}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("release failed: %v", err))
+			msg.fromDetail = fromDetail
+			return msg
+		}
+
+		msg := m.fetchTasksInline(ctx, "")
+		msg.fromDetail = fromDetail
+		return msg
+	}
+}
+
 // fetchTasksInline performs a synchronous ListTasks call within an already-running command
 // closure (i.e. uses an already-created context) and returns a reviewActionMsg so the
 // result surfaces through the reviewActionMsg handler instead of tasksFetchedMsg. This
@@ -796,6 +850,25 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.pendingTaskID = m.selectedTaskID
 				m.mode = modeArchiveTaskConfirm
 				return m, nil
+			}
+
+		// Hold/Release: hold or release the selected task
+		case "t":
+			if m.selectedTaskID != "" {
+				// Determine whether to hold or release based on current held status
+				for _, taskList := range m.tasks {
+					for _, t := range taskList {
+						if t.ID == m.selectedTaskID {
+							m.pendingTaskID = m.selectedTaskID
+							if t.Held {
+								m.mode = modeReleaseTaskConfirm
+							} else {
+								m.mode = modeHoldTaskConfirm
+							}
+							return m, nil
+						}
+					}
+				}
 			}
 
 		// Help (stub for TUI-3+)
@@ -1299,6 +1372,38 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Ignore all other keys in confirm mode.
 		return m, nil
 
+	case modeHoldTaskConfirm:
+		switch msg.String() {
+		case "esc", "n", "N":
+			// User declined or pressed escape — cancel.
+			m.cancelReviewMode()
+			return m, nil
+		case "y", "Y":
+			// Capture the task ID before cancelReviewMode clears it.
+			taskID := m.pendingTaskID
+			originFromDetail := m.reviewFromDetail
+			m.cancelReviewMode()
+			return m, m.holdTaskCmd(taskID, originFromDetail)
+		}
+		// Ignore all other keys in confirm mode.
+		return m, nil
+
+	case modeReleaseTaskConfirm:
+		switch msg.String() {
+		case "esc", "n", "N":
+			// User declined or pressed escape — cancel.
+			m.cancelReviewMode()
+			return m, nil
+		case "y", "Y":
+			// Capture the task ID before cancelReviewMode clears it.
+			taskID := m.pendingTaskID
+			originFromDetail := m.reviewFromDetail
+			m.cancelReviewMode()
+			return m, m.releaseTaskCmd(taskID, originFromDetail)
+		}
+		// Ignore all other keys in confirm mode.
+		return m, nil
+
 	case modeArchiveProjectConfirm:
 		switch msg.String() {
 		case "esc", "n", "N":
@@ -1546,6 +1651,20 @@ func (m *BoardModel) renderReviewOverlay() string {
 			taskID = taskID[:8]
 		}
 		b.WriteString(fmt.Sprintf("Archive %s? [y/N] ", taskID))
+		b.WriteString("(y to confirm, n/esc to cancel)\n")
+	case modeHoldTaskConfirm:
+		taskID := m.pendingTaskID
+		if len(taskID) > 8 {
+			taskID = taskID[:8]
+		}
+		b.WriteString(fmt.Sprintf("Hold %s (pin out of automated flow)? [y/N] ", taskID))
+		b.WriteString("(y to confirm, n/esc to cancel)\n")
+	case modeReleaseTaskConfirm:
+		taskID := m.pendingTaskID
+		if len(taskID) > 8 {
+			taskID = taskID[:8]
+		}
+		b.WriteString(fmt.Sprintf("Release %s (restore automated flow)? [y/N] ", taskID))
 		b.WriteString("(y to confirm, n/esc to cancel)\n")
 	case modeArchiveProjectConfirm:
 		b.WriteString("Archive project? [y/N] ")

@@ -20,6 +20,8 @@ type Client interface {
 	PromoteTask(ctx context.Context, id string) error
 	ReviewTask(ctx context.Context, id, actor, verdict string, note *string) error
 	TransitionTask(ctx context.Context, id, to string, note *string) error
+	HoldTask(ctx context.Context, id string) error
+	ReleaseTask(ctx context.Context, id string) error
 	ArchiveTask(ctx context.Context, id string) error
 	ArchiveProject(ctx context.Context, id string) error
 }
@@ -44,6 +46,7 @@ type Task struct {
 	Assignee       *string `json:"assignee"`
 	LeaseExpiresAt *string `json:"lease_expires_at"`
 	Result         *string `json:"result"`
+	Held           bool    `json:"held"`
 	CreatedAt      string  `json:"created_at"`
 	UpdatedAt      string  `json:"updated_at"`
 }
@@ -58,6 +61,7 @@ type TaskDetail struct {
 	Assignee       *string    `json:"assignee"`
 	LeaseExpiresAt *string    `json:"lease_expires_at"`
 	Result         *string    `json:"result"`
+	Held           bool       `json:"held"`
 	CreatedAt      string     `json:"created_at"`
 	UpdatedAt      string     `json:"updated_at"`
 	DependsOn      []string   `json:"depends_on"`
@@ -340,6 +344,28 @@ func (c *HTTPClient) ArchiveTask(ctx context.Context, id string) error {
 // ArchiveProject archives a project.
 func (c *HTTPClient) ArchiveProject(ctx context.Context, id string) error {
 	resp, err := c.do(ctx, "POST", fmt.Sprintf("/projects/%s/archive", id), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+// HoldTask pins a task out of automated flow.
+func (c *HTTPClient) HoldTask(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/hold", id), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+// ReleaseTask restores normal automated flow for a task.
+func (c *HTTPClient) ReleaseTask(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/release", id), nil)
 	if err != nil {
 		return err
 	}
