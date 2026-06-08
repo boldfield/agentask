@@ -591,6 +591,9 @@ Submit a task for review (implement tasks) or submit a verdict (review tasks). B
 - `commit`: Commit hash (e.g., `abc123def456`)
 - `branch`: Branch name (e.g., `feature/auth`)
 - `ci`: CI status/build URL (e.g., `https://ci.example.com/builds/123`)
+- `no_op`: Review-verified no-op marker (e.g., `already-satisfied`). Used when the acceptance
+  criteria are already satisfied on `main` with no diff: the worker submits with this marker and
+  NO `pr` link, and the reviewer verifies the claim against `main` before approving.
 
 **Response (200 OK):**
 ```json
@@ -677,7 +680,7 @@ The response includes the review task's own `id` and the parent implement task's
 **Status Codes (both kinds):**
 - `200 OK`: Submit successful
 - `400 EMPTY_AGENT_ID`: agent_id cannot be empty
-- `400 INVALID_LINK_KIND`: One or more link kinds are invalid (must be pr, branch, commit, or ci)
+- `400 INVALID_LINK_KIND`: One or more link kinds are invalid (must be pr, branch, commit, ci, or no_op)
 - `400 INVALID_VERDICT`: verdict must be "approve" or "reject" (review only)
 - `400 FORBIDDEN_VERDICT`: verdict must not be present for implement tasks
 - `400 MISSING_VERDICT`: verdict is required for review tasks

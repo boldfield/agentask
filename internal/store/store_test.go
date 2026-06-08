@@ -135,8 +135,8 @@ func TestMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations: %v", err)
 	}
-	if migrationCount != 7 {
-		t.Errorf("expected 7 migrations to be recorded, but got %d", migrationCount)
+	if migrationCount != 8 {
+		t.Errorf("expected 8 migrations to be recorded, but got %d", migrationCount)
 	}
 
 	// Verify idempotency: re-open the same database and it should work
@@ -146,13 +146,13 @@ func TestMigrations(t *testing.T) {
 	}
 	defer store2.Close()
 
-	// Verify that we still have exactly 6 migrations recorded (idempotency)
+	// Verify that we still have exactly 8 migrations recorded (idempotency)
 	err = store2.Conn().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount)
 	if err != nil {
 		t.Fatalf("failed to count migrations after re-open: %v", err)
 	}
-	if migrationCount != 7 {
-		t.Errorf("expected 7 migrations after re-open (idempotency), but got %d", migrationCount)
+	if migrationCount != 8 {
+		t.Errorf("expected 8 migrations after re-open (idempotency), but got %d", migrationCount)
 	}
 }
 
@@ -248,8 +248,8 @@ func TestOpenSamePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after second open: %v", err)
 	}
-	if migrationCount != 7 {
-		t.Errorf("expected 7 migrations after second open, but got %d", migrationCount)
+	if migrationCount != 8 {
+		t.Errorf("expected 8 migrations after second open, but got %d", migrationCount)
 	}
 }
 
@@ -4813,5 +4813,163 @@ func TestRejectVerdictOnTerminalTaskDoesNotResurrect(t *testing.T) {
 	}
 	if parentTask2.State != "blocked" {
 		t.Errorf("expected parent task in blocked state to stay blocked, got '%s'", parentTask2.State)
+	}
+}
+
+// TestSubmitImplementTaskNoOpResolution covers the review-verified no-op path:
+// a worker that finds the acceptance already satisfied on main (empty diff) submits
+// with a no_op marker and NO pr link. The submit must be accepted, a review task must
+// still auto-spawn (flagged as no-op), and an agent_merge parent must reach done via
+// approved -> done with no PR/merge once the reviewer approves.
+func TestSubmitImplementTaskNoOpResolution(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// agent_merge=true so the reviewer drives it straight to done.
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Already-satisfied task",
+			Spec:         "Acceptance already met on main",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+			AgentMerge:   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	if _, err = store.PromoteTask(ctx, taskID); err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	if _, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute); err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// No-op submit: a no_op marker and NO pr link.
+	noOpLinks := []LinkInput{{Kind: "no_op", Value: "already-satisfied"}}
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", "acceptance already satisfied on main; no changes needed", nil, noOpLinks, 5)
+	if err != nil {
+		t.Fatalf("no-op submit should be accepted, got error: %v", err)
+	}
+	if submitted.State != "review" {
+		t.Errorf("expected state 'review' after submit, got %q", submitted.State)
+	}
+	if submitted.ReviewRound != 1 {
+		t.Errorf("expected review_round 1, got %d", submitted.ReviewRound)
+	}
+
+	// The no_op link is recorded and there is no pr link.
+	var sawNoOp, sawPR bool
+	for _, l := range submitted.Links {
+		if l.Kind == "no_op" && l.Value == "already-satisfied" {
+			sawNoOp = true
+		}
+		if l.Kind == "pr" {
+			sawPR = true
+		}
+	}
+	if !sawNoOp {
+		t.Errorf("expected a no_op link on the task, links=%v", submitted.Links)
+	}
+	if sawPR {
+		t.Errorf("did not expect a pr link on a no-op submit, links=%v", submitted.Links)
+	}
+
+	// A review task auto-spawned even without a PR, and its brief flags the no-op.
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("expected a review task to auto-spawn on a no-op submit")
+	}
+	if !strings.Contains(reviewTask.Spec, "NO-OP submission") {
+		t.Errorf("expected review brief to flag the no-op, spec=%q", reviewTask.Spec)
+	}
+
+	// Reviewer verifies the claim holds and approves.
+	if _, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute); err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+	approve := "approve"
+	if _, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "verified satisfied on main", &approve, nil, 5); err != nil {
+		t.Fatalf("failed to submit review verdict: %v", err)
+	}
+
+	parent, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parent.State != "approved" {
+		t.Fatalf("expected parent 'approved' after sole reviewer approves, got %q", parent.State)
+	}
+
+	// agent_merge parent reaches done via approved -> done with no PR/merge.
+	done, err := store.TransitionTask(ctx, taskID, "done", nil)
+	if err != nil {
+		t.Fatalf("approved->done should succeed without a PR/merge, got error: %v", err)
+	}
+	if done.State != "done" {
+		t.Errorf("expected parent 'done', got %q", done.State)
+	}
+}
+
+// TestSubmitNoOpLinkKindAccepted verifies the no_op link kind passes link validation.
+func TestSubmitNoOpLinkKindAccepted(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "T", Spec: "S", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+	if _, err = store.PromoteTask(ctx, taskID); err != nil {
+		t.Fatalf("failed to promote: %v", err)
+	}
+	if _, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute); err != nil {
+		t.Fatalf("failed to claim: %v", err)
+	}
+	if _, err = store.SubmitTask(ctx, taskID, "agent-1", "noop", nil, []LinkInput{{Kind: "no_op", Value: "already-satisfied"}}, 5); err != nil {
+		t.Fatalf("expected no_op link kind to be accepted, got: %v", err)
 	}
 }

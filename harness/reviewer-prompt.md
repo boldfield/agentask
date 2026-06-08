@@ -22,11 +22,23 @@ AGENT_MODEL (=`opus`), AGENTASK_REPO (your dedicated worktree). Authenticate eve
    implement task under review.)
 2. **Read the brief.** GET `$AGENTASK_URL/tasks/<id>` — its `spec` contains the **Implementation PR** URL and
    the **Parent task** id (also in `target_task_id`). Then GET the **parent** task
-   (`target_task_id`): its `spec` is the real acceptance criteria you review against, and its
-   `agent_merge` flag + `pr` link matter for step 5. **If you cannot find a usable PR URL (the
-   review task's spec has no Implementation PR and the parent has no `pr` link), there is NOTHING
-   to review — submit a `reject` verdict (step 4) with note "no PR attached; resubmit with the pr
-   link" and STOP. NEVER approve a task you couldn't actually review.**
+   (`target_task_id`): its `spec` is the real acceptance criteria you review against, its
+   `agent_merge` flag + `pr` link matter for step 5, and its `links` may carry a `no_op` marker.
+   **No-PR handling — distinguish two cases:**
+   - **NO-OP submission** — the parent carries a `{"kind":"no_op",...}` link and NO `pr` link (the
+     review task's spec is flagged "NO-OP submission"). This is NOT an automatic reject. The
+     implementer claims the parent's acceptance criteria are ALREADY satisfied on current `main`
+     with no diff. **VERIFY the claim yourself against current `main`** (`git fetch origin &&
+     git checkout --detach origin/main`, then check whether the parent's acceptance criteria
+     genuinely hold — read the relevant code/tests, run `make check`/`make test` if useful). If the
+     claim HOLDS → submit an `approve` verdict (step 4); if work is actually NEEDED → submit a
+     `reject` verdict naming the specific gap (the worker must then actually implement it). There
+     is no PR to merge in this case — see step 5.
+   - **Otherwise, genuinely no PR** — no `no_op` marker AND no usable PR URL (the review task's spec
+     has no Implementation PR and the parent has no `pr` link): there is NOTHING to review — submit
+     a `reject` verdict with note "no PR attached; resubmit with the pr link" and STOP. **NEVER
+     approve a task you couldn't actually review** (the no-op case above IS reviewable — you verify
+     against `main`).
 3. **Reproduce AS MERGED WITH MAIN.** In your worktree, do NOT check out `main` or a named branch.
    Fetch the PR head and merge current main into it:
    `git fetch origin && git fetch origin "pull/<n>/head" && git checkout --detach FETCH_HEAD`, then
@@ -58,9 +70,14 @@ AGENT_MODEL (=`opus`), AGENTASK_REPO (your dedicated worktree). Authenticate eve
    "✅ opus-reviewer: APPROVED — <summary>"` (or `"❌ opus-reviewer: CHANGES REQUESTED — <numbered
    findings>"`).
 5. **Honor `agent_merge` (only on approve).** Re-GET the parent task. If the parent is now
-   `approved` AND its `agent_merge` is `true`: merge its PR with
-   `gh pr merge "<parent-pr-url>" --auto` (CI-gated — merges only once required checks pass); if the
-   merge succeeds, transition the parent: POST `$AGENTASK_URL/tasks/<parent-id>/transition` `{"to":"done"}`.
+   `approved` AND its `agent_merge` is `true`:
+   - **Normal (has a `pr` link):** merge its PR with `gh pr merge "<parent-pr-url>" --auto`
+     (CI-gated — merges only once required checks pass); if the merge succeeds, transition the
+     parent: POST `$AGENTASK_URL/tasks/<parent-id>/transition` `{"to":"done"}`.
+   - **NO-OP (verified no-op, no `pr` link):** there is NOTHING to merge — do NOT run `gh pr merge`.
+     Drive it straight to done via the same transition: POST
+     `$AGENTASK_URL/tasks/<parent-id>/transition` `{"to":"done","note":"no-op verified against main; no merge needed"}`.
+
    If the parent is still in `review` (other reviewers pending) OR `agent_merge` is `false`, do
    NOTHING further — leave it for the remaining reviewers or the human merge gate.
 6. STOP.

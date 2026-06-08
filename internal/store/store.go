@@ -459,7 +459,7 @@ type TaskInput struct {
 
 // LinkInput is the input format for task links during submission.
 type LinkInput struct {
-	Kind  string `json:"kind"` // 'pr', 'branch', 'commit', or 'ci'
+	Kind  string `json:"kind"` // 'pr', 'branch', 'commit', 'ci', or 'no_op'
 	Value string `json:"value"`
 }
 
@@ -1397,8 +1397,11 @@ func (s *sqliteStore) PromoteTask(ctx context.Context, taskID string) (Task, err
 // Returns ErrNotFound if the task doesn't exist.
 // Returns ErrConflict if the task is not in_progress or not assigned to the given agentID.
 func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput, maxReviewRounds int) (TaskWithDepsAndLinks, error) {
-	// Validate link kinds first (before mutating anything)
-	validKinds := map[string]bool{"pr": true, "branch": true, "commit": true, "ci": true}
+	// Validate link kinds first (before mutating anything).
+	// "no_op" marks a review-verified no-op resolution: a worker that finds the
+	// acceptance criteria already satisfied on main with no diff submits with a
+	// no_op marker and NO pr link; the reviewer verifies the claim against main.
+	validKinds := map[string]bool{"pr": true, "branch": true, "commit": true, "ci": true, "no_op": true}
 	for _, link := range links {
 		if !validKinds[link.Kind] {
 			return TaskWithDepsAndLinks{}, invalid("INVALID_LINK_KIND", fmt.Sprintf("invalid link kind: %s", link.Kind))
@@ -1539,14 +1542,20 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to increment review_round: %w", err)
 			}
 
-			// Extract PR link from the submitted links
+			// Extract PR link and any no_op marker from the submitted links.
+			// A no_op submission carries the marker and NO pr link: the implementer
+			// claims the acceptance is already satisfied on main with no diff.
 			var prLink string
+			var noOpMarker string
 			for _, link := range links {
-				if link.Kind == "pr" {
+				switch link.Kind {
+				case "pr":
 					prLink = link.Value
-					break
+				case "no_op":
+					noOpMarker = link.Value
 				}
 			}
+			isNoOp := noOpMarker != "" && prLink == ""
 
 			// Determine reviewers (default to ["opus"] if empty)
 			reviewers := t.ReviewModels
@@ -1565,6 +1574,10 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 					reviewSpec += "Implementation PR: " + prLink + "\n\n"
 				}
 				reviewSpec += "Parent task: " + t.ID + "\n\n"
+				if isNoOp {
+					reviewSpec += "## NO-OP submission (verify, do not auto-reject)\n\n"
+					reviewSpec += "The implementer reports the parent's acceptance criteria are ALREADY satisfied on `main` with no code changes, so there is NO PR. Do NOT reject merely because a PR is missing. VERIFY the claim against current `main`: if the parent's acceptance criteria genuinely hold in the repo, approve; if work is actually needed, reject with the specific gap.\n\n"
+				}
 				reviewSpec += "## Instructions\n\n"
 				reviewSpec += "Examine the submitted implementation and provide approval or rejection with written feedback.\n\n"
 				reviewSpec += "Approve if:\n"
