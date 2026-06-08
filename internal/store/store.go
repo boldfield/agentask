@@ -1632,26 +1632,31 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to tally review tasks: %w", err)
 				}
 
-				// Determine the new parent state based on the tally
+				// Guard: if parent is in a terminal state (failed/blocked), do not resurrect it
 				var newParentState string
-				if doneReviewTasks < totalReviewTasks {
-					// Not all done yet; parent stays in review
-					newParentState = ""
-				} else if doneReviewTasks == totalReviewTasks && approveReviewTasks == totalReviewTasks {
-					// All done and all approved; move to approved
-					newParentState = "approved"
-				} else if doneReviewTasks == totalReviewTasks && approveReviewTasks < totalReviewTasks {
-					// All done but at least one rejected
-					// Circuit breaker: if review_round > maxReviewRounds, auto-block instead of ready for rework
-					if parentReviewRound > maxReviewRounds {
-						newParentState = "blocked"
-					} else {
-						newParentState = "ready"
+				isTerminal := parentState == "failed" || parentState == "blocked"
+
+				if !isTerminal {
+					// Determine the new parent state based on the tally
+					if doneReviewTasks < totalReviewTasks {
+						// Not all done yet; parent stays in review
+						newParentState = ""
+					} else if doneReviewTasks == totalReviewTasks && approveReviewTasks == totalReviewTasks {
+						// All done and all approved; move to approved
+						newParentState = "approved"
+					} else if doneReviewTasks == totalReviewTasks && approveReviewTasks < totalReviewTasks {
+						// All done but at least one rejected
+						// Circuit breaker: if review_round > maxReviewRounds, auto-block instead of ready for rework
+						if parentReviewRound > maxReviewRounds {
+							newParentState = "blocked"
+						} else {
+							newParentState = "ready"
+						}
 					}
 				}
 
-				// Update parent state if needed
-				if newParentState != "" && newParentState != parentState {
+				// Update parent state if needed (and not in terminal state)
+				if newParentState != "" && newParentState != parentState && !isTerminal {
 					_, err := tx.ExecContext(ctx, `
 						UPDATE task SET state = ?, updated_at = ? WHERE id = ?
 					`, newParentState, now, *targetTaskID)
