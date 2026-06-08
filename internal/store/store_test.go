@@ -135,8 +135,8 @@ func TestMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations: %v", err)
 	}
-	if migrationCount != 5 {
-		t.Errorf("expected 5 migrations to be recorded, but got %d", migrationCount)
+	if migrationCount != 6 {
+		t.Errorf("expected 6 migrations to be recorded, but got %d", migrationCount)
 	}
 
 	// Verify idempotency: re-open the same database and it should work
@@ -146,13 +146,13 @@ func TestMigrations(t *testing.T) {
 	}
 	defer store2.Close()
 
-	// Verify that we still have exactly 5 migrations recorded (idempotency)
+	// Verify that we still have exactly 6 migrations recorded (idempotency)
 	err = store2.Conn().QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&migrationCount)
 	if err != nil {
 		t.Fatalf("failed to count migrations after re-open: %v", err)
 	}
-	if migrationCount != 5 {
-		t.Errorf("expected 5 migrations after re-open (idempotency), but got %d", migrationCount)
+	if migrationCount != 6 {
+		t.Errorf("expected 6 migrations after re-open (idempotency), but got %d", migrationCount)
 	}
 }
 
@@ -248,8 +248,8 @@ func TestOpenSamePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after second open: %v", err)
 	}
-	if migrationCount != 5 {
-		t.Errorf("expected 5 migrations after second open, but got %d", migrationCount)
+	if migrationCount != 6 {
+		t.Errorf("expected 6 migrations after second open, but got %d", migrationCount)
 	}
 }
 
@@ -3680,5 +3680,430 @@ func TestListProjectsWithoutClaimableFilterReturnAll(t *testing.T) {
 	}
 	if !foundProj2 {
 		t.Errorf("project 2 not found in result")
+	}
+}
+
+// TestArchiveTaskExcludedByDefault tests that an archived task is excluded from default list
+// but included when IncludeArchived=true, and archive does not alter task state.
+func TestArchiveTaskExcludedByDefault(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Create project, document, and task
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Visible Task", Spec: "spec1", DocumentID: doc.ID},
+		{Title: "Task to Archive", Spec: "spec2", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	taskToArchiveID := tasks[1].ID
+	originalState := tasks[1].State
+
+	// Archive the second task
+	archivedTask, err := store.ArchiveTask(ctx, taskToArchiveID)
+	if err != nil {
+		t.Fatalf("failed to archive task: %v", err)
+	}
+
+	// Verify state is unchanged
+	if archivedTask.State != originalState {
+		t.Errorf("expected state to remain %q, but got %q", originalState, archivedTask.State)
+	}
+	if archivedTask.ArchivedAt == nil {
+		t.Error("expected ArchivedAt to be set, but it's nil")
+	}
+
+	// List tasks without IncludeArchived (default) - should exclude archived task
+	filter := TaskListFilter{}
+	tasks1, err := store.ListTasks(ctx, proj.ID, filter)
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+	if len(tasks1) != 1 {
+		t.Errorf("expected 1 task (excluding archived), got %d", len(tasks1))
+	}
+	if len(tasks1) > 0 && tasks1[0].ID == taskToArchiveID {
+		t.Error("archived task should be excluded from default list")
+	}
+
+	// List tasks with IncludeArchived=true - should include archived task
+	filter2 := TaskListFilter{IncludeArchived: true}
+	tasks2, err := store.ListTasks(ctx, proj.ID, filter2)
+	if err != nil {
+		t.Fatalf("failed to list tasks with IncludeArchived: %v", err)
+	}
+	if len(tasks2) != 2 {
+		t.Errorf("expected 2 tasks (including archived), got %d", len(tasks2))
+	}
+
+	// Verify the archived task is in the result
+	found := false
+	for _, task := range tasks2 {
+		if task.ID == taskToArchiveID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("archived task not found in list with IncludeArchived=true")
+	}
+}
+
+// TestUnarchiveTaskRestoresVisibility tests that unarchiving a task restores it to default visibility.
+func TestUnarchiveTaskRestoresVisibility(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Create project, document, and task
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	taskID := tasks[0].ID
+
+	// Archive the task
+	_, err = store.ArchiveTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to archive task: %v", err)
+	}
+
+	// Verify it's excluded from default list
+	filter := TaskListFilter{}
+	tasksAfterArchive, err := store.ListTasks(ctx, proj.ID, filter)
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+	if len(tasksAfterArchive) != 0 {
+		t.Errorf("expected 0 tasks after archive, got %d", len(tasksAfterArchive))
+	}
+
+	// Unarchive the task
+	unarchivedTask, err := store.UnarchiveTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to unarchive task: %v", err)
+	}
+
+	// Verify ArchivedAt is cleared
+	if unarchivedTask.ArchivedAt != nil {
+		t.Errorf("expected ArchivedAt to be nil after unarchive, but got %v", *unarchivedTask.ArchivedAt)
+	}
+
+	// List tasks again - should include unarchived task
+	tasksAfterUnarchive, err := store.ListTasks(ctx, proj.ID, filter)
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+	if len(tasksAfterUnarchive) != 1 {
+		t.Errorf("expected 1 task after unarchive, got %d", len(tasksAfterUnarchive))
+	}
+	if len(tasksAfterUnarchive) > 0 && tasksAfterUnarchive[0].ID != taskID {
+		t.Error("unarchived task not found in list")
+	}
+}
+
+// TestArchiveProjectExcludedByDefault tests that an archived project is excluded from default list
+// but included when IncludeArchived=true.
+func TestArchiveProjectExcludedByDefault(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Create two projects
+	_, err = store.CreateProject(ctx, "visible-project", "https://github.com/example/repo1")
+	if err != nil {
+		t.Fatalf("failed to create project 1: %v", err)
+	}
+
+	proj2, err := store.CreateProject(ctx, "project-to-archive", "https://github.com/example/repo2")
+	if err != nil {
+		t.Fatalf("failed to create project 2: %v", err)
+	}
+
+	// Archive the second project
+	archivedProj, err := store.ArchiveProject(ctx, proj2.ID)
+	if err != nil {
+		t.Fatalf("failed to archive project: %v", err)
+	}
+
+	if archivedProj.ArchivedAt == nil {
+		t.Error("expected ArchivedAt to be set, but it's nil")
+	}
+
+	// List projects without IncludeArchived (default) - should exclude archived project
+	filter := ProjectListFilter{}
+	projects1, err := store.ListProjects(ctx, filter)
+	if err != nil {
+		t.Fatalf("failed to list projects: %v", err)
+	}
+	if len(projects1) != 1 {
+		t.Errorf("expected 1 project (excluding archived), got %d", len(projects1))
+	}
+	if len(projects1) > 0 && projects1[0].ID == proj2.ID {
+		t.Error("archived project should be excluded from default list")
+	}
+
+	// List projects with IncludeArchived=true - should include archived project
+	filter2 := ProjectListFilter{IncludeArchived: true}
+	projects2, err := store.ListProjects(ctx, filter2)
+	if err != nil {
+		t.Fatalf("failed to list projects with IncludeArchived: %v", err)
+	}
+	if len(projects2) != 2 {
+		t.Errorf("expected 2 projects (including archived), got %d", len(projects2))
+	}
+
+	// Verify the archived project is in the result
+	found := false
+	for _, p := range projects2 {
+		if p.ID == proj2.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Error("archived project not found in list with IncludeArchived=true")
+	}
+}
+
+// TestUnarchiveProjectRestoresVisibility tests that unarchiving a project restores it to default visibility.
+func TestUnarchiveProjectRestoresVisibility(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Create a project
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	// Archive the project
+	_, err = store.ArchiveProject(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("failed to archive project: %v", err)
+	}
+
+	// Verify it's excluded from default list
+	filter := ProjectListFilter{}
+	projectsAfterArchive, err := store.ListProjects(ctx, filter)
+	if err != nil {
+		t.Fatalf("failed to list projects: %v", err)
+	}
+	if len(projectsAfterArchive) != 0 {
+		t.Errorf("expected 0 projects after archive, got %d", len(projectsAfterArchive))
+	}
+
+	// Unarchive the project
+	unarchivedProj, err := store.UnarchiveProject(ctx, proj.ID)
+	if err != nil {
+		t.Fatalf("failed to unarchive project: %v", err)
+	}
+
+	// Verify ArchivedAt is cleared
+	if unarchivedProj.ArchivedAt != nil {
+		t.Errorf("expected ArchivedAt to be nil after unarchive, but got %v", *unarchivedProj.ArchivedAt)
+	}
+
+	// List projects again - should include unarchived project
+	projectsAfterUnarchive, err := store.ListProjects(ctx, filter)
+	if err != nil {
+		t.Fatalf("failed to list projects: %v", err)
+	}
+	if len(projectsAfterUnarchive) != 1 {
+		t.Errorf("expected 1 project after unarchive, got %d", len(projectsAfterUnarchive))
+	}
+	if len(projectsAfterUnarchive) > 0 && projectsAfterUnarchive[0].ID != proj.ID {
+		t.Error("unarchived project not found in list")
+	}
+}
+
+// TestClaimableProjectsExcludeArchived tests that the claimable-projects poll excludes archived projects,
+// ensuring archived/orphan projects are never dispatched to workers.
+func TestClaimableProjectsExcludeArchived(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Create two projects
+	proj1, err := store.CreateProject(ctx, "claimable-project", "https://github.com/example/repo1")
+	if err != nil {
+		t.Fatalf("failed to create project 1: %v", err)
+	}
+
+	proj2, err := store.CreateProject(ctx, "archived-project", "https://github.com/example/repo2")
+	if err != nil {
+		t.Fatalf("failed to create project 2: %v", err)
+	}
+
+	// Create documents in both projects
+	doc1, err := store.CreateDocument(ctx, proj1.ID, "design", "Design 1", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document 1: %v", err)
+	}
+
+	doc2, err := store.CreateDocument(ctx, proj2.ID, "design", "Design 2", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document 2: %v", err)
+	}
+
+	// Create claimable tasks in both projects
+	tasks1, err := store.CreateTasks(ctx, proj1.ID, []TaskInput{
+		{Title: "Task 1", Spec: "spec1", DocumentID: doc1.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks in project 1: %v", err)
+	}
+
+	tasks2, err := store.CreateTasks(ctx, proj2.ID, []TaskInput{
+		{Title: "Task 2", Spec: "spec2", DocumentID: doc2.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks in project 2: %v", err)
+	}
+
+	// Promote both tasks to ready
+	for _, taskID := range []string{tasks1[0].ID, tasks2[0].ID} {
+		_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", taskID)
+		if err != nil {
+			t.Fatalf("failed to promote task: %v", err)
+		}
+	}
+
+	// Verify both projects are claimable before archiving
+	haikuModel := "haiku"
+	implementKind := "implement"
+	filter := ProjectListFilter{Claimable: true, Model: &haikuModel, Kind: &implementKind}
+	projectsBeforeArchive, err := store.ListProjects(ctx, filter)
+	if err != nil {
+		t.Fatalf("failed to list claimable projects: %v", err)
+	}
+	if len(projectsBeforeArchive) != 2 {
+		t.Errorf("expected 2 claimable projects before archive, got %d", len(projectsBeforeArchive))
+	}
+
+	// Archive the second project
+	_, err = store.ArchiveProject(ctx, proj2.ID)
+	if err != nil {
+		t.Fatalf("failed to archive project: %v", err)
+	}
+
+	// Verify only the non-archived project is claimable now
+	projectsAfterArchive, err := store.ListProjects(ctx, filter)
+	if err != nil {
+		t.Fatalf("failed to list claimable projects: %v", err)
+	}
+	if len(projectsAfterArchive) != 1 {
+		t.Errorf("expected 1 claimable project after archive, got %d", len(projectsAfterArchive))
+	}
+	if len(projectsAfterArchive) > 0 && projectsAfterArchive[0].ID == proj2.ID {
+		t.Error("archived project should be excluded from claimable poll")
+	}
+}
+
+// TestClaimableTasksExcludeArchived tests that claimable task queries exclude archived tasks.
+func TestClaimableTasksExcludeArchived(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	// Create project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create two claimable tasks
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 1", Spec: "spec1", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 2", Spec: "spec2", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	// Promote both to ready
+	for _, task := range tasks {
+		_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", task.ID)
+		if err != nil {
+			t.Fatalf("failed to promote task: %v", err)
+		}
+	}
+
+	// Verify both are claimable before archiving
+	filter := TaskListFilter{Claimable: true, Kind: strPtr("implement")}
+	claimableBeforeArchive, err := store.ListTasks(ctx, proj.ID, filter)
+	if err != nil {
+		t.Fatalf("failed to list claimable tasks: %v", err)
+	}
+	if len(claimableBeforeArchive) != 2 {
+		t.Errorf("expected 2 claimable tasks before archive, got %d", len(claimableBeforeArchive))
+	}
+
+	// Archive one task
+	_, err = store.ArchiveTask(ctx, tasks[0].ID)
+	if err != nil {
+		t.Fatalf("failed to archive task: %v", err)
+	}
+
+	// Verify only one is claimable now
+	claimableAfterArchive, err := store.ListTasks(ctx, proj.ID, filter)
+	if err != nil {
+		t.Fatalf("failed to list claimable tasks: %v", err)
+	}
+	if len(claimableAfterArchive) != 1 {
+		t.Errorf("expected 1 claimable task after archive, got %d", len(claimableAfterArchive))
+	}
+	if len(claimableAfterArchive) > 0 && claimableAfterArchive[0].ID == tasks[0].ID {
+		t.Error("archived task should be excluded from claimable list")
 	}
 }
