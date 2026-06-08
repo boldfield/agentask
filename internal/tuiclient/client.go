@@ -20,6 +20,8 @@ type Client interface {
 	PromoteTask(ctx context.Context, id string) error
 	ReviewTask(ctx context.Context, id, actor, verdict string, note *string) error
 	TransitionTask(ctx context.Context, id, to string, note *string) error
+	ArchiveTask(ctx context.Context, id string) error
+	ArchiveProject(ctx context.Context, id string) error
 }
 
 // Response structs for the TUI client (distinct from internal/store)
@@ -316,6 +318,28 @@ func (c *HTTPClient) TransitionTask(ctx context.Context, id, to string, note *st
 	}
 
 	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/transition", id), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+// ArchiveTask archives a task.
+func (c *HTTPClient) ArchiveTask(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/archive", id), nil)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+// ArchiveProject archives a project.
+func (c *HTTPClient) ArchiveProject(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, "POST", fmt.Sprintf("/projects/%s/archive", id), nil)
 	if err != nil {
 		return err
 	}
