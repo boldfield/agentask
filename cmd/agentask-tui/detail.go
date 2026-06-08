@@ -182,6 +182,9 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 	}
 	b.WriteString(fmt.Sprintf("Task: %s\n", task.Title))
 	stateStr := fmt.Sprintf("State: %s", task.State)
+	if task.Held {
+		stateStr += "  [HELD]"
+	}
 	if task.Assignee != nil {
 		stateStr += fmt.Sprintf("  Assignee: %s", *task.Assignee)
 	}

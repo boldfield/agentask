@@ -56,6 +56,8 @@ func New(s store.Store, authToken string, leaseTTL time.Duration, maxReviewRound
 	mux.HandleFunc("POST /tasks/{id}/submit", server.authMiddleware(server.handleSubmit))
 	mux.HandleFunc("POST /tasks/{id}/review", server.authMiddleware(server.handleReview))
 	mux.HandleFunc("POST /tasks/{id}/transition", server.authMiddleware(server.handleTransition))
+	mux.HandleFunc("POST /tasks/{id}/hold", server.authMiddleware(server.handleHold))
+	mux.HandleFunc("POST /tasks/{id}/release", server.authMiddleware(server.handleRelease))
 	mux.HandleFunc("POST /tasks/{id}/archive", server.authMiddleware(server.handleArchiveTask))
 	mux.HandleFunc("POST /tasks/{id}/unarchive", server.authMiddleware(server.handleUnarchiveTask))
 	mux.HandleFunc("POST /projects/{id}/archive", server.authMiddleware(server.handleArchiveProject))
@@ -702,4 +704,38 @@ func (s *Server) handleUnarchiveProject(w http.ResponseWriter, r *http.Request) 
 	}
 
 	s.encodeJSON(w, http.StatusOK, project)
+}
+
+// handleHold handles POST /tasks/{id}/hold to pin a task out of automated flow.
+func (s *Server) handleHold(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	task, err := s.store.HoldTask(r.Context(), taskID)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "HOLD_ERROR", "Failed to hold task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleRelease handles POST /tasks/{id}/release to restore normal automated flow.
+func (s *Server) handleRelease(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	task, err := s.store.ReleaseTask(r.Context(), taskID)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "RELEASE_ERROR", "Failed to release task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
 }

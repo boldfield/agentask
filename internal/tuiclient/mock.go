@@ -14,6 +14,8 @@ type MockClient struct {
 	PromoteTaskFunc    func(ctx context.Context, id string) error
 	ReviewTaskFunc     func(ctx context.Context, id, actor, verdict string, note *string) error
 	TransitionTaskFunc func(ctx context.Context, id, to string, note *string) error
+	HoldTaskFunc       func(ctx context.Context, id string) error
+	ReleaseTaskFunc    func(ctx context.Context, id string) error
 	ArchiveTaskFunc    func(ctx context.Context, id string) error
 	ArchiveProjectFunc func(ctx context.Context, id string) error
 	Tasks              []Task // for simple test data
@@ -61,6 +63,20 @@ func (m *MockClient) ReviewTask(ctx context.Context, id, actor, verdict string, 
 
 func (m *MockClient) TransitionTask(ctx context.Context, id, to string, note *string) error {
 	return m.TransitionTaskFunc(ctx, id, to, note)
+}
+
+func (m *MockClient) HoldTask(ctx context.Context, id string) error {
+	if m.HoldTaskFunc != nil {
+		return m.HoldTaskFunc(ctx, id)
+	}
+	return nil
+}
+
+func (m *MockClient) ReleaseTask(ctx context.Context, id string) error {
+	if m.ReleaseTaskFunc != nil {
+		return m.ReleaseTaskFunc(ctx, id)
+	}
+	return nil
 }
 
 func (m *MockClient) ArchiveTask(ctx context.Context, id string) error {

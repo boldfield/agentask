@@ -135,8 +135,8 @@ func TestMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations: %v", err)
 	}
-	if migrationCount != 6 {
-		t.Errorf("expected 6 migrations to be recorded, but got %d", migrationCount)
+	if migrationCount != 7 {
+		t.Errorf("expected 7 migrations to be recorded, but got %d", migrationCount)
 	}
 
 	// Verify idempotency: re-open the same database and it should work
@@ -151,8 +151,8 @@ func TestMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after re-open: %v", err)
 	}
-	if migrationCount != 6 {
-		t.Errorf("expected 6 migrations after re-open (idempotency), but got %d", migrationCount)
+	if migrationCount != 7 {
+		t.Errorf("expected 7 migrations after re-open (idempotency), but got %d", migrationCount)
 	}
 }
 
@@ -248,8 +248,8 @@ func TestOpenSamePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after second open: %v", err)
 	}
-	if migrationCount != 6 {
-		t.Errorf("expected 6 migrations after second open, but got %d", migrationCount)
+	if migrationCount != 7 {
+		t.Errorf("expected 7 migrations after second open, but got %d", migrationCount)
 	}
 }
 
@@ -4250,5 +4250,401 @@ func TestClaimableTasksExcludeArchived(t *testing.T) {
 	}
 	if len(claimableAfterArchive) > 0 && claimableAfterArchive[0].ID == tasks[0].ID {
 		t.Error("archived task should be excluded from claimable list")
+	}
+}
+
+// TestHeldTaskNotClaimable verifies that a held task does not appear in the claimable listing.
+func TestHeldTaskNotClaimable(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Test task",
+			Spec:         "Test spec",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote to ready
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	// Verify task is claimable before holding
+	claimableBefore, err := store.ListTasks(ctx, proj.ID, TaskListFilter{Claimable: true})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+	foundBefore := false
+	for _, task := range claimableBefore {
+		if task.ID == taskID {
+			foundBefore = true
+			break
+		}
+	}
+	if !foundBefore {
+		t.Error("task should be claimable before hold")
+	}
+
+	// Hold the task
+	_, err = store.HoldTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to hold task: %v", err)
+	}
+
+	// Verify task is NOT in claimable list after holding
+	claimableAfter, err := store.ListTasks(ctx, proj.ID, TaskListFilter{Claimable: true})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+	foundAfter := false
+	for _, task := range claimableAfter {
+		if task.ID == taskID {
+			foundAfter = true
+			break
+		}
+	}
+	if foundAfter {
+		t.Error("held task should not appear in claimable list")
+	}
+
+	// Verify the task still exists and is held
+	heldTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+	if !heldTask.Held {
+		t.Error("task should have held=true")
+	}
+}
+
+// TestRejectVerdictOnHeldTaskDoesNotAutoTransition verifies that a reject verdict on a held task
+// does NOT move it to ready state - it stays put for manual operator intervention.
+func TestRejectVerdictOnHeldTaskDoesNotAutoTransition(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Get the review task
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("review task not found")
+	}
+
+	// Hold the parent task
+	_, err = store.HoldTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to hold task: %v", err)
+	}
+
+	// Claim and submit review task with reject verdict
+	_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+
+	reject := "reject"
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, 5)
+	if err != nil {
+		t.Fatalf("failed to submit review task with verdict: %v", err)
+	}
+
+	// Verify parent task stayed in review state (not auto-transitioned to ready due to hold)
+	parentTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "review" {
+		t.Errorf("expected held parent task state to stay in 'review', got '%s'", parentTask.State)
+	}
+	if !parentTask.Held {
+		t.Error("parent task should still be held")
+	}
+}
+
+// TestReleaseRestoresFlow verifies that releasing a held task restores normal automated flow.
+func TestReleaseRestoresFlow(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Test task",
+			Spec:         "Test spec",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote to ready
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	// Hold the task
+	_, err = store.HoldTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to hold task: %v", err)
+	}
+
+	// Verify task is not claimable while held
+	claimableWhileHeld, err := store.ListTasks(ctx, proj.ID, TaskListFilter{Claimable: true})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+	for _, task := range claimableWhileHeld {
+		if task.ID == taskID {
+			t.Error("held task should not be claimable")
+		}
+	}
+
+	// Release the task
+	_, err = store.ReleaseTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to release task: %v", err)
+	}
+
+	// Verify task is claimable again after release
+	claimableAfterRelease, err := store.ListTasks(ctx, proj.ID, TaskListFilter{Claimable: true})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+	foundAfterRelease := false
+	for _, task := range claimableAfterRelease {
+		if task.ID == taskID {
+			foundAfterRelease = true
+			break
+		}
+	}
+	if !foundAfterRelease {
+		t.Error("released task should be claimable again")
+	}
+
+	// Verify held flag is cleared
+	releasedTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+	if releasedTask.Held {
+		t.Error("task should have held=false after release")
+	}
+}
+
+// TestHoldFromDifferentStates verifies that hold works from ready, in_progress, and review states.
+func TestHoldFromDifferentStates(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Test hold from ready state
+	tasks1, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Task in ready",
+			Spec:         "Test spec",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	task1ID := tasks1[0].ID
+	_, err = store.PromoteTask(ctx, task1ID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	heldTask1, err := store.HoldTask(ctx, task1ID)
+	if err != nil {
+		t.Fatalf("failed to hold ready task: %v", err)
+	}
+	if !heldTask1.Held {
+		t.Error("ready task should be held")
+	}
+	if heldTask1.State != "ready" {
+		t.Error("task state should remain ready when held")
+	}
+
+	// Test hold from in_progress state
+	tasks2, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Task in progress",
+			Spec:         "Test spec",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	task2ID := tasks2[0].ID
+	_, err = store.PromoteTask(ctx, task2ID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, task2ID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	heldTask2, err := store.HoldTask(ctx, task2ID)
+	if err != nil {
+		t.Fatalf("failed to hold in_progress task: %v", err)
+	}
+	if !heldTask2.Held {
+		t.Error("in_progress task should be held")
+	}
+	if heldTask2.State != "in_progress" {
+		t.Error("task state should remain in_progress when held")
+	}
+
+	// Test hold from review state
+	tasks3, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Task in review",
+			Spec:         "Test spec",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	task3ID := tasks3[0].ID
+	_, err = store.PromoteTask(ctx, task3ID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, task3ID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	_, err = store.SubmitTask(ctx, task3ID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	if err != nil {
+		t.Fatalf("failed to submit task: %v", err)
+	}
+
+	heldTask3, err := store.HoldTask(ctx, task3ID)
+	if err != nil {
+		t.Fatalf("failed to hold review task: %v", err)
+	}
+	if !heldTask3.Held {
+		t.Error("review task should be held")
+	}
+	if heldTask3.State != "review" {
+		t.Error("task state should remain review when held")
 	}
 }
