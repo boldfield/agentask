@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -42,6 +43,15 @@ func main() {
 		log.Fatalf("failed to parse AGENTASK_LEASE_TTL: %v", err)
 	}
 
+	maxReviewRoundsStr := os.Getenv("AGENTASK_MAX_REVIEW_ROUNDS")
+	if maxReviewRoundsStr == "" {
+		maxReviewRoundsStr = "5"
+	}
+	maxReviewRounds, err := strconv.Atoi(maxReviewRoundsStr)
+	if err != nil {
+		log.Fatalf("failed to parse AGENTASK_MAX_REVIEW_ROUNDS: %v", err)
+	}
+
 	// Parse model allowlist
 	allowedModels := parseAllowedModels(os.Getenv("AGENTASK_MODELS"))
 	if len(allowedModels) == 0 {
@@ -56,7 +66,7 @@ func main() {
 	defer s.Close()
 
 	// Create API server
-	apiServer := api.New(s, authToken, leaseTTL)
+	apiServer := api.New(s, authToken, leaseTTL, maxReviewRounds)
 
 	// Start HTTP server
 	log.Printf("listening on %s", addr)

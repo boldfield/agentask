@@ -14,20 +14,22 @@ import (
 
 // Server wraps the HTTP server with its dependencies: store, auth token, and lease TTL.
 type Server struct {
-	mux       *http.ServeMux
-	store     store.Store
-	authToken string
-	leaseTTL  time.Duration
+	mux             *http.ServeMux
+	store           store.Store
+	authToken       string
+	leaseTTL        time.Duration
+	maxReviewRounds int
 }
 
-// New creates a new API server with the given store, auth token, and lease TTL.
-func New(s store.Store, authToken string, leaseTTL time.Duration) *Server {
+// New creates a new API server with the given store, auth token, lease TTL, and max review rounds.
+func New(s store.Store, authToken string, leaseTTL time.Duration, maxReviewRounds int) *Server {
 	mux := http.NewServeMux()
 	server := &Server{
-		mux:       mux,
-		store:     s,
-		authToken: authToken,
-		leaseTTL:  leaseTTL,
+		mux:             mux,
+		store:           s,
+		authToken:       authToken,
+		leaseTTL:        leaseTTL,
+		maxReviewRounds: maxReviewRounds,
 	}
 
 	// Register handlers
@@ -532,7 +534,7 @@ func (s *Server) handleSubmit(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Submit the task
-	task, err := s.store.SubmitTask(r.Context(), taskID, payload.AgentID, payload.Result, payload.Verdict, payload.Links)
+	task, err := s.store.SubmitTask(r.Context(), taskID, payload.AgentID, payload.Result, payload.Verdict, payload.Links, s.maxReviewRounds)
 	if err != nil {
 		// Check if it's a ValidationError (invalid link kind)
 		var validationErr *store.ValidationError
