@@ -67,6 +67,17 @@ to take more than a minute. Pin heartbeats to those points; do not rely on sensi
    heartbeat, run `make test`, heartbeat. Do NOT proceed until the merge is clean and BOTH pass;
    fix whatever they flag — and heartbeat again before any lengthy fix-and-rerun cycle. (This sync
    is what clears merge conflicts that accrued while the PR sat in review.)
+
+   **No-op resolution (acceptance already satisfied on `main`).** If, after syncing with `main`,
+   the task's acceptance criteria are ALREADY met and you have NO diff to commit (`git status`
+   clean, nothing to add), do NOT block and do NOT fabricate a PR (`gh pr create` would fail with
+   "No commits between main and <branch>" anyway). Skip steps 7's push/PR entirely and go straight
+   to a **no-op submit** (step 8): a clear `result` ("acceptance already satisfied on main at
+   <commit>; no changes needed") plus a structured marker link `{"kind":"no_op","value":
+   "already-satisfied"}` and NO `pr` link. The reviewer verifies the claim against `main` and
+   either approves it to `done` or rejects with the gap — you do NOT self-declare `done`. Only take
+   this path when the diff is genuinely empty; if any real change is needed, do the work and submit
+   a normal PR.
 7. Commit, push, PR. End the commit message with a blank line then
    `Co-Authored-By: Claude (<value of $AGENT_MODEL>) <noreply@anthropic.com>`. Push the branch; open a PR with
    `gh pr create` ONLY on a fresh task. On REWORK push your (detached) HEAD to the PR's branch:
@@ -75,7 +86,9 @@ to take more than a minute. Pin heartbeats to those points; do not rely on sensi
    you did; confirm make check & make test pass>","links":[{"kind":"pr","value":"<full PR URL>"},
    {"kind":"branch","value":"<branch>"}]}`. **The `pr` link is REQUIRED and must be the full PR URL
    (not `#123`)** — without it the reviewer has no PR to review and will reject; a submit with no
-   `pr` link is a defect. Attach `pr` + `branch` on the FIRST submit. On a REWORK submit (continuing
+   `pr` link is a defect — EXCEPT a verified **no-op submit** (step 6), which deliberately carries
+   NO `pr` link and instead a `{"kind":"no_op","value":"already-satisfied"}` marker. Attach
+   `pr` + `branch` on the FIRST submit. On a REWORK submit (continuing
    the SAME PR), the links are already attached — OMIT them (re-sending duplicates); send only
    `result`. (If a rework had to open a fresh PR because the prior was closed, attach the NEW `pr`
    link.)
