@@ -3260,3 +3260,157 @@ func TestDetail_ViewportOffsetClamping(t *testing.T) {
 		t.Errorf("Expected non-empty view output, got empty")
 	}
 }
+
+// TestBoardModel_ColumnScrolling tests that a column with many tasks scrolls correctly.
+// Verify that navigating down scrolls the selected task into view, and that
+// the selected row is always visible in the viewport.
+func TestBoardModel_ColumnScrolling(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	// Set a small height to force scrolling with fewer tasks
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+	model = m.(*BoardModel)
+
+	// Create many tasks in the done column to force scrolling
+	var doneTasks []tuiclient.Task
+	for i := 0; i < 20; i++ {
+		doneTasks = append(doneTasks, tuiclient.Task{
+			ID:    fmt.Sprintf("task-done-%d", i),
+			Title: fmt.Sprintf("Done Task %d", i),
+			State: "done",
+		})
+	}
+
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["approved"] = []tuiclient.Task{}
+	bucketed["done"] = doneTasks
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Navigate to done column (5 rights from in_progress at index 2)
+	for i := 0; i < 3; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+		model = m.(*BoardModel)
+	}
+
+	if model.selectedColumn != 5 {
+		t.Fatalf("Expected selectedColumn 5 (done), got %d", model.selectedColumn)
+	}
+
+	// Check initial state: should be at first task with scrollOffset 0
+	if model.selectedIndex != 0 {
+		t.Errorf("Expected selectedIndex 0, got %d", model.selectedIndex)
+	}
+	if model.scrollOffset != 0 {
+		t.Errorf("Expected scrollOffset 0, got %d", model.scrollOffset)
+	}
+
+	// Navigate down several times
+	for i := 0; i < 8; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model = m.(*BoardModel)
+	}
+
+	// After navigating down, we should have scrolled
+	if model.selectedIndex != 8 {
+		t.Errorf("Expected selectedIndex 8, got %d", model.selectedIndex)
+	}
+	// scrollOffset should be > 0 because we scrolled
+	if model.scrollOffset <= 0 {
+		t.Errorf("Expected scrollOffset > 0 after navigating down, got %d", model.scrollOffset)
+	}
+
+	// Verify the selected task is visible in the rendered output
+	output := model.View()
+	if !strings.Contains(output, "Done Task 8") {
+		t.Errorf("Expected 'Done Task 8' (selected task) in view output, got:\n%s", output)
+	}
+}
+
+// TestBoardModel_ScrollResetOnColumnChange tests that switching columns resets scroll to top.
+// Verify that when changing to a different column, both scrollOffset and selectedIndex reset to 0.
+func TestBoardModel_ScrollResetOnColumnChange(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	// Set a small height to force scrolling
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+	model = m.(*BoardModel)
+
+	// Create many tasks in done column
+	var doneTasks []tuiclient.Task
+	for i := 0; i < 15; i++ {
+		doneTasks = append(doneTasks, tuiclient.Task{
+			ID:    fmt.Sprintf("task-done-%d", i),
+			Title: fmt.Sprintf("Done Task %d", i),
+			State: "done",
+		})
+	}
+
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["approved"] = []tuiclient.Task{}
+	bucketed["done"] = doneTasks
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Navigate to done column
+	for i := 0; i < 3; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+		model = m.(*BoardModel)
+	}
+
+	// Scroll down several times
+	for i := 0; i < 6; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model = m.(*BoardModel)
+	}
+
+	// Verify we've scrolled
+	if model.selectedIndex == 0 {
+		t.Fatalf("Expected selectedIndex > 0 after scrolling, got 0")
+	}
+	if model.scrollOffset == 0 {
+		t.Fatalf("Expected scrollOffset > 0 after scrolling, got 0")
+	}
+
+	// Now navigate left (back to review or approved column)
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = m.(*BoardModel)
+
+	// Both scrollOffset and selectedIndex should be reset to 0
+	if model.scrollOffset != 0 {
+		t.Errorf("Expected scrollOffset to reset to 0 on column change, got %d", model.scrollOffset)
+	}
+	if model.selectedIndex != 0 {
+		t.Errorf("Expected selectedIndex to reset to 0 on column change, got %d", model.selectedIndex)
+	}
+}
