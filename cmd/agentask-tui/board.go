@@ -59,6 +59,7 @@ type BoardModel struct {
 	selectedTaskID string                      // current selection, keyed by ID
 	selectedIndex  int                         // index position within selected column, for nearest-selection on disappear
 	selectedColumn int                         // 0=backlog, 1=ready, 2=in_progress, 3=review, 4=done
+	scrollOffset   int                         // vertical scroll offset for the task list
 	loading        bool
 	error          string
 	width          int
@@ -578,6 +579,7 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.selectedColumn > 0 {
 				m.selectedColumn--
 				m.selectedIndex = 0 // Reset to top when changing columns
+				m.scrollOffset = 0  // Reset scroll to top
 				m.ensureSelectionInColumn()
 			}
 
@@ -585,6 +587,7 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if m.selectedColumn < len(stateOrder)-1 {
 				m.selectedColumn++
 				m.selectedIndex = 0 // Reset to top when changing columns
+				m.scrollOffset = 0  // Reset scroll to top
 				m.ensureSelectionInColumn()
 			}
 
@@ -608,6 +611,7 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			m.clampScrollToSelection()
 
 		case "down", "j":
 			tasksInColumn := m.getTasksInSelectedColumn()
@@ -628,6 +632,7 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					}
 				}
 			}
+			m.clampScrollToSelection()
 
 		// Refresh: issue one-shot fetch; do NOT arm a new tick.
 		// The single perpetual tick chain started in Init re-arms itself from tickMsg.
@@ -1208,6 +1213,44 @@ func (m *BoardModel) getTasksInSelectedColumn() []tuiclient.Task {
 	return m.tasks[state]
 }
 
+// getVisibleTaskHeight returns the number of lines available for rendering tasks.
+// Account for project name, tabs, separator, and help bar.
+func (m *BoardModel) getVisibleTaskHeight() int {
+	// Rough estimate: total height minus fixed UI elements (project name, tabs, separators, help bar)
+	// At least 1 line for tasks, at most height-5
+	if m.height < 6 {
+		return 1
+	}
+	return m.height - 5
+}
+
+// clampScrollToSelection ensures the scroll offset shows the selected task.
+// If the selected index is above the viewport, scroll up; if below, scroll down.
+func (m *BoardModel) clampScrollToSelection() {
+	visibleHeight := m.getVisibleTaskHeight()
+	// If selected index is above the scroll window, scroll up
+	if m.selectedIndex < m.scrollOffset {
+		m.scrollOffset = m.selectedIndex
+	}
+	// If selected index is below the scroll window, scroll down
+	if m.selectedIndex >= m.scrollOffset+visibleHeight {
+		m.scrollOffset = m.selectedIndex - visibleHeight + 1
+	}
+	// Ensure scroll offset doesn't go negative
+	if m.scrollOffset < 0 {
+		m.scrollOffset = 0
+	}
+	// Ensure scroll offset doesn't show blank area at the bottom
+	tasksInColumn := m.getTasksInSelectedColumn()
+	maxOffset := len(tasksInColumn) - visibleHeight
+	if maxOffset < 0 {
+		maxOffset = 0
+	}
+	if m.scrollOffset > maxOffset {
+		m.scrollOffset = maxOffset
+	}
+}
+
 // ensureSelectionInColumn ensures the selected task exists in the current column.
 // If the task is gone, select the nearest task at the prior index position (clamped to available).
 // If no tasks, clear selection.
@@ -1217,6 +1260,7 @@ func (m *BoardModel) ensureSelectionInColumn() {
 	if len(tasksInColumn) == 0 {
 		m.selectedTaskID = ""
 		m.selectedIndex = 0
+		m.scrollOffset = 0
 		return
 	}
 
@@ -1224,6 +1268,7 @@ func (m *BoardModel) ensureSelectionInColumn() {
 	for i, t := range tasksInColumn {
 		if t.ID == m.selectedTaskID {
 			m.selectedIndex = i
+			m.clampScrollToSelection()
 			return // Selection is valid
 		}
 	}
@@ -1236,6 +1281,7 @@ func (m *BoardModel) ensureSelectionInColumn() {
 	}
 	m.selectedIndex = newIdx
 	m.selectedTaskID = tasksInColumn[newIdx].ID
+	m.clampScrollToSelection()
 }
 
 // View renders the board (or the detail view if in modeDetail).
@@ -1412,7 +1458,7 @@ func (m *BoardModel) renderTabs() string {
 	return strings.Join(tabs, "  ")
 }
 
-// renderColumnTasks renders the tasks in the selected column.
+// renderColumnTasks renders the tasks in the selected column, respecting scroll offset.
 func (m *BoardModel) renderColumnTasks() string {
 	if m.loading {
 		return "Loading..."
@@ -1428,8 +1474,16 @@ func (m *BoardModel) renderColumnTasks() string {
 		return "(empty)"
 	}
 
+	// Calculate the visible task range
+	visibleHeight := m.getVisibleTaskHeight()
+	endOffset := m.scrollOffset + visibleHeight
+	if endOffset > len(tasksInColumn) {
+		endOffset = len(tasksInColumn)
+	}
+
 	var b strings.Builder
-	for _, task := range tasksInColumn {
+	for i := m.scrollOffset; i < endOffset; i++ {
+		task := tasksInColumn[i]
 		isSelected := task.ID == m.selectedTaskID
 		prefix := " "
 		if isSelected {
