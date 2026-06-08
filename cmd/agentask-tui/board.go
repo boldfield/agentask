@@ -205,6 +205,13 @@ type reviewActionMsg struct {
 	fromDetail bool
 }
 
+// projectArchiveMsg is returned when a project archive completes.
+// It carries the refreshed projects list or an error.
+type projectArchiveMsg struct {
+	projects []tuiclient.Project
+	err      string
+}
+
 // reviewApprove creates a command that calls ReviewTask(approve) then TransitionTask(done),
 // in that order. If ReviewTask fails, TransitionTask is not called. Both calls use note,
 // which may be nil. fromDetail records whether the action was initiated from the detail view
@@ -394,7 +401,8 @@ func (m *BoardModel) failCmd(taskID string, note *string, fromDetail bool) tea.C
 	}
 }
 
-func (m *BoardModel) archiveTaskCmd(taskID string) tea.Cmd {
+// archiveTaskCmd creates a command that archives a task.
+func (m *BoardModel) archiveTaskCmd(taskID string, fromDetail bool) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
@@ -402,38 +410,37 @@ func (m *BoardModel) archiveTaskCmd(taskID string) tea.Cmd {
 		if err := m.client.ArchiveTask(ctx, taskID); err != nil {
 			var apiErr *tuiclient.APIError
 			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
-				msg := m.fetchTasksInline(ctx, fmt.Sprintf("archive failed: %s", apiErr.Message))
+				msg := m.fetchTasksInline(ctx, fmt.Sprintf("archive 409: %s", apiErr.Message))
+				msg.fromDetail = fromDetail
 				return msg
 			}
 			msg := m.fetchTasksInline(ctx, fmt.Sprintf("archive failed: %v", err))
+			msg.fromDetail = fromDetail
 			return msg
 		}
 
 		msg := m.fetchTasksInline(ctx, "")
+		msg.fromDetail = fromDetail
 		return msg
 	}
 }
 
+// archiveProjectCmd creates a command that archives a project.
 func (m *BoardModel) archiveProjectCmd(projectID string) tea.Cmd {
 	return func() tea.Msg {
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 
 		if err := m.client.ArchiveProject(ctx, projectID); err != nil {
-			var apiErr *tuiclient.APIError
-			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
-				return projectsFetchedMsg{err: fmt.Errorf("archive failed: %s", apiErr.Message)}
-			}
-			return projectsFetchedMsg{err: fmt.Errorf("archive failed: %v", err)}
+			return projectArchiveMsg{err: fmt.Sprintf("archive failed: %v", err)}
 		}
 
-		// Refetch projects to reflect the archive
-		projects, fetchErr := m.client.ListProjects(ctx)
-		if fetchErr != nil {
-			return projectsFetchedMsg{err: fmt.Errorf("refetch failed: %v", fetchErr)}
+		// Refetch projects to reflect the archived status
+		projects, err := m.client.ListProjects(ctx)
+		if err != nil {
+			return projectArchiveMsg{err: fmt.Sprintf("failed to refetch projects: %v", err)}
 		}
-
-		return projectsFetchedMsg{projects: projects}
+		return projectArchiveMsg{projects: projects}
 	}
 }
 
@@ -783,8 +790,8 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 
-		// Archive: available on any task
-		case "d":
+		// Archive: archive the selected task
+		case "z":
 			if m.selectedTaskID != "" {
 				m.pendingTaskID = m.selectedTaskID
 				m.mode = modeArchiveTaskConfirm
@@ -863,6 +870,31 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.projects = msg.projects
+		return m, nil
+
+	case projectArchiveMsg:
+		if msg.err != "" {
+			m.error = msg.err
+		} else {
+			m.error = ""
+			m.projects = msg.projects
+			// If the archived project was the current one, switch to the first available
+			currentProjectFound := false
+			for _, p := range msg.projects {
+				if p.ID == m.project.ID {
+					currentProjectFound = true
+					break
+				}
+			}
+			if !currentProjectFound && len(msg.projects) > 0 {
+				m.project = msg.projects[0]
+				// Refetch tasks for the new project
+				m.loading = true
+				m.tasks = make(map[string][]tuiclient.Task)
+				return m, m.fetchTasks()
+			}
+		}
+		m.mode = modeNormal
 		return m, nil
 
 	case tickMsg:
@@ -1034,7 +1066,8 @@ func (m *BoardModel) updateProjectSwitchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		}
 		return m, nil
 
-	case "d":
+	case "z":
+		// Archive the selected project
 		if m.projectSwitchIndex >= 0 && m.projectSwitchIndex < len(m.projects) {
 			selectedProject := m.projects[m.projectSwitchIndex]
 			m.pendingProjectID = selectedProject.ID
@@ -1254,15 +1287,14 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "n", "N":
 			// User declined or pressed escape — cancel.
-			m.mode = modeNormal
-			m.pendingTaskID = ""
+			m.cancelReviewMode()
 			return m, nil
 		case "y", "Y":
-			// Capture task ID before clearing.
+			// Capture origin before cancelReviewMode clears it.
 			taskID := m.pendingTaskID
-			m.mode = modeNormal
-			m.pendingTaskID = ""
-			return m, m.archiveTaskCmd(taskID)
+			originFromDetail := m.reviewFromDetail
+			m.cancelReviewMode()
+			return m, m.archiveTaskCmd(taskID, originFromDetail)
 		}
 		// Ignore all other keys in confirm mode.
 		return m, nil
@@ -1271,14 +1303,12 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "esc", "n", "N":
 			// User declined or pressed escape — cancel.
-			m.mode = modeProjectSwitch
-			m.pendingProjectID = ""
+			m.cancelReviewMode()
 			return m, nil
 		case "y", "Y":
-			// Capture project ID before clearing.
+			// Capture the project ID before cancelReviewMode clears it.
 			projectID := m.pendingProjectID
-			m.mode = modeProjectSwitch
-			m.pendingProjectID = ""
+			m.cancelReviewMode()
 			return m, m.archiveProjectCmd(projectID)
 		}
 		// Ignore all other keys in confirm mode.
@@ -1516,10 +1546,10 @@ func (m *BoardModel) renderReviewOverlay() string {
 			taskID = taskID[:8]
 		}
 		b.WriteString(fmt.Sprintf("Archive %s? [y/N] ", taskID))
-		b.WriteString("(archived items are hidden from board, y to confirm, n/esc to cancel)\n")
+		b.WriteString("(y to confirm, n/esc to cancel)\n")
 	case modeArchiveProjectConfirm:
 		b.WriteString("Archive project? [y/N] ")
-		b.WriteString("(archived projects are hidden, y to confirm, n/esc to cancel)\n")
+		b.WriteString("(y to confirm, n/esc to cancel)\n")
 	}
 	return b.String()
 }
@@ -1527,7 +1557,7 @@ func (m *BoardModel) renderReviewOverlay() string {
 // renderProjectSwitchOverlay renders the project switcher overlay.
 func (m *BoardModel) renderProjectSwitchOverlay() string {
 	var b strings.Builder
-	b.WriteString("Switch project (↑/↓ or k/j to select, enter to switch, esc to cancel):\n\n")
+	b.WriteString("Switch project (↑/↓ or k/j to select, enter to switch, z to archive, esc to cancel):\n\n")
 	for i, p := range m.projects {
 		cursor := "  "
 		if i == m.projectSwitchIndex {
@@ -1691,14 +1721,14 @@ func (m *BoardModel) renderHelpBar() string {
 	}
 	switch m.selectedColumn {
 	case 0: // backlog
-		return "←/→ column   ↑/↓ select   enter detail   p promote   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   p promote   z archive   P switch project   r refresh   q quit"
 	case 3: // review
-		return "←/→ column   ↑/↓ select   enter detail   a approve   x reject   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   a approve   x reject   z archive   P switch project   r refresh   q quit"
 	case 4: // approved
-		return "←/→ column   ↑/↓ select   enter detail   b bounce   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   b bounce   z archive   P switch project   r refresh   q quit"
 	case 6: // blocked
-		return "←/→ column   ↑/↓ select   enter detail   u unblock   f fail   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   u unblock   f fail   z archive   P switch project   r refresh   q quit"
 	default:
-		return "←/→ column   ↑/↓ select   enter detail   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   z archive   P switch project   r refresh   q quit"
 	}
 }
