@@ -3785,3 +3785,249 @@ func TestBoardModel_ArchiveProjectFlow_CancelWithN(t *testing.T) {
 		t.Error("Expected ArchiveProject not to be called after 'n'")
 	}
 }
+
+// TestBoardModel_HoldTaskFlow_ConfirmY tests that pressing 'y' in hold confirm mode holds a task.
+func TestBoardModel_HoldTaskFlow_ConfirmY(t *testing.T) {
+	var callLog []string
+	var capturedHoldID string
+
+	mockClient := &tuiclient.MockClient{
+		HoldTaskFunc: func(ctx context.Context, id string) error {
+			callLog = append(callLog, "hold")
+			capturedHoldID = id
+			return nil
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			callLog = append(callLog, "refetch")
+			// After hold, refetch returns the same tasks (no state change for held)
+			return []tuiclient.Task{
+				{ID: "ready-task-1", Title: "Ready Task", State: "ready", Held: true},
+			}, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test Project"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Set up board with a task in ready state
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{{ID: "ready-task-1", Title: "Ready Task", State: "ready", Held: false}}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["approved"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Select the ready task
+	model.selectedTaskID = "ready-task-1"
+	model.selectedColumn = 1 // ready column
+
+	// Press 't' to start hold
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeHoldTaskConfirm {
+		t.Fatalf("Expected modeHoldTaskConfirm after 't', got mode %d", model.mode)
+	}
+
+	// Verify the confirm prompt is shown
+	output := model.View()
+	if !strings.Contains(output, "Hold") {
+		t.Errorf("Expected hold confirm prompt in view, got:\n%s", output)
+	}
+
+	// Press 'y' to confirm
+	m, holdCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after confirm, got mode %d", model.mode)
+	}
+
+	// Execute the hold command
+	model = executeReviewCmd(t, model, holdCmd)
+
+	// Verify call order: hold → refetch
+	if len(callLog) != 2 {
+		t.Fatalf("Expected 2 calls (hold, refetch), got %d: %v", len(callLog), callLog)
+	}
+	if callLog[0] != "hold" {
+		t.Errorf("Expected first call to be 'hold', got %q", callLog[0])
+	}
+	if callLog[1] != "refetch" {
+		t.Errorf("Expected second call to be 'refetch', got %q", callLog[1])
+	}
+
+	// Verify hold was called with correct task ID
+	if capturedHoldID != "ready-task-1" {
+		t.Errorf("HoldTask: expected task ID ready-task-1, got %q", capturedHoldID)
+	}
+}
+
+// TestBoardModel_ReleaseTaskFlow_ConfirmY tests that pressing 'y' in release confirm mode releases a held task.
+func TestBoardModel_ReleaseTaskFlow_ConfirmY(t *testing.T) {
+	var callLog []string
+	var capturedReleaseID string
+
+	mockClient := &tuiclient.MockClient{
+		ReleaseTaskFunc: func(ctx context.Context, id string) error {
+			callLog = append(callLog, "release")
+			capturedReleaseID = id
+			return nil
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			callLog = append(callLog, "refetch")
+			// After release, the task is no longer held
+			return []tuiclient.Task{
+				{ID: "ready-task-1", Title: "Ready Task", State: "ready", Held: false},
+			}, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test Project"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Set up board with a held task in ready state
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{{ID: "ready-task-1", Title: "Ready Task", State: "ready", Held: true}}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["approved"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Select the held task
+	model.selectedTaskID = "ready-task-1"
+	model.selectedColumn = 1 // ready column
+
+	// Press 't' to start release (since task is held)
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeReleaseTaskConfirm {
+		t.Fatalf("Expected modeReleaseTaskConfirm after 't' on held task, got mode %d", model.mode)
+	}
+
+	// Verify the confirm prompt is shown
+	output := model.View()
+	if !strings.Contains(output, "Release") {
+		t.Errorf("Expected release confirm prompt in view, got:\n%s", output)
+	}
+
+	// Press 'y' to confirm
+	m, releaseCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after confirm, got mode %d", model.mode)
+	}
+
+	// Execute the release command
+	model = executeReviewCmd(t, model, releaseCmd)
+
+	// Verify call order: release → refetch
+	if len(callLog) != 2 {
+		t.Fatalf("Expected 2 calls (release, refetch), got %d: %v", len(callLog), callLog)
+	}
+	if callLog[0] != "release" {
+		t.Errorf("Expected first call to be 'release', got %q", callLog[0])
+	}
+	if callLog[1] != "refetch" {
+		t.Errorf("Expected second call to be 'refetch', got %q", callLog[1])
+	}
+
+	// Verify release was called with correct task ID
+	if capturedReleaseID != "ready-task-1" {
+		t.Errorf("ReleaseTask: expected task ID ready-task-1, got %q", capturedReleaseID)
+	}
+}
+
+// TestBoardModel_HoldTaskFlow_ConfirmN tests that pressing 'n' cancels hold.
+func TestBoardModel_HoldTaskFlow_ConfirmN(t *testing.T) {
+	var holdCalled bool
+
+	mockClient := &tuiclient.MockClient{
+		HoldTaskFunc: func(ctx context.Context, id string) error {
+			holdCalled = true
+			return nil
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			return []tuiclient.Task{
+				{ID: "ready-task-1", Title: "Ready Task", State: "ready"},
+			}, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test Project"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{{ID: "ready-task-1", Title: "Ready Task", State: "ready", Held: false}}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["approved"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	model.selectedTaskID = "ready-task-1"
+	model.selectedColumn = 1
+
+	// Press 't' to start hold
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'t'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeHoldTaskConfirm {
+		t.Fatalf("Expected modeHoldTaskConfirm after 't', got mode %d", model.mode)
+	}
+
+	// Press 'n' to cancel
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after cancel, got mode %d", model.mode)
+	}
+
+	if holdCalled {
+		t.Error("Expected HoldTask not to be called after 'n'")
+	}
+}

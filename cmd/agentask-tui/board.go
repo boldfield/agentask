@@ -1840,14 +1840,14 @@ func (m *BoardModel) renderHelpBar() string {
 	}
 	switch m.selectedColumn {
 	case 0: // backlog
-		return "←/→ column   ↑/↓ select   enter detail   p promote   z archive   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   p promote   t hold/release   z archive   P switch project   r refresh   q quit"
 	case 3: // review
-		return "←/→ column   ↑/↓ select   enter detail   a approve   x reject   z archive   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   a approve   x reject   t hold/release   z archive   P switch project   r refresh   q quit"
 	case 4: // approved
-		return "←/→ column   ↑/↓ select   enter detail   b bounce   z archive   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   b bounce   t hold/release   z archive   P switch project   r refresh   q quit"
 	case 6: // blocked
-		return "←/→ column   ↑/↓ select   enter detail   u unblock   f fail   z archive   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   u unblock   f fail   t hold/release   z archive   P switch project   r refresh   q quit"
 	default:
-		return "←/→ column   ↑/↓ select   enter detail   z archive   P switch project   r refresh   q quit"
+		return "←/→ column   ↑/↓ select   enter detail   t hold/release   z archive   P switch project   r refresh   q quit"
 	}
 }
