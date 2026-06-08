@@ -54,6 +54,10 @@ func New(s store.Store, authToken string, leaseTTL time.Duration) *Server {
 	mux.HandleFunc("POST /tasks/{id}/submit", server.authMiddleware(server.handleSubmit))
 	mux.HandleFunc("POST /tasks/{id}/review", server.authMiddleware(server.handleReview))
 	mux.HandleFunc("POST /tasks/{id}/transition", server.authMiddleware(server.handleTransition))
+	mux.HandleFunc("POST /tasks/{id}/archive", server.authMiddleware(server.handleArchiveTask))
+	mux.HandleFunc("POST /tasks/{id}/unarchive", server.authMiddleware(server.handleUnarchiveTask))
+	mux.HandleFunc("POST /projects/{id}/archive", server.authMiddleware(server.handleArchiveProject))
+	mux.HandleFunc("POST /projects/{id}/unarchive", server.authMiddleware(server.handleUnarchiveProject))
 
 	return server
 }
@@ -204,6 +208,10 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		filter.Kind = &kind
+	}
+
+	if includeArchived := r.URL.Query().Get("include_archived"); includeArchived == "true" {
+		filter.IncludeArchived = true
 	}
 
 	projects, err := s.store.ListProjects(r.Context(), filter)
@@ -371,6 +379,10 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 
 	if claimable := r.URL.Query().Get("claimable"); claimable == "true" {
 		filter.Claimable = true
+	}
+
+	if includeArchived := r.URL.Query().Get("include_archived"); includeArchived == "true" {
+		filter.IncludeArchived = true
 	}
 
 	tasks, err := s.store.ListTasks(r.Context(), projectID, filter)
@@ -620,4 +632,72 @@ func (s *Server) handleTransition(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleArchiveTask handles POST /tasks/{id}/archive to soft-archive a task.
+func (s *Server) handleArchiveTask(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	task, err := s.store.ArchiveTask(r.Context(), taskID)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "ARCHIVE_ERROR", "Failed to archive task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleUnarchiveTask handles POST /tasks/{id}/unarchive to restore an archived task.
+func (s *Server) handleUnarchiveTask(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	task, err := s.store.UnarchiveTask(r.Context(), taskID)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "UNARCHIVE_ERROR", "Failed to unarchive task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleArchiveProject handles POST /projects/{id}/archive to soft-archive a project.
+func (s *Server) handleArchiveProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+
+	project, err := s.store.ArchiveProject(r.Context(), projectID)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Project not found")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "ARCHIVE_ERROR", "Failed to archive project")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, project)
+}
+
+// handleUnarchiveProject handles POST /projects/{id}/unarchive to restore an archived project.
+func (s *Server) handleUnarchiveProject(w http.ResponseWriter, r *http.Request) {
+	projectID := r.PathValue("id")
+
+	project, err := s.store.UnarchiveProject(r.Context(), projectID)
+	if errors.Is(err, store.ErrNotFound) {
+		s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Project not found")
+		return
+	}
+	if err != nil {
+		s.errorResponse(w, http.StatusInternalServerError, "UNARCHIVE_ERROR", "Failed to unarchive project")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, project)
 }

@@ -42,6 +42,10 @@ type Store interface {
 	SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput) (TaskWithDepsAndLinks, error)
 	AddReview(ctx context.Context, taskID, actor, verdict string, note *string) (Event, error)
 	TransitionTask(ctx context.Context, taskID, to string, note *string) (Task, error)
+	ArchiveTask(ctx context.Context, taskID string) (Task, error)
+	UnarchiveTask(ctx context.Context, taskID string) (Task, error)
+	ArchiveProject(ctx context.Context, projectID string) (Project, error)
+	UnarchiveProject(ctx context.Context, projectID string) (Project, error)
 }
 
 // sqliteStore wraps a SQLite database connection and provides migration functionality.
@@ -480,18 +484,20 @@ type TaskWithDepsAndLinks struct {
 
 // TaskListFilter contains filters for listing tasks.
 type TaskListFilter struct {
-	State     *string
-	Assignee  *string
-	Model     *string
-	Kind      *string
-	Claimable bool
+	State           *string
+	Assignee        *string
+	Model           *string
+	Kind            *string
+	Claimable       bool
+	IncludeArchived bool
 }
 
 // ProjectListFilter contains filters for listing projects.
 type ProjectListFilter struct {
-	Model     *string
-	Kind      *string
-	Claimable bool
+	Model           *string
+	Kind            *string
+	Claimable       bool
+	IncludeArchived bool
 }
 
 // Event represents an audit/event log entry.
@@ -604,19 +610,23 @@ func (s *sqliteStore) GetProject(ctx context.Context, id string) (Project, error
 // ListProjects lists projects with optional filters, ordered by created_at.
 // If filter.Claimable is true, returns only projects with at least one claimable task
 // matching the optional model and kind filters.
+// By default, archived projects are excluded unless filter.IncludeArchived is true.
 // Returns an empty slice (not nil) when no projects exist.
 func (s *sqliteStore) ListProjects(ctx context.Context, filter ProjectListFilter) ([]Project, error) {
 	query := `
 		SELECT id, name, repo, created_at FROM project
 	`
 	args := []interface{}{}
+	whereAdded := false
 
 	if filter.Claimable {
 		query += ` WHERE EXISTS (
 			SELECT 1 FROM task
 			WHERE task.project_id = project.id
+			AND archived_at IS NULL
 			AND ` + claimableSQL
 		args = append(args, nowTimestamp())
+		whereAdded = true
 
 		if filter.Model != nil {
 			query += ` AND model = ?`
@@ -630,6 +640,15 @@ func (s *sqliteStore) ListProjects(ctx context.Context, filter ProjectListFilter
 
 		query += `
 		)`
+	}
+
+	if !filter.IncludeArchived {
+		if whereAdded {
+			query += ` AND project.archived_at IS NULL`
+		} else {
+			query += ` WHERE archived_at IS NULL`
+			whereAdded = true
+		}
 	}
 
 	query += ` ORDER BY created_at`
@@ -1030,11 +1049,16 @@ const claimableSQL = `state = 'ready'
 
 // ListTasks retrieves tasks for a project with optional filters.
 // Filters compose with AND logic.
+// By default, archived tasks are excluded unless filter.IncludeArchived is true.
 func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter TaskListFilter) ([]Task, error) {
 	query := `SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, created_at, updated_at
 		FROM task
 		WHERE project_id = ?`
 	args := []interface{}{projectID}
+
+	if !filter.IncludeArchived {
+		query += ` AND archived_at IS NULL`
+	}
 
 	if filter.State != nil {
 		query += ` AND state = ?`
@@ -1889,4 +1913,187 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 	}
 
 	return t, nil
+}
+
+// ArchiveTask sets the archived_at timestamp for a task to the current time.
+// Archiving is orthogonal to the task state machine and does not alter the state.
+// Returns the updated Task or ErrNotFound if the task doesn't exist.
+func (s *sqliteStore) ArchiveTask(ctx context.Context, taskID string) (Task, error) {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := nowTimestamp()
+
+	// Update the task's archived_at timestamp
+	result, err := tx.ExecContext(ctx, `
+		UPDATE task
+		SET archived_at=?, updated_at=?
+		WHERE id=?
+	`, now, now, taskID)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to archive task: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected != 1 {
+		return Task{}, ErrNotFound
+	}
+
+	// SELECT the updated task
+	var t Task
+	var reviewModelsJSON *string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, created_at, updated_at
+		FROM task WHERE id = ?
+	`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to fetch archived task: %w", err)
+	}
+
+	// Unmarshal review_models from JSON
+	t.ReviewModels = []string{}
+	if reviewModelsJSON != nil {
+		if err := json.Unmarshal([]byte(*reviewModelsJSON), &t.ReviewModels); err != nil {
+			return Task{}, fmt.Errorf("failed to unmarshal review_models: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return t, nil
+}
+
+// UnarchiveTask clears the archived_at timestamp for a task (sets it to NULL).
+// Returns the updated Task or ErrNotFound if the task doesn't exist.
+func (s *sqliteStore) UnarchiveTask(ctx context.Context, taskID string) (Task, error) {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	now := nowTimestamp()
+
+	// Clear the task's archived_at timestamp
+	result, err := tx.ExecContext(ctx, `
+		UPDATE task
+		SET archived_at=NULL, updated_at=?
+		WHERE id=?
+	`, now, taskID)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to unarchive task: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected != 1 {
+		return Task{}, ErrNotFound
+	}
+
+	// SELECT the updated task
+	var t Task
+	var reviewModelsJSON *string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, created_at, updated_at
+		FROM task WHERE id = ?
+	`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.CreatedAt, &t.UpdatedAt)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to fetch unarchived task: %w", err)
+	}
+
+	// Unmarshal review_models from JSON
+	t.ReviewModels = []string{}
+	if reviewModelsJSON != nil {
+		if err := json.Unmarshal([]byte(*reviewModelsJSON), &t.ReviewModels); err != nil {
+			return Task{}, fmt.Errorf("failed to unmarshal review_models: %w", err)
+		}
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return t, nil
+}
+
+// ArchiveProject sets the archived_at timestamp for a project to the current time.
+// Returns the updated Project or ErrNotFound if the project doesn't exist.
+func (s *sqliteStore) ArchiveProject(ctx context.Context, projectID string) (Project, error) {
+	now := nowTimestamp()
+
+	// Update the project's archived_at timestamp
+	result, err := s.conn.ExecContext(ctx, `
+		UPDATE project
+		SET archived_at=?
+		WHERE id=?
+	`, now, projectID)
+	if err != nil {
+		return Project{}, fmt.Errorf("failed to archive project: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Project{}, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected != 1 {
+		return Project{}, ErrNotFound
+	}
+
+	// SELECT the updated project
+	var p Project
+	err = s.conn.QueryRowContext(ctx, `
+		SELECT id, name, repo, created_at FROM project WHERE id = ?
+	`, projectID).Scan(&p.ID, &p.Name, &p.Repo, &p.CreatedAt)
+	if err != nil {
+		return Project{}, fmt.Errorf("failed to fetch archived project: %w", err)
+	}
+
+	return p, nil
+}
+
+// UnarchiveProject clears the archived_at timestamp for a project (sets it to NULL).
+// Returns the updated Project or ErrNotFound if the project doesn't exist.
+func (s *sqliteStore) UnarchiveProject(ctx context.Context, projectID string) (Project, error) {
+	// Clear the project's archived_at timestamp
+	result, err := s.conn.ExecContext(ctx, `
+		UPDATE project
+		SET archived_at=NULL
+		WHERE id=?
+	`, projectID)
+	if err != nil {
+		return Project{}, fmt.Errorf("failed to unarchive project: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return Project{}, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	if rowsAffected != 1 {
+		return Project{}, ErrNotFound
+	}
+
+	// SELECT the updated project
+	var p Project
+	err = s.conn.QueryRowContext(ctx, `
+		SELECT id, name, repo, created_at FROM project WHERE id = ?
+	`, projectID).Scan(&p.ID, &p.Name, &p.Repo, &p.CreatedAt)
+	if err != nil {
+		return Project{}, fmt.Errorf("failed to fetch unarchived project: %w", err)
+	}
+
+	return p, nil
 }
