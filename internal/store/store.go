@@ -392,10 +392,11 @@ func leaseExpiryTimestamp(ttl time.Duration) string {
 
 // Project represents a code project.
 type Project struct {
-	ID        string `db:"id" json:"id"`
-	Name      string `db:"name" json:"name"`
-	Repo      string `db:"repo" json:"repo"`
-	CreatedAt string `db:"created_at" json:"created_at"`
+	ID         string  `db:"id" json:"id"`
+	Name       string  `db:"name" json:"name"`
+	Repo       string  `db:"repo" json:"repo"`
+	CreatedAt  string  `db:"created_at" json:"created_at"`
+	ArchivedAt *string `db:"archived_at" json:"archived_at"` // nullable
 }
 
 // Document represents a design or feature spec document.
@@ -2031,10 +2032,16 @@ func (s *sqliteStore) UnarchiveTask(ctx context.Context, taskID string) (Task, e
 // ArchiveProject sets the archived_at timestamp for a project to the current time.
 // Returns the updated Project or ErrNotFound if the project doesn't exist.
 func (s *sqliteStore) ArchiveProject(ctx context.Context, projectID string) (Project, error) {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Project{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	now := nowTimestamp()
 
 	// Update the project's archived_at timestamp
-	result, err := s.conn.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE project
 		SET archived_at=?
 		WHERE id=?
@@ -2054,11 +2061,15 @@ func (s *sqliteStore) ArchiveProject(ctx context.Context, projectID string) (Pro
 
 	// SELECT the updated project
 	var p Project
-	err = s.conn.QueryRowContext(ctx, `
-		SELECT id, name, repo, created_at FROM project WHERE id = ?
-	`, projectID).Scan(&p.ID, &p.Name, &p.Repo, &p.CreatedAt)
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, name, repo, created_at, archived_at FROM project WHERE id = ?
+	`, projectID).Scan(&p.ID, &p.Name, &p.Repo, &p.CreatedAt, &p.ArchivedAt)
 	if err != nil {
 		return Project{}, fmt.Errorf("failed to fetch archived project: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Project{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return p, nil
@@ -2067,8 +2078,14 @@ func (s *sqliteStore) ArchiveProject(ctx context.Context, projectID string) (Pro
 // UnarchiveProject clears the archived_at timestamp for a project (sets it to NULL).
 // Returns the updated Project or ErrNotFound if the project doesn't exist.
 func (s *sqliteStore) UnarchiveProject(ctx context.Context, projectID string) (Project, error) {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Project{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
 	// Clear the project's archived_at timestamp
-	result, err := s.conn.ExecContext(ctx, `
+	result, err := tx.ExecContext(ctx, `
 		UPDATE project
 		SET archived_at=NULL
 		WHERE id=?
@@ -2088,11 +2105,15 @@ func (s *sqliteStore) UnarchiveProject(ctx context.Context, projectID string) (P
 
 	// SELECT the updated project
 	var p Project
-	err = s.conn.QueryRowContext(ctx, `
-		SELECT id, name, repo, created_at FROM project WHERE id = ?
-	`, projectID).Scan(&p.ID, &p.Name, &p.Repo, &p.CreatedAt)
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, name, repo, created_at, archived_at FROM project WHERE id = ?
+	`, projectID).Scan(&p.ID, &p.Name, &p.Repo, &p.CreatedAt, &p.ArchivedAt)
 	if err != nil {
 		return Project{}, fmt.Errorf("failed to fetch unarchived project: %w", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Project{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
 	return p, nil
