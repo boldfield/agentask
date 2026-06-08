@@ -4384,7 +4384,7 @@ func TestRejectVerdictOnHeldTaskDoesNotAutoTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
 	if err != nil {
 		t.Fatalf("failed to submit implement task: %v", err)
 	}
@@ -4419,7 +4419,7 @@ func TestRejectVerdictOnHeldTaskDoesNotAutoTransition(t *testing.T) {
 	}
 
 	reject := "reject"
-	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{})
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, 5)
 	if err != nil {
 		t.Fatalf("failed to submit review task with verdict: %v", err)
 	}
@@ -4632,7 +4632,7 @@ func TestHoldFromDifferentStates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, task3ID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}})
+	_, err = store.SubmitTask(ctx, task3ID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
 	if err != nil {
 		t.Fatalf("failed to submit task: %v", err)
 	}
