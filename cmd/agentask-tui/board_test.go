@@ -3414,3 +3414,221 @@ func TestBoardModel_ScrollResetOnColumnChange(t *testing.T) {
 		t.Errorf("Expected selectedIndex to reset to 0 on column change, got %d", model.selectedIndex)
 	}
 }
+
+func TestBoardModel_ArchiveTask_ConfirmY(t *testing.T) {
+	archiveWasCalled := false
+	var archiveTaskID string
+
+	mockClient := &tuiclient.MockClient{
+		ArchiveTaskFunc: func(ctx context.Context, id string) error {
+			archiveWasCalled = true
+			archiveTaskID = id
+			return nil
+		},
+		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+			// After archiving, task-1 should be gone from the list
+			return []tuiclient.Task{
+				{ID: "task-2", Title: "Task 2", State: "ready"},
+			}, nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Set up initial ready column with two tasks
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{
+		{ID: "task-1", Title: "Task 1", State: "ready"},
+		{ID: "task-2", Title: "Task 2", State: "ready"},
+	}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Move to ready column (it starts at in_progress)
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = m.(*BoardModel)
+
+	// Verify we're in ready and task-1 is selected
+	if model.selectedColumn != 1 {
+		t.Errorf("Expected selectedColumn 1 (ready), got %d", model.selectedColumn)
+	}
+	if model.selectedTaskID != "task-1" {
+		t.Errorf("Expected selected task task-1, got %s", model.selectedTaskID)
+	}
+
+	// Press 'd' to archive
+	m, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = m.(*BoardModel)
+
+	// Verify we're in archive confirm mode
+	if model.mode != modeArchiveTaskConfirm {
+		t.Errorf("Expected modeArchiveTaskConfirm, got mode %v", model.mode)
+	}
+
+	// Press 'y' to confirm
+	m, cmd = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	model = m.(*BoardModel)
+
+	// Execute the archive command
+	if cmd != nil {
+		msg := cmd()
+		m, _ = model.Update(msg)
+		model = m.(*BoardModel)
+	}
+
+	// Verify archive was called on task-1
+	if !archiveWasCalled {
+		t.Errorf("Expected ArchiveTask to be called")
+	}
+	if archiveTaskID != "task-1" {
+		t.Errorf("Expected ArchiveTask called on task-1, got %s", archiveTaskID)
+	}
+
+	// After refetch, task-1 should be gone and task-2 should be shown
+	output := model.View()
+	if strings.Contains(output, "task-1") {
+		t.Errorf("Expected task-1 to be gone after archive")
+	}
+	if !strings.Contains(output, "task-2") {
+		t.Errorf("Expected task-2 to still be visible")
+	}
+}
+
+func TestBoardModel_ArchiveTask_CancelWithN(t *testing.T) {
+	archiveWasCalled := false
+
+	mockClient := &tuiclient.MockClient{
+		ArchiveTaskFunc: func(ctx context.Context, id string) error {
+			archiveWasCalled = true
+			return nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Set up initial ready column
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{
+		{ID: "task-1", Title: "Task 1", State: "ready"},
+	}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Move to ready column
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = m.(*BoardModel)
+
+	// Press 'd' to archive
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeArchiveTaskConfirm {
+		t.Errorf("Expected modeArchiveTaskConfirm, got mode %v", model.mode)
+	}
+
+	// Press 'n' to cancel
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	model = m.(*BoardModel)
+
+	// Verify we're back in normal mode
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after cancel, got mode %v", model.mode)
+	}
+
+	// Verify archive was NOT called
+	if archiveWasCalled {
+		t.Errorf("Expected ArchiveTask NOT to be called after cancel")
+	}
+}
+
+func TestBoardModel_ArchiveTask_CancelWithEsc(t *testing.T) {
+	archiveWasCalled := false
+
+	mockClient := &tuiclient.MockClient{
+		ArchiveTaskFunc: func(ctx context.Context, id string) error {
+			archiveWasCalled = true
+			return nil
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Set up initial ready column
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{
+		{ID: "task-1", Title: "Task 1", State: "ready"},
+	}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Move to ready column
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = m.(*BoardModel)
+
+	// Press 'd' to archive
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeArchiveTaskConfirm {
+		t.Errorf("Expected modeArchiveTaskConfirm, got mode %v", model.mode)
+	}
+
+	// Press 'esc' to cancel
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	model = m.(*BoardModel)
+
+	// Verify we're back in normal mode
+	if model.mode != modeNormal {
+		t.Errorf("Expected modeNormal after cancel, got mode %v", model.mode)
+	}
+
+	// Verify archive was NOT called
+	if archiveWasCalled {
+		t.Errorf("Expected ArchiveTask NOT to be called after cancel")
+	}
+}

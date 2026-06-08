@@ -579,3 +579,43 @@ func TestListEventsEmpty(t *testing.T) {
 func stringPtr(s string) *string {
 	return &s
 }
+
+func TestArchiveTask(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/archive" {
+			t.Errorf("expected /tasks/task123/archive, got %s", r.URL.Path)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.ArchiveTask(context.Background(), "task123")
+	if err != nil {
+		t.Fatalf("ArchiveTask failed: %v", err)
+	}
+}
+
+func TestArchiveProject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/projects/proj123/archive" {
+			t.Errorf("expected /projects/proj123/archive, got %s", r.URL.Path)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.ArchiveProject(context.Background(), "proj123")
+	if err != nil {
+		t.Fatalf("ArchiveProject failed: %v", err)
+	}
+}

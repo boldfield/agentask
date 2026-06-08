@@ -48,6 +48,10 @@ const (
 	modeFailNote
 	// modeFailConfirm is the "Fail → failed? [y/N]" confirmation step.
 	modeFailConfirm
+	// modeArchiveTaskConfirm is the "Archive task? [y/N]" confirmation step.
+	modeArchiveTaskConfirm
+	// modeArchiveProjectConfirm is the "Archive project? [y/N]" confirmation step.
+	modeArchiveProjectConfirm
 )
 
 // BoardModel is the Bubble Tea model for the task board view.
@@ -75,6 +79,7 @@ type BoardModel struct {
 	pendingNote      *string         // captured note (nil = omitted) when in modeApproveConfirm
 	pendingPRURL     string          // PR URL to merge when in modeMergeConfirm
 	pendingTaskID    string          // ID of the task being reviewed
+	pendingProjectID string          // ID of the project being archived
 	inputHint        string          // hint displayed below the input (e.g. "reason required")
 	reviewFromDetail bool            // true when the review flow was started from the detail view
 
@@ -386,6 +391,49 @@ func (m *BoardModel) failCmd(taskID string, note *string, fromDetail bool) tea.C
 		msg := m.fetchTasksInline(ctx, "")
 		msg.fromDetail = fromDetail
 		return msg
+	}
+}
+
+func (m *BoardModel) archiveTaskCmd(taskID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := m.client.ArchiveTask(ctx, taskID); err != nil {
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+				msg := m.fetchTasksInline(ctx, fmt.Sprintf("archive failed: %s", apiErr.Message))
+				return msg
+			}
+			msg := m.fetchTasksInline(ctx, fmt.Sprintf("archive failed: %v", err))
+			return msg
+		}
+
+		msg := m.fetchTasksInline(ctx, "")
+		return msg
+	}
+}
+
+func (m *BoardModel) archiveProjectCmd(projectID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		if err := m.client.ArchiveProject(ctx, projectID); err != nil {
+			var apiErr *tuiclient.APIError
+			if errors.As(err, &apiErr) && apiErr.StatusCode == http.StatusConflict {
+				return projectsFetchedMsg{err: fmt.Errorf("archive failed: %s", apiErr.Message)}
+			}
+			return projectsFetchedMsg{err: fmt.Errorf("archive failed: %v", err)}
+		}
+
+		// Refetch projects to reflect the archive
+		projects, fetchErr := m.client.ListProjects(ctx)
+		if fetchErr != nil {
+			return projectsFetchedMsg{err: fmt.Errorf("refetch failed: %v", fetchErr)}
+		}
+
+		return projectsFetchedMsg{projects: projects}
 	}
 }
 
@@ -735,6 +783,14 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return m, cmd
 			}
 
+		// Archive: available on any task
+		case "d":
+			if m.selectedTaskID != "" {
+				m.pendingTaskID = m.selectedTaskID
+				m.mode = modeArchiveTaskConfirm
+				return m, nil
+			}
+
 		// Help (stub for TUI-3+)
 		case "?":
 			// TODO: show help overlay
@@ -977,6 +1033,14 @@ func (m *BoardModel) updateProjectSwitchMode(msg tea.KeyMsg) (tea.Model, tea.Cmd
 			m.mode = modeNormal
 		}
 		return m, nil
+
+	case "d":
+		if m.projectSwitchIndex >= 0 && m.projectSwitchIndex < len(m.projects) {
+			selectedProject := m.projects[m.projectSwitchIndex]
+			m.pendingProjectID = selectedProject.ID
+			m.mode = modeArchiveProjectConfirm
+		}
+		return m, nil
 	}
 
 	return m, nil
@@ -1185,6 +1249,40 @@ func (m *BoardModel) updateReviewMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		// Ignore all other keys in confirm mode.
 		return m, nil
+
+	case modeArchiveTaskConfirm:
+		switch msg.String() {
+		case "esc", "n", "N":
+			// User declined or pressed escape — cancel.
+			m.mode = modeNormal
+			m.pendingTaskID = ""
+			return m, nil
+		case "y", "Y":
+			// Capture task ID before clearing.
+			taskID := m.pendingTaskID
+			m.mode = modeNormal
+			m.pendingTaskID = ""
+			return m, m.archiveTaskCmd(taskID)
+		}
+		// Ignore all other keys in confirm mode.
+		return m, nil
+
+	case modeArchiveProjectConfirm:
+		switch msg.String() {
+		case "esc", "n", "N":
+			// User declined or pressed escape — cancel.
+			m.mode = modeProjectSwitch
+			m.pendingProjectID = ""
+			return m, nil
+		case "y", "Y":
+			// Capture project ID before clearing.
+			projectID := m.pendingProjectID
+			m.mode = modeProjectSwitch
+			m.pendingProjectID = ""
+			return m, m.archiveProjectCmd(projectID)
+		}
+		// Ignore all other keys in confirm mode.
+		return m, nil
 	}
 
 	return m, nil
@@ -1202,6 +1300,7 @@ func (m *BoardModel) cancelReviewMode() {
 	m.pendingNote = nil
 	m.pendingPRURL = ""
 	m.pendingTaskID = ""
+	m.pendingProjectID = ""
 	m.inputHint = ""
 	m.reviewInput.SetValue("")
 	m.reviewInput.Blur()
@@ -1411,6 +1510,16 @@ func (m *BoardModel) renderReviewOverlay() string {
 		}
 		b.WriteString(fmt.Sprintf("Fail %s → failed? [y/N] ", taskID))
 		b.WriteString("(failed is terminal, y to confirm, n/esc to cancel)\n")
+	case modeArchiveTaskConfirm:
+		taskID := m.pendingTaskID
+		if len(taskID) > 8 {
+			taskID = taskID[:8]
+		}
+		b.WriteString(fmt.Sprintf("Archive %s? [y/N] ", taskID))
+		b.WriteString("(archived items are hidden from board, y to confirm, n/esc to cancel)\n")
+	case modeArchiveProjectConfirm:
+		b.WriteString("Archive project? [y/N] ")
+		b.WriteString("(archived projects are hidden, y to confirm, n/esc to cancel)\n")
 	}
 	return b.String()
 }
