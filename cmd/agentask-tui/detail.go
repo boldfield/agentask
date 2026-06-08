@@ -189,6 +189,9 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 		stateStr += fmt.Sprintf("  Assignee: %s", *task.Assignee)
 	}
 	b.WriteString(stateStr + "\n")
+	if task.Model != "" {
+		b.WriteString(fmt.Sprintf("Model: %s\n", task.Model))
+	}
 
 	// Lease countdown
 	if task.LeaseExpiresAt != nil {

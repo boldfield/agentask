@@ -4031,3 +4031,114 @@ func TestBoardModel_HoldTaskFlow_ConfirmN(t *testing.T) {
 		t.Error("Expected HoldTask not to be called after 'n'")
 	}
 }
+
+// TestBoardModel_ModelVisibilityInList tests that the model is visible in task list rows.
+func TestBoardModel_ModelVisibilityInList(t *testing.T) {
+	mockClient := &tuiclient.MockClient{
+		Tasks: []tuiclient.Task{
+			{ID: "task-opus", Title: "Opus Task", State: "ready", Model: "opus"},
+			{ID: "task-sonnet", Title: "Sonnet Task", State: "ready", Model: "sonnet"},
+			{ID: "task-haiku", Title: "Haiku Task", State: "ready", Model: "haiku"},
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Simulate the task fetch
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{
+		{ID: "task-opus", Title: "Opus Task", State: "ready", Model: "opus"},
+		{ID: "task-sonnet", Title: "Sonnet Task", State: "ready", Model: "sonnet"},
+		{ID: "task-haiku", Title: "Haiku Task", State: "ready", Model: "haiku"},
+	}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Navigate to ready column
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	model = m.(*BoardModel)
+
+	output := model.View()
+
+	// Verify that model badges are visible in the list
+	if !strings.Contains(output, "[opus]") {
+		t.Errorf("Expected '[opus]' badge in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "[sonnet]") {
+		t.Errorf("Expected '[sonnet]' badge in output, got:\n%s", output)
+	}
+	if !strings.Contains(output, "[haiku]") {
+		t.Errorf("Expected '[haiku]' badge in output, got:\n%s", output)
+	}
+}
+
+// TestDetailView_ModelVisibility tests that the model is visible in the task detail view.
+func TestDetailView_ModelVisibility(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Set up tasks in the board first
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{}
+	bucketed["in_progress"] = []tuiclient.Task{{ID: "task-1", Title: "Test Task", State: "in_progress", Model: "opus"}}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["approved"] = []tuiclient.Task{}
+	bucketed["done"] = []tuiclient.Task{}
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Press enter to enter detail view mode (should set mode to modeDetail)
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	model = m.(*BoardModel)
+
+	// Now simulate task detail fetch
+	m, _ = model.Update(detailFetchedMsg{
+		task: tuiclient.TaskDetail{
+			ID:    "task-1",
+			Title: "Test Task",
+			State: "in_progress",
+			Model: "opus",
+			Spec:  "This is a test spec",
+		},
+		documents: []tuiclient.Document{},
+		events:    []tuiclient.Event{},
+	})
+	model = m.(*BoardModel)
+
+	output := model.View()
+
+	// Verify that model is visible in the detail view
+	if !strings.Contains(output, "Model: opus") {
+		t.Errorf("Expected 'Model: opus' in detail output, got:\n%s", output)
+	}
+}
