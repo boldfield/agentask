@@ -4648,3 +4648,170 @@ func TestHoldFromDifferentStates(t *testing.T) {
 		t.Error("task state should remain review when held")
 	}
 }
+
+// TestRejectVerdictOnTerminalTaskDoesNotResurrect verifies that a review verdict
+// (approve or reject) on a parent task already in a terminal state (failed or blocked)
+// does NOT move it back to ready or approved. Terminal states must stay terminal.
+func TestRejectVerdictOnTerminalTaskDoesNotResurrect(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Test with failed state
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature - failed test",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Get the review task
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("review task not found")
+	}
+
+	// Transition parent to failed state
+	_, err = store.TransitionTask(ctx, taskID, "failed", nil)
+	if err != nil {
+		t.Fatalf("failed to transition task to failed: %v", err)
+	}
+
+	// Claim and submit review task with reject verdict
+	_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+
+	reject := "reject"
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, 5)
+	if err != nil {
+		t.Fatalf("failed to submit review task with reject verdict: %v", err)
+	}
+
+	// Verify parent task stayed in failed state (not resurrected to ready)
+	parentTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "failed" {
+		t.Errorf("expected parent task in failed state to stay failed, got '%s'", parentTask.State)
+	}
+
+	// Now test with blocked state and approve verdict
+	tasks2, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature - blocked test",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create second task: %v", err)
+	}
+	taskID2 := tasks2[0].ID
+
+	_, err = store.PromoteTask(ctx, taskID2)
+	if err != nil {
+		t.Fatalf("failed to promote second task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID2, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim second task: %v", err)
+	}
+	_, err = store.SubmitTask(ctx, taskID2, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#101"}}, 5)
+	if err != nil {
+		t.Fatalf("failed to submit second implement task: %v", err)
+	}
+
+	// Get the second review task
+	allTasks2, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks for second task: %v", err)
+	}
+
+	var reviewTask2 *Task
+	for i := range allTasks2 {
+		if allTasks2[i].Kind == "review" && allTasks2[i].TargetTaskID != nil && *allTasks2[i].TargetTaskID == taskID2 {
+			reviewTask2 = &allTasks2[i]
+			break
+		}
+	}
+	if reviewTask2 == nil {
+		t.Fatalf("second review task not found")
+	}
+
+	// Transition second parent to blocked state
+	_, err = store.TransitionTask(ctx, taskID2, "blocked", nil)
+	if err != nil {
+		t.Fatalf("failed to transition second task to blocked: %v", err)
+	}
+
+	// Claim and submit review task with approve verdict
+	_, err = store.ClaimTask(ctx, reviewTask2.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim second review task: %v", err)
+	}
+
+	approve := "approve"
+	_, err = store.SubmitTask(ctx, reviewTask2.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5)
+	if err != nil {
+		t.Fatalf("failed to submit second review task with approve verdict: %v", err)
+	}
+
+	// Verify second parent task stayed in blocked state (not resurrected to approved)
+	parentTask2, err := store.GetTask(ctx, taskID2)
+	if err != nil {
+		t.Fatalf("failed to get second parent task: %v", err)
+	}
+	if parentTask2.State != "blocked" {
+		t.Errorf("expected parent task in blocked state to stay blocked, got '%s'", parentTask2.State)
+	}
+}
