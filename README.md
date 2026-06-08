@@ -32,7 +32,7 @@ state-machine primitive underneath an agent-driven development workflow.
 **State Machine**
 
 ```
-backlog ──promote──► ready ──claim──► in_progress ──submit──► review ──approve──► done
+backlog ──promote──► ready ──claim──► in_progress ──submit──► review ──approve──► approved ──merge──► done
                        ▲                    │                     │
                        └──── lease expiry ──┘             reject──┘ (→ ready)
 
@@ -134,15 +134,13 @@ automatically on first run.
 
 ### TUI
 
-The optional terminal UI (`cmd/agentask-tui`) is a read-only board viewer. Run it against the
-server:
+The optional terminal UI (`cmd/agentask-tui`) displays projects, documents, and tasks organized by state, with filtering and search. It supports confirm-gated actions to archive and unarchive tasks and projects. Run it against the server:
 
 ```bash
 ./bin/agentask-tui
 ```
 
-It displays projects, documents, and tasks organized by state, with filtering and search. Useful for
-human oversight of the board.
+Useful for human oversight and management of the board.
 
 ### Testing & Checks
 
