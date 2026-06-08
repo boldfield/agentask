@@ -39,7 +39,7 @@ type Store interface {
 	ClaimTask(ctx context.Context, taskID, agentID, model string, leaseTTL time.Duration) (Task, error)
 	HeartbeatTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 	PromoteTask(ctx context.Context, taskID string) (Task, error)
-	SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput) (TaskWithDepsAndLinks, error)
+	SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput, maxReviewRounds int) (TaskWithDepsAndLinks, error)
 	AddReview(ctx context.Context, taskID, actor, verdict string, note *string) (Event, error)
 	TransitionTask(ctx context.Context, taskID, to string, note *string) (Task, error)
 	ArchiveTask(ctx context.Context, taskID string) (Task, error)
@@ -1383,11 +1383,13 @@ func (s *sqliteStore) PromoteTask(ctx context.Context, taskID string) (Task, err
 // appends a submit event, and returns the updated task with all links, all within one transaction.
 // For review tasks, verdict is required and moves the task to done, appending a review event on the parent.
 // For implement tasks, verdict is forbidden.
+// When all reviews are done and at least one rejected, the parent transitions to ready if review_round <= maxReviewRounds,
+// or to blocked if review_round > maxReviewRounds (circuit breaker).
 // Returns the updated TaskWithDepsAndLinks on success.
 // Returns ValidationError if a link kind is invalid or verdict is missing/invalid.
 // Returns ErrNotFound if the task doesn't exist.
 // Returns ErrConflict if the task is not in_progress or not assigned to the given agentID.
-func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput) (TaskWithDepsAndLinks, error) {
+func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput, maxReviewRounds int) (TaskWithDepsAndLinks, error) {
 	// Validate link kinds first (before mutating anything)
 	validKinds := map[string]bool{"pr": true, "branch": true, "commit": true, "ci": true}
 	for _, link := range links {
@@ -1629,8 +1631,13 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 				// All done and all approved; move to approved
 				newParentState = "approved"
 			} else if doneReviewTasks == totalReviewTasks && approveReviewTasks < totalReviewTasks {
-				// All done but at least one rejected; move to ready for rework
-				newParentState = "ready"
+				// All done but at least one rejected
+				// Circuit breaker: if review_round > maxReviewRounds, auto-block instead of ready for rework
+				if parentReviewRound > maxReviewRounds {
+					newParentState = "blocked"
+				} else {
+					newParentState = "ready"
+				}
 			}
 
 			// Update parent state if needed
@@ -1648,6 +1655,8 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 					eventNote = "Aggregation: all reviewers approved"
 				} else if newParentState == "ready" {
 					eventNote = "Aggregation: at least one reviewer rejected"
+				} else if newParentState == "blocked" {
+					eventNote = fmt.Sprintf("auto-blocked: %d consecutive review rounds without approval — needs human attention", parentReviewRound)
 				}
 				_, err = s.AppendEvent(ctx, tx, *targetTaskID, "system", "transition", nil, &eventNote)
 				if err != nil {
