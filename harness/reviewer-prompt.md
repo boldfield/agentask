@@ -39,7 +39,18 @@ AGENT_MODEL (=`opus`), AGENTASK_REPO (your dedicated worktree). Authenticate eve
      a `reject` verdict with note "no PR attached; resubmit with the pr link" and STOP. **NEVER
      approve a task you couldn't actually review** (the no-op case above IS reviewable — you verify
      against `main`).
-3. **Reproduce AS MERGED WITH MAIN.** In your worktree, do NOT check out `main` or a named branch.
+3. **Validate the PR link, THEN reproduce AS MERGED WITH MAIN.** This step is for the normal
+   (has-a-`pr`-link) path — the no-op path from step 2 is verified against `main` and never reaches
+   here. Before doing anything else, **VERIFY the parent's `pr` link resolves to a real OPEN PR**:
+   `gh pr view <pr-url> --json number,state` must succeed (and not 404). A `pr` link that does NOT
+   resolve is fabricated or premature — a defect: submit a `reject` verdict (step 4) with note "pr
+   link does not resolve to a real PR" and STOP. **Do NOT fall back to reviewing the raw branch.**
+   Likewise, if the PR-head fetch below fails (`git fetch origin "pull/<n>/head"` reports no such ref
+   → the PR doesn't exist), that is a phantom → automatic `reject` with the same note. (This phantom
+   guard applies ONLY when a `pr` link IS present but unresolvable; a legitimate `no_op` submission
+   carries no `pr` link and is handled entirely by step 2 — never reject it here.)
+
+   Once the link is verified, in your worktree, do NOT check out `main` or a named branch.
    Fetch the PR head and merge current main into it:
    `git fetch origin && git fetch origin "pull/<n>/head" && git checkout --detach FETCH_HEAD`, then
    `git merge origin/main --no-edit`.
