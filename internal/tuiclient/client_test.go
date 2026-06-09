@@ -66,6 +66,10 @@ func TestListTasks(t *testing.T) {
 		if r.URL.Path != "/projects/proj123/tasks" {
 			t.Errorf("expected /projects/proj123/tasks, got %s", r.URL.Path)
 		}
+		// No query params should be present
+		if r.URL.RawQuery != "" {
+			t.Errorf("expected no query params, got %s", r.URL.RawQuery)
+		}
 
 		// Write response
 		w.Header().Set("Content-Type", "application/json")
@@ -99,6 +103,111 @@ func TestListTasks(t *testing.T) {
 
 	if tasks[0].ID != "task1" {
 		t.Errorf("expected ID task1, got %s", tasks[0].ID)
+	}
+}
+
+func TestListTasksWithFilters(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/projects/proj123/tasks" {
+			t.Errorf("expected /projects/proj123/tasks, got %s", r.URL.Path)
+		}
+		// Verify query params contain all filters
+		query := r.URL.Query()
+		if query.Get("model") != "haiku" {
+			t.Errorf("expected model=haiku, got %s", query.Get("model"))
+		}
+		if query.Get("kind") != "implement" {
+			t.Errorf("expected kind=implement, got %s", query.Get("kind"))
+		}
+		if query.Get("claimable") != "true" {
+			t.Errorf("expected claimable=true, got %s", query.Get("claimable"))
+		}
+
+		// Write response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		tasks := []Task{
+			{
+				ID:        "task2",
+				ProjectID: "proj123",
+				Title:     "Task 2",
+				State:     "ready",
+				Model:     "haiku",
+				Kind:      "implement",
+				CreatedAt: "2024-01-01T00:00:00Z",
+				UpdatedAt: "2024-01-01T00:00:00Z",
+			},
+		}
+		json.NewEncoder(w).Encode(tasks)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test with all filters
+	tasks, err := client.ListTasks(context.Background(), "proj123",
+		WithModel("haiku"),
+		WithKind("implement"),
+		WithClaimable(true),
+	)
+	if err != nil {
+		t.Fatalf("ListTasks with filters failed: %v", err)
+	}
+
+	if len(tasks) != 1 {
+		t.Errorf("expected 1 task, got %d", len(tasks))
+	}
+
+	if tasks[0].ID != "task2" {
+		t.Errorf("expected ID task2, got %s", tasks[0].ID)
+	}
+}
+
+func TestListTasksWithPartialFilters(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/projects/proj123/tasks" {
+			t.Errorf("expected /projects/proj123/tasks, got %s", r.URL.Path)
+		}
+		// Verify only set filters appear in query params
+		query := r.URL.Query()
+		if query.Get("model") != "opus" {
+			t.Errorf("expected model=opus, got %s", query.Get("model"))
+		}
+		if query.Get("kind") != "" {
+			t.Errorf("expected no kind filter, got %s", query.Get("kind"))
+		}
+		if query.Get("claimable") != "true" {
+			t.Errorf("expected claimable=true, got %s", query.Get("claimable"))
+		}
+
+		// Write response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]Task{})
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test with only model and claimable filters
+	_, err := client.ListTasks(context.Background(), "proj123",
+		WithModel("opus"),
+		WithClaimable(true),
+	)
+	if err != nil {
+		t.Fatalf("ListTasks with partial filters failed: %v", err)
 	}
 }
 
@@ -402,6 +511,48 @@ func TestTransitionTaskWithoutNote(t *testing.T) {
 	}
 }
 
+func TestHeartbeatTask(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/heartbeat" {
+			t.Errorf("expected /tasks/task123/heartbeat, got %s", r.URL.Path)
+		}
+
+		// Check authorization header
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		// Verify request body
+		var req heartbeatTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.AgentID != "agent123" {
+			t.Errorf("expected agent_id=agent123, got %s", req.AgentID)
+		}
+
+		// Write response
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test
+	err := client.HeartbeatTask(context.Background(), "task123", "agent123")
+	if err != nil {
+		t.Fatalf("HeartbeatTask failed: %v", err)
+	}
+}
+
 // TestAPIError_StructuredBody verifies that do() returns *APIError with the correct StatusCode,
 // Code, and Message when the server returns a non-2xx with a structured JSON error body.
 func TestAPIError_StructuredBody(t *testing.T) {
@@ -620,13 +771,13 @@ func TestArchiveProject(t *testing.T) {
 	}
 }
 
-func TestSubmitTask(t *testing.T) {
+func TestClaimTask(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != "POST" {
 			t.Errorf("expected POST, got %s", r.Method)
 		}
-		if r.URL.Path != "/tasks/task123/submit" {
-			t.Errorf("expected /tasks/task123/submit, got %s", r.URL.Path)
+		if r.URL.Path != "/tasks/task123/claim" {
+			t.Errorf("expected /tasks/task123/claim, got %s", r.URL.Path)
 		}
 
 		auth := r.Header.Get("Authorization")
@@ -634,7 +785,7 @@ func TestSubmitTask(t *testing.T) {
 			t.Errorf("expected Bearer testtoken, got %s", auth)
 		}
 
-		var req submitTaskRequest
+		var req claimTaskRequest
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			t.Errorf("failed to decode request body: %v", err)
 		}
@@ -643,107 +794,69 @@ func TestSubmitTask(t *testing.T) {
 			t.Errorf("expected agent_id agent-1, got %s", req.AgentID)
 		}
 
-		if req.Result != "completed successfully" {
-			t.Errorf("expected result 'completed successfully', got %s", req.Result)
+		if req.Model != "haiku" {
+			t.Errorf("expected model haiku, got %s", req.Model)
 		}
 
-		if req.Verdict == nil || *req.Verdict != "approve" {
-			t.Errorf("expected verdict 'approve', got %v", req.Verdict)
-		}
-
-		if len(req.Links) != 2 {
-			t.Errorf("expected 2 links, got %d", len(req.Links))
-		}
-
-		if len(req.Links) > 0 && req.Links[0].Kind != "pr" {
-			t.Errorf("expected first link kind 'pr', got %s", req.Links[0].Kind)
-		}
-
-		if len(req.Links) > 1 && req.Links[1].Kind != "branch" {
-			t.Errorf("expected second link kind 'branch', got %s", req.Links[1].Kind)
-		}
-
-		w.WriteHeader(http.StatusCreated)
+		w.WriteHeader(http.StatusOK)
 	}))
 	defer server.Close()
 
 	client := NewHTTPClient(server.URL, "testtoken")
-
-	verdict := "approve"
-	links := []LinkInput{
-		{Kind: "pr", Value: "https://github.com/owner/repo/pull/123"},
-		{Kind: "branch", Value: "mr/abc123"},
-	}
-	err := client.SubmitTask(context.Background(), "task123", "agent-1", "completed successfully", &verdict, links)
+	err := client.ClaimTask(context.Background(), "task123", "agent-1", "haiku")
 	if err != nil {
-		t.Fatalf("SubmitTask failed: %v", err)
+		t.Fatalf("ClaimTask failed: %v", err)
 	}
 }
 
-func TestSubmitTaskWithoutVerdict(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		rawBody, err := io.ReadAll(r.Body)
-		if err != nil {
-			t.Errorf("failed to read raw body: %v", err)
-		}
-		bodyStr := string(rawBody)
-
-		var req submitTaskRequest
-		if err := json.Unmarshal(rawBody, &req); err != nil {
-			t.Errorf("failed to decode request body: %v", err)
-		}
-
-		if req.Verdict != nil {
-			t.Errorf("expected verdict to be omitted (nil), got %v", req.Verdict)
-		}
-
-		if strings.Contains(bodyStr, `"verdict"`) {
-			t.Errorf("expected 'verdict' key to be absent from raw body, but found it: %s", bodyStr)
-		}
-
-		w.WriteHeader(http.StatusCreated)
-	}))
-	defer server.Close()
-
-	client := NewHTTPClient(server.URL, "testtoken")
-
-	links := []LinkInput{
-		{Kind: "pr", Value: "https://github.com/owner/repo/pull/123"},
-	}
-	err := client.SubmitTask(context.Background(), "task123", "agent-1", "completed successfully", nil, links)
-	if err != nil {
-		t.Fatalf("SubmitTask failed: %v", err)
-	}
-}
-
-func TestSubmitTaskNonSuccessStatus(t *testing.T) {
+func TestClaimTaskAlreadyClaimed(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
+		w.WriteHeader(http.StatusConflict)
 		json.NewEncoder(w).Encode(map[string]interface{}{
 			"error": map[string]string{
-				"code":    "EMPTY_AGENT_ID",
-				"message": "agent_id cannot be empty",
+				"code":    "ALREADY_CLAIMED",
+				"message": "Task is already claimed",
 			},
 		})
 	}))
 	defer server.Close()
 
 	client := NewHTTPClient(server.URL, "testtoken")
-
-	links := []LinkInput{
-		{Kind: "pr", Value: "https://github.com/owner/repo/pull/123"},
-	}
-	err := client.SubmitTask(context.Background(), "task123", "", "completed", nil, links)
+	err := client.ClaimTask(context.Background(), "task123", "agent-1", "haiku")
 	if err == nil {
-		t.Fatal("Expected error from 400 response, got nil")
+		t.Fatal("Expected error from 409 response, got nil")
+	}
+
+	if !errors.Is(err, ErrAlreadyClaimed) {
+		t.Fatalf("Expected ErrAlreadyClaimed, got %T: %v", err, err)
+	}
+}
+
+func TestClaimTaskServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "INTERNAL_ERROR",
+				"message": "Internal server error",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.ClaimTask(context.Background(), "task123", "agent-1", "haiku")
+	if err == nil {
+		t.Fatal("Expected error from 500 response, got nil")
 	}
 
 	var apiErr *APIError
 	if !errors.As(err, &apiErr) {
 		t.Fatalf("Expected *APIError, got %T: %v", err, err)
 	}
-	if apiErr.StatusCode != http.StatusBadRequest {
-		t.Errorf("Expected StatusCode 400, got %d", apiErr.StatusCode)
+	if apiErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("Expected StatusCode 500, got %d", apiErr.StatusCode)
 	}
 }
