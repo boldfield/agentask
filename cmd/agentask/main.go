@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +20,15 @@ import (
 )
 
 const version = "0.5.0"
+
+type claimError struct {
+	message string
+	code    int
+}
+
+func (e *claimError) Error() string {
+	return e.message
+}
 
 func main() {
 	isClient, verb := parseCommand(os.Args)
@@ -123,6 +134,16 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "claim":
+		if err := executeClaim(ctx, baseURL, token, args); err != nil {
+			var claimErr *claimError
+			if errors.As(err, &claimErr) {
+				fmt.Fprintf(os.Stderr, "error: %v\n", claimErr.Error())
+				os.Exit(claimErr.code)
+			}
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command '%s'\n", verb)
 		os.Exit(1)
@@ -173,34 +194,74 @@ func executeHeartbeat(ctx context.Context, baseURL, token string, args []string)
 		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
 	}
 
-	// Parse arguments: task ID + optional --agent flag
-	if len(args) == 0 {
+	// Parse flags
+	fs := flag.NewFlagSet("heartbeat", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	agentFlag := fs.String("agent", "", "agent ID")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
+	}
+
+	// Get positional argument (task ID)
+	if fs.NArg() < 1 {
 		return fmt.Errorf("task ID is required")
 	}
-
-	taskID := args[0]
-	var agentFlag string
-
-	for i := 1; i < len(args); i++ {
-		if args[i] == "--agent" {
-			if i+1 < len(args) {
-				agentFlag = args[i+1]
-				i++
-			} else {
-				return fmt.Errorf("--agent flag requires a value")
-			}
-		}
-	}
+	taskID := fs.Arg(0)
 
 	// Resolve agent ID
-	agentID, err := resolveAgentID(agentFlag)
-	if err != nil {
-		return err
+	agentID := *agentFlag
+	if agentID == "" {
+		agentID = os.Getenv("AGENT_ID")
+	}
+	if agentID == "" {
+		return fmt.Errorf("agent ID is required (set --agent flag or AGENT_ID environment variable)")
 	}
 
 	// Create client and heartbeat
 	client := tuiclient.NewHTTPClient(baseURL, token)
 	return client.HeartbeatTask(ctx, taskID, agentID)
+}
+
+func executeClaim(ctx context.Context, baseURL, token string, args []string) error {
+	// Validate configuration
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	// Parse flags
+	fs := flag.NewFlagSet("claim", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	agentFlag := fs.String("agent", "", "agent ID")
+	modelFlag := fs.String("model", "", "model")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
+	}
+
+	// Get positional argument (task ID)
+	if fs.NArg() < 1 {
+		return fmt.Errorf("task ID is required")
+	}
+	taskID := fs.Arg(0)
+
+	// Resolve identity
+	agentID, model, err := resolveAgentIdentity(*agentFlag, *modelFlag)
+	if err != nil {
+		return err
+	}
+
+	// Create client and claim task
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	if err := client.ClaimTask(ctx, taskID, agentID, model); err != nil {
+		if errors.Is(err, tuiclient.ErrAlreadyClaimed) {
+			return &claimError{message: "already claimed", code: 3}
+		}
+		return err
+	}
+
+	return nil
 }
 
 func parseAllowedModels(modelsStr string) []string {
@@ -219,20 +280,6 @@ func parseAllowedModels(modelsStr string) []string {
 		}
 	}
 	return result
-}
-
-func resolveAgentID(agentFlag string) (string, error) {
-	// Resolve agent ID: prefer flag, fallback to AGENT_ID env
-	if agentFlag != "" {
-		return agentFlag, nil
-	}
-
-	agentID := os.Getenv("AGENT_ID")
-	if agentID == "" {
-		return "", fmt.Errorf("agent ID is required (set --agent flag or AGENT_ID environment variable)")
-	}
-
-	return agentID, nil
 }
 
 func resolveAgentIdentity(agentFlag, modelFlag string) (agentID, model string, err error) {
