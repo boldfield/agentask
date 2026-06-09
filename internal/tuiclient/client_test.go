@@ -66,6 +66,10 @@ func TestListTasks(t *testing.T) {
 		if r.URL.Path != "/projects/proj123/tasks" {
 			t.Errorf("expected /projects/proj123/tasks, got %s", r.URL.Path)
 		}
+		// No query params should be present
+		if r.URL.RawQuery != "" {
+			t.Errorf("expected no query params, got %s", r.URL.RawQuery)
+		}
 
 		// Write response
 		w.Header().Set("Content-Type", "application/json")
@@ -99,6 +103,111 @@ func TestListTasks(t *testing.T) {
 
 	if tasks[0].ID != "task1" {
 		t.Errorf("expected ID task1, got %s", tasks[0].ID)
+	}
+}
+
+func TestListTasksWithFilters(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/projects/proj123/tasks" {
+			t.Errorf("expected /projects/proj123/tasks, got %s", r.URL.Path)
+		}
+		// Verify query params contain all filters
+		query := r.URL.Query()
+		if query.Get("model") != "haiku" {
+			t.Errorf("expected model=haiku, got %s", query.Get("model"))
+		}
+		if query.Get("kind") != "implement" {
+			t.Errorf("expected kind=implement, got %s", query.Get("kind"))
+		}
+		if query.Get("claimable") != "true" {
+			t.Errorf("expected claimable=true, got %s", query.Get("claimable"))
+		}
+
+		// Write response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		tasks := []Task{
+			{
+				ID:        "task2",
+				ProjectID: "proj123",
+				Title:     "Task 2",
+				State:     "ready",
+				Model:     "haiku",
+				Kind:      "implement",
+				CreatedAt: "2024-01-01T00:00:00Z",
+				UpdatedAt: "2024-01-01T00:00:00Z",
+			},
+		}
+		json.NewEncoder(w).Encode(tasks)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test with all filters
+	tasks, err := client.ListTasks(context.Background(), "proj123",
+		WithModel("haiku"),
+		WithKind("implement"),
+		WithClaimable(true),
+	)
+	if err != nil {
+		t.Fatalf("ListTasks with filters failed: %v", err)
+	}
+
+	if len(tasks) != 1 {
+		t.Errorf("expected 1 task, got %d", len(tasks))
+	}
+
+	if tasks[0].ID != "task2" {
+		t.Errorf("expected ID task2, got %s", tasks[0].ID)
+	}
+}
+
+func TestListTasksWithPartialFilters(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/projects/proj123/tasks" {
+			t.Errorf("expected /projects/proj123/tasks, got %s", r.URL.Path)
+		}
+		// Verify only set filters appear in query params
+		query := r.URL.Query()
+		if query.Get("model") != "opus" {
+			t.Errorf("expected model=opus, got %s", query.Get("model"))
+		}
+		if query.Get("kind") != "" {
+			t.Errorf("expected no kind filter, got %s", query.Get("kind"))
+		}
+		if query.Get("claimable") != "true" {
+			t.Errorf("expected claimable=true, got %s", query.Get("claimable"))
+		}
+
+		// Write response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]Task{})
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test with only model and claimable filters
+	_, err := client.ListTasks(context.Background(), "proj123",
+		WithModel("opus"),
+		WithClaimable(true),
+	)
+	if err != nil {
+		t.Fatalf("ListTasks with partial filters failed: %v", err)
 	}
 }
 
@@ -402,6 +511,48 @@ func TestTransitionTaskWithoutNote(t *testing.T) {
 	}
 }
 
+func TestHeartbeatTask(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/heartbeat" {
+			t.Errorf("expected /tasks/task123/heartbeat, got %s", r.URL.Path)
+		}
+
+		// Check authorization header
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		// Verify request body
+		var req heartbeatTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.AgentID != "agent123" {
+			t.Errorf("expected agent_id=agent123, got %s", req.AgentID)
+		}
+
+		// Write response
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test
+	err := client.HeartbeatTask(context.Background(), "task123", "agent123")
+	if err != nil {
+		t.Fatalf("HeartbeatTask failed: %v", err)
+	}
+}
+
 // TestAPIError_StructuredBody verifies that do() returns *APIError with the correct StatusCode,
 // Code, and Message when the server returns a non-2xx with a structured JSON error body.
 func TestAPIError_StructuredBody(t *testing.T) {
@@ -617,5 +768,95 @@ func TestArchiveProject(t *testing.T) {
 	err := client.ArchiveProject(context.Background(), "proj123")
 	if err != nil {
 		t.Fatalf("ArchiveProject failed: %v", err)
+	}
+}
+
+func TestClaimTask(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/claim" {
+			t.Errorf("expected /tasks/task123/claim, got %s", r.URL.Path)
+		}
+
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		var req claimTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.AgentID != "agent-1" {
+			t.Errorf("expected agent_id agent-1, got %s", req.AgentID)
+		}
+
+		if req.Model != "haiku" {
+			t.Errorf("expected model haiku, got %s", req.Model)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.ClaimTask(context.Background(), "task123", "agent-1", "haiku")
+	if err != nil {
+		t.Fatalf("ClaimTask failed: %v", err)
+	}
+}
+
+func TestClaimTaskAlreadyClaimed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "ALREADY_CLAIMED",
+				"message": "Task is already claimed",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.ClaimTask(context.Background(), "task123", "agent-1", "haiku")
+	if err == nil {
+		t.Fatal("Expected error from 409 response, got nil")
+	}
+
+	if !errors.Is(err, ErrAlreadyClaimed) {
+		t.Fatalf("Expected ErrAlreadyClaimed, got %T: %v", err, err)
+	}
+}
+
+func TestClaimTaskServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "INTERNAL_ERROR",
+				"message": "Internal server error",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.ClaimTask(context.Background(), "task123", "agent-1", "haiku")
+	if err == nil {
+		t.Fatal("Expected error from 500 response, got nil")
+	}
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("Expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("Expected StatusCode 500, got %d", apiErr.StatusCode)
 	}
 }
