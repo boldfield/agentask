@@ -3352,6 +3352,87 @@ func TestBoardModel_ColumnScrolling(t *testing.T) {
 	}
 }
 
+// TestBoardModel_DoneTabScrollingRendering tests that scrolling in the done tab changes the rendered visible window.
+// This verifies that items initially off-screen become visible after scrolling.
+func TestBoardModel_DoneTabScrollingRendering(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	// Set a small height to force scrolling: height=10 means 5 visible tasks (height - 5)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
+	model = m.(*BoardModel)
+
+	// Create many done tasks to force scrolling
+	var doneTasks []tuiclient.Task
+	for i := 0; i < 15; i++ {
+		doneTasks = append(doneTasks, tuiclient.Task{
+			ID:    fmt.Sprintf("task-done-%d", i),
+			Title: fmt.Sprintf("Done Task %d", i),
+			State: "done",
+		})
+	}
+
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["approved"] = []tuiclient.Task{}
+	bucketed["done"] = doneTasks
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Navigate to done column (3 rights from in_progress at index 2)
+	for i := 0; i < 3; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+		model = m.(*BoardModel)
+	}
+
+	// Get initial rendering: should show tasks 0-4
+	initialOutput := model.View()
+
+	// Verify initial state shows tasks 0-4
+	for i := 0; i < 5; i++ {
+		if !strings.Contains(initialOutput, fmt.Sprintf("Done Task %d", i)) {
+			t.Errorf("Expected 'Done Task %d' in initial view, got:\n%s", i, initialOutput)
+		}
+	}
+
+	// Verify Done Task 5 is NOT visible initially (it's below the fold)
+	if strings.Contains(initialOutput, "Done Task 5") {
+		t.Errorf("Expected 'Done Task 5' NOT in initial view (should be off-screen), got:\n%s", initialOutput)
+	}
+
+	// Now scroll down by selecting a task further down
+	for i := 0; i < 5; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model = m.(*BoardModel)
+	}
+
+	// Get rendering after scrolling
+	scrolledOutput := model.View()
+
+	// After scrolling, Done Task 5 should now be visible
+	if !strings.Contains(scrolledOutput, "Done Task 5") {
+		t.Errorf("Expected 'Done Task 5' in scrolled view, got:\n%s", scrolledOutput)
+	}
+
+	// But Done Task 0 should no longer be visible (scrolled out of view)
+	if strings.Contains(scrolledOutput, "Done Task 0") {
+		t.Errorf("Expected 'Done Task 0' NOT in scrolled view (should be scrolled out), got:\n%s", scrolledOutput)
+	}
+}
+
 // TestBoardModel_ScrollResetOnColumnChange tests that switching columns resets scroll to top.
 // Verify that when changing to a different column, both scrollOffset and selectedIndex reset to 0.
 func TestBoardModel_ScrollResetOnColumnChange(t *testing.T) {
