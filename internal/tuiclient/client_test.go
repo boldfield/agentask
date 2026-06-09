@@ -66,6 +66,10 @@ func TestListTasks(t *testing.T) {
 		if r.URL.Path != "/projects/proj123/tasks" {
 			t.Errorf("expected /projects/proj123/tasks, got %s", r.URL.Path)
 		}
+		// No query params should be present
+		if r.URL.RawQuery != "" {
+			t.Errorf("expected no query params, got %s", r.URL.RawQuery)
+		}
 
 		// Write response
 		w.Header().Set("Content-Type", "application/json")
@@ -99,6 +103,111 @@ func TestListTasks(t *testing.T) {
 
 	if tasks[0].ID != "task1" {
 		t.Errorf("expected ID task1, got %s", tasks[0].ID)
+	}
+}
+
+func TestListTasksWithFilters(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/projects/proj123/tasks" {
+			t.Errorf("expected /projects/proj123/tasks, got %s", r.URL.Path)
+		}
+		// Verify query params contain all filters
+		query := r.URL.Query()
+		if query.Get("model") != "haiku" {
+			t.Errorf("expected model=haiku, got %s", query.Get("model"))
+		}
+		if query.Get("kind") != "implement" {
+			t.Errorf("expected kind=implement, got %s", query.Get("kind"))
+		}
+		if query.Get("claimable") != "true" {
+			t.Errorf("expected claimable=true, got %s", query.Get("claimable"))
+		}
+
+		// Write response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		tasks := []Task{
+			{
+				ID:        "task2",
+				ProjectID: "proj123",
+				Title:     "Task 2",
+				State:     "ready",
+				Model:     "haiku",
+				Kind:      "implement",
+				CreatedAt: "2024-01-01T00:00:00Z",
+				UpdatedAt: "2024-01-01T00:00:00Z",
+			},
+		}
+		json.NewEncoder(w).Encode(tasks)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test with all filters
+	tasks, err := client.ListTasks(context.Background(), "proj123",
+		WithModel("haiku"),
+		WithKind("implement"),
+		WithClaimable(true),
+	)
+	if err != nil {
+		t.Fatalf("ListTasks with filters failed: %v", err)
+	}
+
+	if len(tasks) != 1 {
+		t.Errorf("expected 1 task, got %d", len(tasks))
+	}
+
+	if tasks[0].ID != "task2" {
+		t.Errorf("expected ID task2, got %s", tasks[0].ID)
+	}
+}
+
+func TestListTasksWithPartialFilters(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/projects/proj123/tasks" {
+			t.Errorf("expected /projects/proj123/tasks, got %s", r.URL.Path)
+		}
+		// Verify only set filters appear in query params
+		query := r.URL.Query()
+		if query.Get("model") != "opus" {
+			t.Errorf("expected model=opus, got %s", query.Get("model"))
+		}
+		if query.Get("kind") != "" {
+			t.Errorf("expected no kind filter, got %s", query.Get("kind"))
+		}
+		if query.Get("claimable") != "true" {
+			t.Errorf("expected claimable=true, got %s", query.Get("claimable"))
+		}
+
+		// Write response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]Task{})
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test with only model and claimable filters
+	_, err := client.ListTasks(context.Background(), "proj123",
+		WithModel("opus"),
+		WithClaimable(true),
+	)
+	if err != nil {
+		t.Fatalf("ListTasks with partial filters failed: %v", err)
 	}
 }
 

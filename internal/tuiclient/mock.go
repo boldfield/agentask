@@ -7,7 +7,7 @@ import (
 // MockClient is a mock implementation of the Client interface for testing.
 type MockClient struct {
 	ListProjectsFunc   func(ctx context.Context) ([]Project, error)
-	ListTasksFunc      func(ctx context.Context, projectID string) ([]Task, error)
+	ListTasksFunc      func(ctx context.Context, projectID string, options ...TaskListOption) ([]Task, error)
 	GetTaskFunc        func(ctx context.Context, id string) (TaskDetail, error)
 	ListEventsFunc     func(ctx context.Context, taskID string) ([]Event, error)
 	ListDocumentsFunc  func(ctx context.Context, projectID string) ([]Document, error)
@@ -25,9 +25,9 @@ func (m *MockClient) ListProjects(ctx context.Context) ([]Project, error) {
 	return m.ListProjectsFunc(ctx)
 }
 
-func (m *MockClient) ListTasks(ctx context.Context, projectID string) ([]Task, error) {
+func (m *MockClient) ListTasks(ctx context.Context, projectID string, options ...TaskListOption) ([]Task, error) {
 	if m.ListTasksFunc != nil {
-		return m.ListTasksFunc(ctx, projectID)
+		return m.ListTasksFunc(ctx, projectID, options...)
 	}
 	return m.Tasks, nil
 }
