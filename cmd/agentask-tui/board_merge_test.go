@@ -186,7 +186,7 @@ func TestBoardModel_MergePRSuccess(t *testing.T) {
 			capturedTransitionTo = to
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			return []tuiclient.Task{
 				{ID: "approved-task-1", Title: "Approved Task", State: "done"},
@@ -281,7 +281,7 @@ func TestBoardModel_MergePRFailure(t *testing.T) {
 			transitionCalled = true
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			return []tuiclient.Task{
 				{ID: "approved-task-1", Title: "Approved Task", State: "approved"},
@@ -397,7 +397,7 @@ func TestBoardModel_ApprovedSendBackSuccess(t *testing.T) {
 			capturedTransitionNote = note
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			return []tuiclient.Task{
 				{ID: "approved-task-1", Title: "Approved Task", State: "ready"},
@@ -482,7 +482,7 @@ func TestBoardModel_ApprovedSendBackNoNote(t *testing.T) {
 			capturedTransitionNote = note
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			return []tuiclient.Task{
 				{ID: "approved-task-1", Title: "Approved Task", State: "ready"},
 			}, nil

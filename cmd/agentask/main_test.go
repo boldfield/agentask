@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -166,5 +167,130 @@ func TestExecutePromoteMissingToken(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
 		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
+func TestResolveAgentIdentity(t *testing.T) {
+	tests := []struct {
+		name          string
+		agentFlag     string
+		modelFlag     string
+		envAgent      string
+		envModel      string
+		expectedAgent string
+		expectedModel string
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:          "flag wins",
+			agentFlag:     "flag-agent",
+			modelFlag:     "flag-model",
+			envAgent:      "env-agent",
+			envModel:      "env-model",
+			expectedAgent: "flag-agent",
+			expectedModel: "flag-model",
+		},
+		{
+			name:          "agent flag wins over env",
+			agentFlag:     "flag-agent",
+			modelFlag:     "",
+			envAgent:      "env-agent",
+			envModel:      "env-model",
+			expectedAgent: "flag-agent",
+			expectedModel: "env-model",
+		},
+		{
+			name:          "model flag wins over env",
+			agentFlag:     "",
+			modelFlag:     "flag-model",
+			envAgent:      "env-agent",
+			envModel:      "env-model",
+			expectedAgent: "env-agent",
+			expectedModel: "flag-model",
+		},
+		{
+			name:          "fallback to env when flags empty",
+			agentFlag:     "",
+			modelFlag:     "",
+			envAgent:      "env-agent",
+			envModel:      "env-model",
+			expectedAgent: "env-agent",
+			expectedModel: "env-model",
+		},
+		{
+			name:          "error when agent ID missing",
+			agentFlag:     "",
+			modelFlag:     "flag-model",
+			envAgent:      "",
+			envModel:      "env-model",
+			expectError:   true,
+			errorContains: "agent ID is required",
+		},
+		{
+			name:          "error when model missing",
+			agentFlag:     "flag-agent",
+			modelFlag:     "",
+			envAgent:      "env-agent",
+			envModel:      "",
+			expectError:   true,
+			errorContains: "model is required",
+		},
+		{
+			name:          "error when both missing",
+			agentFlag:     "",
+			modelFlag:     "",
+			envAgent:      "",
+			envModel:      "",
+			expectError:   true,
+			errorContains: "agent ID is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Save current env values
+			oldAgent := os.Getenv("AGENT_ID")
+			oldModel := os.Getenv("AGENT_MODEL")
+			defer func() {
+				os.Setenv("AGENT_ID", oldAgent)
+				os.Setenv("AGENT_MODEL", oldModel)
+			}()
+
+			// Set test env values
+			if tt.envAgent != "" {
+				os.Setenv("AGENT_ID", tt.envAgent)
+			} else {
+				os.Unsetenv("AGENT_ID")
+			}
+			if tt.envModel != "" {
+				os.Setenv("AGENT_MODEL", tt.envModel)
+			} else {
+				os.Unsetenv("AGENT_MODEL")
+			}
+
+			// Call function
+			agent, model, err := resolveAgentIdentity(tt.agentFlag, tt.modelFlag)
+
+			// Check error
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("expected error to contain %q, got: %v", tt.errorContains, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+				if agent != tt.expectedAgent {
+					t.Errorf("expected agent %q, got %q", tt.expectedAgent, agent)
+				}
+				if model != tt.expectedModel {
+					t.Errorf("expected model %q, got %q", tt.expectedModel, model)
+				}
+			}
+		})
 	}
 }
