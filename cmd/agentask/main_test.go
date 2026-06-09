@@ -118,3 +118,53 @@ func TestExecuteProjectsMissingToken(t *testing.T) {
 		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
 	}
 }
+
+func TestExecutePromote(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/tasks/task-123/promote" && r.Method == "POST" {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	err := executePromote(context.Background(), server.URL, "test-token", []string{"task-123"})
+	if err != nil {
+		t.Fatalf("executePromote failed: %v", err)
+	}
+}
+
+func TestExecutePromoteMissingTaskID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+
+	err := executePromote(context.Background(), server.URL, "test-token", []string{})
+	if err == nil {
+		t.Fatal("expected error for missing task ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "task ID") {
+		t.Errorf("expected error to mention task ID, got: %v", err)
+	}
+}
+
+func TestExecutePromoteMissingURL(t *testing.T) {
+	err := executePromote(context.Background(), "", "test-token", []string{"task-123"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_URL") {
+		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	}
+}
+
+func TestExecutePromoteMissingToken(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	defer server.Close()
+
+	err := executePromote(context.Background(), server.URL, "", []string{"task-123"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
+		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
