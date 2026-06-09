@@ -402,6 +402,48 @@ func TestTransitionTaskWithoutNote(t *testing.T) {
 	}
 }
 
+func TestHeartbeatTask(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/heartbeat" {
+			t.Errorf("expected /tasks/task123/heartbeat, got %s", r.URL.Path)
+		}
+
+		// Check authorization header
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		// Verify request body
+		var req heartbeatTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.AgentID != "agent123" {
+			t.Errorf("expected agent_id=agent123, got %s", req.AgentID)
+		}
+
+		// Write response
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test
+	err := client.HeartbeatTask(context.Background(), "task123", "agent123")
+	if err != nil {
+		t.Fatalf("HeartbeatTask failed: %v", err)
+	}
+}
+
 // TestAPIError_StructuredBody verifies that do() returns *APIError with the correct StatusCode,
 // Code, and Message when the server returns a non-2xx with a structured JSON error body.
 func TestAPIError_StructuredBody(t *testing.T) {
