@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"strconv"
@@ -20,9 +21,7 @@ const version = "0.5.0"
 
 func main() {
 	// Determine if this is a server or client command
-	if len(os.Args) > 1 && os.Args[1] == "server" {
-		runServer()
-	} else if len(os.Args) > 1 && os.Args[1] != "server" {
+	if len(os.Args) > 1 && os.Args[1] != "server" {
 		runClient(os.Args[1], os.Args[2:])
 	} else {
 		// Default to server for backward compatibility
@@ -94,64 +93,64 @@ func runServer() {
 func runClient(verb string, args []string) {
 	// Parse --json flag
 	var jsonOutput bool
-	var filteredArgs []string
 	for _, arg := range args {
 		if arg == "--json" {
 			jsonOutput = true
-		} else {
-			filteredArgs = append(filteredArgs, arg)
+			break
 		}
 	}
 
 	// Read configuration from environment
 	baseURL := os.Getenv("AGENTASK_URL")
-	if baseURL == "" {
-		fmt.Fprintf(os.Stderr, "error: AGENTASK_URL environment variable not set\n")
-		os.Exit(1)
-	}
-
 	token := os.Getenv("AGENTASK_TOKEN")
-	if token == "" {
-		fmt.Fprintf(os.Stderr, "error: AGENTASK_TOKEN environment variable not set\n")
-		os.Exit(1)
-	}
-
-	// Create client
-	client := tuiclient.NewHTTPClient(baseURL, token)
 	ctx := context.Background()
 
 	// Dispatch to verb handler
 	switch verb {
 	case "projects":
-		handleProjects(ctx, client, jsonOutput)
+		if err := executeProjects(ctx, baseURL, token, jsonOutput, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command '%s'\n", verb)
 		os.Exit(1)
 	}
 }
 
-func handleProjects(ctx context.Context, client *tuiclient.HTTPClient, jsonOutput bool) {
-	projects, err := client.ListProjects(ctx)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "error: %v\n", err)
-		os.Exit(1)
+func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool, out io.Writer) error {
+	// Validate configuration
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
 	}
 
+	// Create client and list projects
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	projects, err := client.ListProjects(ctx)
+	if err != nil {
+		return fmt.Errorf("failed to list projects: %w", err)
+	}
+
+	// Output results
 	if jsonOutput {
 		output, err := json.MarshalIndent(projects, "", "  ")
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "error: failed to marshal JSON: %v\n", err)
-			os.Exit(1)
+			return fmt.Errorf("failed to marshal JSON: %w", err)
 		}
-		fmt.Println(string(output))
+		fmt.Fprintln(out, string(output))
 	} else {
-		w := tabwriter.NewWriter(os.Stdout, 0, 0, 2, ' ', 0)
+		w := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 		fmt.Fprintln(w, "ID\tNAME\tREPO\tCREATED AT")
 		for _, p := range projects {
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.ID, p.Name, p.Repo, p.CreatedAt)
 		}
 		w.Flush()
 	}
+
+	return nil
 }
 
 func parseAllowedModels(modelsStr string) []string {
