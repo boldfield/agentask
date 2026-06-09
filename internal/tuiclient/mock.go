@@ -7,13 +7,15 @@ import (
 // MockClient is a mock implementation of the Client interface for testing.
 type MockClient struct {
 	ListProjectsFunc   func(ctx context.Context) ([]Project, error)
-	ListTasksFunc      func(ctx context.Context, projectID string) ([]Task, error)
+	ListTasksFunc      func(ctx context.Context, projectID string, options ...TaskListOption) ([]Task, error)
 	GetTaskFunc        func(ctx context.Context, id string) (TaskDetail, error)
 	ListEventsFunc     func(ctx context.Context, taskID string) ([]Event, error)
 	ListDocumentsFunc  func(ctx context.Context, projectID string) ([]Document, error)
 	PromoteTaskFunc    func(ctx context.Context, id string) error
+	ClaimTaskFunc      func(ctx context.Context, id, agentID, model string) error
 	ReviewTaskFunc     func(ctx context.Context, id, actor, verdict string, note *string) error
 	TransitionTaskFunc func(ctx context.Context, id, to string, note *string) error
+	HeartbeatTaskFunc  func(ctx context.Context, id, agentID string) error
 	HoldTaskFunc       func(ctx context.Context, id string) error
 	ReleaseTaskFunc    func(ctx context.Context, id string) error
 	ArchiveTaskFunc    func(ctx context.Context, id string) error
@@ -25,9 +27,9 @@ func (m *MockClient) ListProjects(ctx context.Context) ([]Project, error) {
 	return m.ListProjectsFunc(ctx)
 }
 
-func (m *MockClient) ListTasks(ctx context.Context, projectID string) ([]Task, error) {
+func (m *MockClient) ListTasks(ctx context.Context, projectID string, options ...TaskListOption) ([]Task, error) {
 	if m.ListTasksFunc != nil {
-		return m.ListTasksFunc(ctx, projectID)
+		return m.ListTasksFunc(ctx, projectID, options...)
 	}
 	return m.Tasks, nil
 }
@@ -57,12 +59,26 @@ func (m *MockClient) PromoteTask(ctx context.Context, id string) error {
 	return m.PromoteTaskFunc(ctx, id)
 }
 
+func (m *MockClient) ClaimTask(ctx context.Context, id, agentID, model string) error {
+	if m.ClaimTaskFunc != nil {
+		return m.ClaimTaskFunc(ctx, id, agentID, model)
+	}
+	return nil
+}
+
 func (m *MockClient) ReviewTask(ctx context.Context, id, actor, verdict string, note *string) error {
 	return m.ReviewTaskFunc(ctx, id, actor, verdict, note)
 }
 
 func (m *MockClient) TransitionTask(ctx context.Context, id, to string, note *string) error {
 	return m.TransitionTaskFunc(ctx, id, to, note)
+}
+
+func (m *MockClient) HeartbeatTask(ctx context.Context, id, agentID string) error {
+	if m.HeartbeatTaskFunc != nil {
+		return m.HeartbeatTaskFunc(ctx, id, agentID)
+	}
+	return nil
 }
 
 func (m *MockClient) HoldTask(ctx context.Context, id string) error {
