@@ -287,6 +287,7 @@ func TestExecuteTasksMissingProject(t *testing.T) {
 		t.Errorf("expected error to mention --project, got: %v", err)
 	}
 }
+
 func TestResolveAgentIdentity(t *testing.T) {
 	tests := []struct {
 		name          string
