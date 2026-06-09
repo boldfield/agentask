@@ -4223,3 +4223,85 @@ func TestDetailView_ModelVisibility(t *testing.T) {
 		t.Errorf("Expected 'Model: opus' in detail output, got:\n%s", output)
 	}
 }
+
+// TestBoardModel_ProjectSwitcher_ShowsNewProjects tests that opening the project
+// switcher fetches a fresh project list and displays newly-created projects without restart.
+func TestBoardModel_ProjectSwitcher_ShowsNewProjects(t *testing.T) {
+	mockClient := &tuiclient.MockClient{
+		Tasks: []tuiclient.Task{
+			{ID: "task-1", Title: "Task 1", State: "in_progress"},
+		},
+	}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project1 := tuiclient.Project{ID: "project-1", Name: "Project 1"}
+	project2 := tuiclient.Project{ID: "project-2", Name: "Project 2"}
+	project3 := tuiclient.Project{ID: "project-3", Name: "Project 3"}
+
+	model := NewBoardModel(mockClient, config, project1)
+	model.width = 80
+	model.height = 24
+
+	// Initialize with initial projects (project1 and project2)
+	initialProjects := []tuiclient.Project{project1, project2}
+	m, _ := model.Update(projectsFetchedMsg{projects: initialProjects})
+	model = m.(*BoardModel)
+
+	// Initialize with tasks
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range stateOrder {
+		bucketed[state] = []tuiclient.Task{}
+	}
+	bucketed["in_progress"] = []tuiclient.Task{{ID: "task-1", Title: "Task 1", State: "in_progress"}}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Verify initial state: only 2 projects
+	if len(model.projects) != 2 {
+		t.Errorf("Expected initial 2 projects, got %d", len(model.projects))
+	}
+
+	// Press 'P' to open project switcher — this should issue a fetchProjects
+	m, cmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'P'}})
+	model = m.(*BoardModel)
+
+	if model.mode != modeProjectSwitch {
+		t.Errorf("Expected mode to be modeProjectSwitch, got %d", model.mode)
+	}
+
+	// Verify that a command was returned (fetchProjects)
+	if cmd == nil {
+		t.Errorf("Expected fetchProjects command to be returned, got nil")
+	}
+
+	// Simulate the fresh project list from server with a new project (project3)
+	newProjects := []tuiclient.Project{project1, project2, project3}
+	m, _ = model.Update(projectsFetchedMsg{projects: newProjects})
+	model = m.(*BoardModel)
+
+	// Verify that the projects list was updated
+	if len(model.projects) != 3 {
+		t.Errorf("Expected 3 projects after fetch, got %d", len(model.projects))
+	}
+
+	if model.projects[2].ID != project3.ID {
+		t.Errorf("Expected third project to be %s, got %s", project3.ID, model.projects[2].ID)
+	}
+
+	// Verify the current project selection is preserved (should be project1)
+	if model.projectSwitchIndex != 0 {
+		t.Errorf("Expected projectSwitchIndex to be 0 (project1), got %d", model.projectSwitchIndex)
+	}
+
+	// Verify the rendered View contains the new project
+	output := model.View()
+	if !strings.Contains(output, "Project 3") {
+		t.Errorf("Expected 'Project 3' to appear in project switcher View(), got:\n%s", output)
+	}
+}
