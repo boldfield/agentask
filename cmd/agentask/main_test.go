@@ -120,6 +120,135 @@ func TestExecuteProjectsMissingToken(t *testing.T) {
 	}
 }
 
+func TestDoNextNothing(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/projects/") && strings.HasSuffix(r.URL.Path, "/tasks") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{})
+		}
+	}))
+	defer server.Close()
+
+	client := tuiclient.NewHTTPClient(server.URL, "test-token")
+	result := doNext(context.Background(), server.URL, "test-token", false,
+		[]string{"--project", "proj-123", "--model", "haiku", "--kind", "implement"},
+		client)
+
+	if result.exitCode != 2 {
+		t.Errorf("expected exit code 2 for nothing claimable, got %d", result.exitCode)
+	}
+	if !strings.Contains(result.stdout, "nothing claimable") {
+		t.Errorf("expected 'nothing claimable' in stdout, got: %q", result.stdout)
+	}
+}
+
+func TestDoNextFindsTask(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/projects/") && strings.HasSuffix(r.URL.Path, "/tasks") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-123", Title: "Test Task", State: "ready", Kind: "implement", Model: "haiku"},
+				{ID: "task-456", Title: "Another Task", State: "ready", Kind: "implement", Model: "haiku"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	client := tuiclient.NewHTTPClient(server.URL, "test-token")
+	result := doNext(context.Background(), server.URL, "test-token", false,
+		[]string{"--project", "proj-123", "--model", "haiku", "--kind", "implement"},
+		client)
+
+	if result.exitCode != 0 {
+		t.Errorf("expected exit code 0, got %d", result.exitCode)
+	}
+	if !strings.Contains(result.stdout, "task-123") {
+		t.Errorf("expected 'task-123' in stdout, got: %q", result.stdout)
+	}
+}
+
+func TestDoNextClaimsTask(t *testing.T) {
+	claimCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/projects/") && strings.HasSuffix(r.URL.Path, "/tasks") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-123", Title: "Test Task", State: "ready", Kind: "implement", Model: "haiku"},
+			})
+		}
+		if strings.HasSuffix(r.URL.Path, "/claim") {
+			claimCalled = true
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]string{"id": "task-123"})
+		}
+	}))
+	defer server.Close()
+
+	client := tuiclient.NewHTTPClient(server.URL, "test-token")
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	result := doNext(context.Background(), server.URL, "test-token", false,
+		[]string{"--project", "proj-123", "--model", "haiku", "--kind", "implement", "--claim"},
+		client)
+
+	if result.exitCode != 0 {
+		t.Errorf("expected exit code 0, got %d", result.exitCode)
+	}
+	if !claimCalled {
+		t.Errorf("expected claim to be called")
+	}
+}
+
+func TestDoNextRacedClaim(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/projects/") && strings.HasSuffix(r.URL.Path, "/tasks") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-123", Title: "Test Task", State: "ready", Kind: "implement", Model: "haiku"},
+			})
+		}
+		if strings.HasSuffix(r.URL.Path, "/claim") {
+			w.WriteHeader(http.StatusConflict)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]string{"code": "CONFLICT", "message": "Task is not claimable"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	client := tuiclient.NewHTTPClient(server.URL, "test-token")
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	result := doNext(context.Background(), server.URL, "test-token", false,
+		[]string{"--project", "proj-123", "--model", "haiku", "--kind", "implement", "--claim"},
+		client)
+
+	if result.exitCode != 3 {
+		t.Errorf("expected exit code 3 for raced claim, got %d", result.exitCode)
+	}
+	if !strings.Contains(result.stdout, "raced, none claimed") {
+		t.Errorf("expected 'raced, none claimed' in stdout, got: %q", result.stdout)
+	}
+}
+
+func TestDoNextMissingProject(t *testing.T) {
+	result := doNext(context.Background(), "http://localhost:8080", "test-token", false,
+		[]string{"--model", "haiku", "--kind", "implement"},
+		nil)
+
+	if result.exitCode != 1 {
+		t.Errorf("expected exit code 1 for missing project, got %d", result.exitCode)
+	}
+	if !strings.Contains(result.stderr, "--project is required") {
+		t.Errorf("expected '--project is required' in stderr, got: %q", result.stderr)
+	}
+}
+
 func TestResolveAgentIdentity(t *testing.T) {
 	tests := []struct {
 		name          string

@@ -118,6 +118,8 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "next":
+		executeNext(ctx, baseURL, token, jsonOutput, args)
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command '%s'\n", verb)
 		os.Exit(1)
@@ -157,6 +159,122 @@ func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool
 	}
 
 	return nil
+}
+
+type nextResult struct {
+	exitCode int
+	stdout   string
+	stderr   string
+}
+
+func doNext(ctx context.Context, baseURL, token string, jsonOutput bool, args []string, client tuiclient.Client) *nextResult {
+	// Parse flags
+	var projectID, model, kind, agentFlag string
+	var claim bool
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--project":
+			if i+1 < len(args) {
+				projectID = args[i+1]
+				i++
+			}
+		case "--model":
+			if i+1 < len(args) {
+				model = args[i+1]
+				i++
+			}
+		case "--kind":
+			if i+1 < len(args) {
+				kind = args[i+1]
+				i++
+			}
+		case "--agent":
+			if i+1 < len(args) {
+				agentFlag = args[i+1]
+				i++
+			}
+		case "--claim":
+			claim = true
+		}
+	}
+
+	// Validate required flags
+	if projectID == "" {
+		return &nextResult{exitCode: 1, stderr: "error: --project is required\n"}
+	}
+	if model == "" {
+		return &nextResult{exitCode: 1, stderr: "error: --model is required\n"}
+	}
+	if kind == "" {
+		return &nextResult{exitCode: 1, stderr: "error: --kind is required (implement|review)\n"}
+	}
+
+	// Validate configuration
+	if baseURL == "" {
+		return &nextResult{exitCode: 1, stderr: "error: AGENTASK_URL environment variable not set\n"}
+	}
+	if token == "" {
+		return &nextResult{exitCode: 1, stderr: "error: AGENTASK_TOKEN environment variable not set\n"}
+	}
+
+	// Create client and list tasks
+	if client == nil {
+		client = tuiclient.NewHTTPClient(baseURL, token)
+	}
+	tasks, err := client.ListTasks(ctx, projectID,
+		tuiclient.WithModel(model),
+		tuiclient.WithKind(kind),
+		tuiclient.WithClaimable(true))
+	if err != nil {
+		return &nextResult{exitCode: 1, stderr: fmt.Sprintf("error: failed to list tasks: %v\n", err)}
+	}
+
+	// Check if any tasks are available
+	if len(tasks) == 0 {
+		return &nextResult{exitCode: 2, stdout: "nothing claimable\n"}
+	}
+
+	// Take the first task
+	task := tasks[0]
+
+	// If --claim is set, claim the task
+	if claim {
+		agentID, _, err := resolveAgentIdentity(agentFlag, "")
+		if err != nil {
+			return &nextResult{exitCode: 1, stderr: fmt.Sprintf("error: %v\n", err)}
+		}
+
+		err = client.ClaimTask(ctx, task.ID, agentID, model)
+		if err != nil {
+			if err == tuiclient.ErrAlreadyClaimed {
+				return &nextResult{exitCode: 3, stdout: "raced, none claimed\n"}
+			}
+			return &nextResult{exitCode: 1, stderr: fmt.Sprintf("error: failed to claim task: %v\n", err)}
+		}
+	}
+
+	// Format output
+	if jsonOutput {
+		output, err := json.MarshalIndent(task, "", "  ")
+		if err != nil {
+			return &nextResult{exitCode: 1, stderr: fmt.Sprintf("error: failed to marshal JSON: %v\n", err)}
+		}
+		return &nextResult{exitCode: 0, stdout: string(output) + "\n"}
+	}
+	return &nextResult{exitCode: 0, stdout: task.ID + "\n"}
+}
+
+func executeNext(ctx context.Context, baseURL, token string, jsonOutput bool, args []string) {
+	result := doNext(ctx, baseURL, token, jsonOutput, args, nil)
+	if result.stdout != "" {
+		fmt.Fprint(os.Stdout, result.stdout)
+	}
+	if result.stderr != "" {
+		fmt.Fprint(os.Stderr, result.stderr)
+	}
+	if result.exitCode != 0 {
+		os.Exit(result.exitCode)
+	}
 }
 
 func parseAllowedModels(modelsStr string) []string {
