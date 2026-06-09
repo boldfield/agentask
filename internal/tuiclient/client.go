@@ -16,7 +16,7 @@ var ErrAlreadyClaimed = errors.New("task already claimed")
 // Client is the interface for TUI interactions with the Agentask API.
 type Client interface {
 	ListProjects(ctx context.Context) ([]Project, error)
-	ListTasks(ctx context.Context, projectID string) ([]Task, error)
+	ListTasks(ctx context.Context, projectID string, options ...TaskListOption) ([]Task, error)
 	GetTask(ctx context.Context, id string) (TaskDetail, error)
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
 	ListDocuments(ctx context.Context, projectID string) ([]Document, error)
@@ -216,9 +216,62 @@ func (c *HTTPClient) ListProjects(ctx context.Context) ([]Project, error) {
 	return projects, nil
 }
 
-// ListTasks fetches all tasks for a project.
-func (c *HTTPClient) ListTasks(ctx context.Context, projectID string) ([]Task, error) {
-	resp, err := c.do(ctx, "GET", fmt.Sprintf("/projects/%s/tasks", projectID), nil)
+// TaskListOptions holds optional filters for ListTasks.
+type TaskListOptions struct {
+	Model     string
+	Kind      string
+	Claimable bool
+}
+
+// TaskListOption is a functional option for ListTasks.
+type TaskListOption func(*TaskListOptions)
+
+// WithModel sets the model filter.
+func WithModel(model string) TaskListOption {
+	return func(opts *TaskListOptions) {
+		opts.Model = model
+	}
+}
+
+// WithKind sets the kind filter.
+func WithKind(kind string) TaskListOption {
+	return func(opts *TaskListOptions) {
+		opts.Kind = kind
+	}
+}
+
+// WithClaimable sets the claimable filter.
+func WithClaimable(claimable bool) TaskListOption {
+	return func(opts *TaskListOptions) {
+		opts.Claimable = claimable
+	}
+}
+
+// ListTasks fetches tasks for a project, optionally filtered by model, kind, and claimable status.
+func (c *HTTPClient) ListTasks(ctx context.Context, projectID string, options ...TaskListOption) ([]Task, error) {
+	opts := &TaskListOptions{}
+	for _, opt := range options {
+		opt(opts)
+	}
+
+	path := fmt.Sprintf("/projects/%s/tasks", projectID)
+	if opts.Model != "" || opts.Kind != "" || opts.Claimable {
+		var params []string
+		if opts.Model != "" {
+			params = append(params, fmt.Sprintf("model=%s", opts.Model))
+		}
+		if opts.Kind != "" {
+			params = append(params, fmt.Sprintf("kind=%s", opts.Kind))
+		}
+		if opts.Claimable {
+			params = append(params, "claimable=true")
+		}
+		if len(params) > 0 {
+			path += "?" + join(params, "&")
+		}
+	}
+
+	resp, err := c.do(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -230,6 +283,18 @@ func (c *HTTPClient) ListTasks(ctx context.Context, projectID string) ([]Task, e
 	}
 
 	return tasks, nil
+}
+
+// join is a simple string joiner since we don't have strings.Join imported.
+func join(ss []string, sep string) string {
+	if len(ss) == 0 {
+		return ""
+	}
+	result := ss[0]
+	for _, s := range ss[1:] {
+		result += sep + s
+	}
+	return result
 }
 
 // GetTask fetches a single task with full details including dependencies and links.
