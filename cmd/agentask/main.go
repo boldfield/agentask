@@ -20,13 +20,19 @@ import (
 const version = "0.5.0"
 
 func main() {
-	// Determine if this is a server or client command
-	if len(os.Args) > 1 && os.Args[1] != "server" {
-		runClient(os.Args[1], os.Args[2:])
+	isClient, verb := parseCommand(os.Args)
+	if isClient {
+		runClient(verb, os.Args[2:])
 	} else {
-		// Default to server for backward compatibility
 		runServer()
 	}
+}
+
+func parseCommand(args []string) (isClient bool, verb string) {
+	if len(args) > 1 && args[1] != "server" {
+		return true, args[1]
+	}
+	return false, ""
 }
 
 func runServer() {
