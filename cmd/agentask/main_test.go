@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -116,5 +117,147 @@ func TestExecuteProjectsMissingToken(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
 		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
+func TestExecuteShowTable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:           "task-1",
+				State:        "in_progress",
+				Model:        "opus",
+				Kind:         "implement",
+				Title:        "Test Task",
+				Spec:         "Test spec",
+				TargetTaskID: nil,
+				Links: []tuiclient.TaskLink{
+					{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/102"},
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), server.URL, "test-token", false, []string{"task-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeShow failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "ID: task-1") {
+		t.Errorf("expected 'ID: task-1' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "State: in_progress") {
+		t.Errorf("expected 'State: in_progress' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Model: opus") {
+		t.Errorf("expected 'Model: opus' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Kind: implement") {
+		t.Errorf("expected 'Kind: implement' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Title: Test Task") {
+		t.Errorf("expected 'Title: Test Task' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Spec: Test spec") {
+		t.Errorf("expected 'Spec: Test spec' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Links:") {
+		t.Errorf("expected 'Links:' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "pr: https://github.com/boldfield/agentask/pull/102") {
+		t.Errorf("expected link in output, got: %s", output)
+	}
+}
+
+func TestExecuteShowJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-1",
+				State: "ready",
+				Model: "haiku",
+				Kind:  "implement",
+				Title: "Test Task",
+				Spec:  "Test spec",
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), server.URL, "test-token", true, []string{"--json", "task-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeShow failed: %v", err)
+	}
+
+	output := buf.String()
+	var result tuiclient.TaskDetail
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	if result.ID != "task-1" {
+		t.Errorf("expected task ID 'task-1', got %q", result.ID)
+	}
+	if result.Title != "Test Task" {
+		t.Errorf("expected title 'Test Task', got %q", result.Title)
+	}
+}
+
+func TestExecuteShowMissingID(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), "http://localhost:8080", "test-token", false, []string{}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing task ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "task id required") {
+		t.Errorf("expected error to mention 'task id required', got: %v", err)
+	}
+}
+
+func TestExecuteShowMissingURL(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), "", "test-token", false, []string{"task-1"}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_URL") {
+		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	}
+}
+
+func TestExecuteShowMissingToken(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), "http://localhost:8080", "", false, []string{"task-1"}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
+		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
+func TestExecuteShowServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.WriteHeader(http.StatusNotFound)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"error": "task not found"}`)
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), server.URL, "test-token", false, []string{"nonexistent-id"}, buf)
+	if err == nil {
+		t.Fatal("expected error for non-existent task, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to get task") {
+		t.Errorf("expected error to mention 'failed to get task', got: %v", err)
 	}
 }
