@@ -12,6 +12,7 @@ type MockClient struct {
 	ListEventsFunc     func(ctx context.Context, taskID string) ([]Event, error)
 	ListDocumentsFunc  func(ctx context.Context, projectID string) ([]Document, error)
 	PromoteTaskFunc    func(ctx context.Context, id string) error
+	ClaimTaskFunc      func(ctx context.Context, id, agentID, model string) error
 	ReviewTaskFunc     func(ctx context.Context, id, actor, verdict string, note *string) error
 	TransitionTaskFunc func(ctx context.Context, id, to string, note *string) error
 	HoldTaskFunc       func(ctx context.Context, id string) error
@@ -55,6 +56,13 @@ func (m *MockClient) ListDocuments(ctx context.Context, projectID string) ([]Doc
 
 func (m *MockClient) PromoteTask(ctx context.Context, id string) error {
 	return m.PromoteTaskFunc(ctx, id)
+}
+
+func (m *MockClient) ClaimTask(ctx context.Context, id, agentID, model string) error {
+	if m.ClaimTaskFunc != nil {
+		return m.ClaimTaskFunc(ctx, id, agentID, model)
+	}
+	return nil
 }
 
 func (m *MockClient) ReviewTask(ctx context.Context, id, actor, verdict string, note *string) error {
