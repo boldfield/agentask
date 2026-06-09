@@ -561,6 +561,27 @@ func invalid(code, message string) error {
 	return &ValidationError{Code: code, Message: message}
 }
 
+// sanitizeFreeText strips C0 control characters (U+0000–U+001F) from a free-text
+// field so they can never enter the store, EXCEPT the three whitespace controls
+// that legitimately appear in human text — tab (\t), newline (\n), and carriage
+// return (\r) — which are preserved. Newlines are deliberately kept, not removed:
+// the constraint is to ESCAPE them on the way out (encoding/json does this for us),
+// not to lose them. This is the write-side defense; the API response is valid JSON
+// regardless of stored content because every handler serializes via encoding/json,
+// which escapes any control char. DEL (0x7f) and other code points are left intact —
+// they are valid in JSON strings and only U+0000–U+001F must be escaped.
+func sanitizeFreeText(text string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\t' || r == '\n' || r == '\r' {
+			return r
+		}
+		if r < 0x20 {
+			return -1 // drop the rune
+		}
+		return r
+	}, text)
+}
+
 // getDefaultModel returns the default model from the allowlist.
 // Prefers 'haiku' if available (backward compatibility), otherwise returns the first allowlisted model.
 func (s *sqliteStore) getDefaultModel() string {
@@ -805,6 +826,11 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 	now := nowTimestamp()
 
 	for _, input := range tasks {
+		// Strip raw control characters from free-text before validation/storage so
+		// bad bytes can't enter the store; legitimate newlines/tabs are preserved.
+		input.Title = sanitizeFreeText(input.Title)
+		input.Spec = sanitizeFreeText(input.Spec)
+
 		// Validate title and spec are non-empty
 		if strings.TrimSpace(input.Title) == "" {
 			return nil, invalid("EMPTY_TITLE", "title is required")
@@ -1408,6 +1434,9 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 		}
 	}
 
+	// Strip raw control characters from the free-text result before storage.
+	result = sanitizeFreeText(result)
+
 	tx, err := s.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return TaskWithDepsAndLinks{}, fmt.Errorf("failed to begin transaction: %w", err)
@@ -1795,6 +1824,12 @@ func (s *sqliteStore) AddReview(ctx context.Context, taskID, actor, verdict stri
 		return Event{}, invalid("INVALID_VERDICT", "verdict must be 'approve' or 'reject'")
 	}
 
+	// Strip raw control characters from the free-text note before storage.
+	if note != nil {
+		cleaned := sanitizeFreeText(*note)
+		note = &cleaned
+	}
+
 	tx, err := s.conn.BeginTx(ctx, nil)
 	if err != nil {
 		return Event{}, fmt.Errorf("failed to begin transaction: %w", err)
@@ -1847,6 +1882,12 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 	validTargets := map[string]bool{"done": true, "ready": true, "blocked": true, "failed": true}
 	if !validTargets[to] {
 		return Task{}, invalid("INVALID_TARGET_STATE", "target state must be one of: done, ready, blocked, failed")
+	}
+
+	// Strip raw control characters from the free-text note before storage.
+	if note != nil {
+		cleaned := sanitizeFreeText(*note)
+		note = &cleaned
 	}
 
 	tx, err := s.conn.BeginTx(ctx, nil)
