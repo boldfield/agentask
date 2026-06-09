@@ -118,6 +118,11 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "show":
+		if err := executeShow(ctx, baseURL, token, jsonOutput, args, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command '%s'\n", verb)
 		os.Exit(1)
@@ -154,6 +159,59 @@ func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.ID, p.Name, p.Repo, p.CreatedAt)
 		}
 		w.Flush()
+	}
+
+	return nil
+}
+
+func executeShow(ctx context.Context, baseURL, token string, jsonOutput bool, args []string, out io.Writer) error {
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	taskID := ""
+	for _, arg := range args {
+		if arg != "--json" {
+			taskID = arg
+			break
+		}
+	}
+
+	if taskID == "" {
+		return fmt.Errorf("task id required")
+	}
+
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	task, err := client.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to get task: %w", err)
+	}
+
+	if jsonOutput {
+		output, err := json.MarshalIndent(task, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		fmt.Fprintln(out, string(output))
+	} else {
+		fmt.Fprintf(out, "ID: %s\n", task.ID)
+		fmt.Fprintf(out, "State: %s\n", task.State)
+		fmt.Fprintf(out, "Model: %s\n", task.Model)
+		fmt.Fprintf(out, "Kind: %s\n", task.Kind)
+		fmt.Fprintf(out, "Title: %s\n", task.Title)
+		fmt.Fprintf(out, "Spec: %s\n", task.Spec)
+		if task.TargetTaskID != nil {
+			fmt.Fprintf(out, "Target Task ID: %s\n", *task.TargetTaskID)
+		}
+		if len(task.Links) > 0 {
+			fmt.Fprintf(out, "Links:\n")
+			for _, link := range task.Links {
+				fmt.Fprintf(out, "  - %s: %s\n", link.Kind, link.Value)
+			}
+		}
 	}
 
 	return nil

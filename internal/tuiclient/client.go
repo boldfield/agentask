@@ -60,10 +60,12 @@ type TaskDetail struct {
 	Spec           string     `json:"spec"`
 	State          string     `json:"state"`
 	Model          string     `json:"model"`
+	Kind           string     `json:"kind"`
 	Assignee       *string    `json:"assignee"`
 	LeaseExpiresAt *string    `json:"lease_expires_at"`
 	Result         *string    `json:"result"`
 	Held           bool       `json:"held"`
+	TargetTaskID   *string    `json:"target_task_id"`
 	CreatedAt      string     `json:"created_at"`
 	UpdatedAt      string     `json:"updated_at"`
 	DependsOn      []string   `json:"depends_on"`
