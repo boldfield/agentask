@@ -118,3 +118,53 @@ func TestExecuteProjectsMissingToken(t *testing.T) {
 		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
 	}
 }
+
+func TestExecuteTransitionSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/transition") {
+			if r.Method != "POST" {
+				t.Errorf("expected POST, got %s", r.Method)
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	err := executeTransition(context.Background(), server.URL, "test-token", []string{"task-123", "--to", "blocked", "--note", "test note"})
+	if err != nil {
+		t.Fatalf("executeTransition failed: %v", err)
+	}
+}
+
+func TestExecuteTransitionMissingTo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	err := executeTransition(context.Background(), server.URL, "test-token", []string{"task-123"})
+	if err == nil {
+		t.Fatal("expected error for missing --to, got nil")
+	}
+	if !strings.Contains(err.Error(), "--to") {
+		t.Errorf("expected error to mention --to, got: %v", err)
+	}
+}
+
+func TestExecuteTransitionFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "internal_error",
+				"message": "server error",
+			},
+		})
+	}))
+	defer server.Close()
+
+	err := executeTransition(context.Background(), server.URL, "test-token", []string{"task-123", "--to", "blocked"})
+	if err == nil {
+		t.Fatal("expected error for failed transition, got nil")
+	}
+}
