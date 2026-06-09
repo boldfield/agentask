@@ -4,11 +4,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"time"
 )
+
+var ErrAlreadyClaimed = errors.New("task already claimed")
 
 // Client is the interface for TUI interactions with the Agentask API.
 type Client interface {
@@ -18,6 +21,7 @@ type Client interface {
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
 	ListDocuments(ctx context.Context, projectID string) ([]Document, error)
 	PromoteTask(ctx context.Context, id string) error
+	ClaimTask(ctx context.Context, id, agentID, model string) error
 	ReviewTask(ctx context.Context, id, actor, verdict string, note *string) error
 	TransitionTask(ctx context.Context, id, to string, note *string) error
 	HoldTask(ctx context.Context, id string) error
@@ -279,6 +283,33 @@ func (c *HTTPClient) ListDocuments(ctx context.Context, projectID string) ([]Doc
 func (c *HTTPClient) PromoteTask(ctx context.Context, id string) error {
 	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/promote", id), nil)
 	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+// claimTaskRequest is the request body for ClaimTask.
+type claimTaskRequest struct {
+	AgentID string `json:"agent_id"`
+	Model   string `json:"model"`
+}
+
+// ClaimTask claims a task as in_progress by the given agent and model.
+// Returns ErrAlreadyClaimed if the task is already claimed by another worker (409 status).
+func (c *HTTPClient) ClaimTask(ctx context.Context, id, agentID, model string) error {
+	body := claimTaskRequest{
+		AgentID: agentID,
+		Model:   model,
+	}
+
+	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/claim", id), body)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.StatusCode == 409 {
+			return ErrAlreadyClaimed
+		}
 		return err
 	}
 	defer resp.Body.Close()

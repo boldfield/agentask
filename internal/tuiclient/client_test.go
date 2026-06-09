@@ -619,3 +619,93 @@ func TestArchiveProject(t *testing.T) {
 		t.Fatalf("ArchiveProject failed: %v", err)
 	}
 }
+
+func TestClaimTask(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/claim" {
+			t.Errorf("expected /tasks/task123/claim, got %s", r.URL.Path)
+		}
+
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		var req claimTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.AgentID != "agent-1" {
+			t.Errorf("expected agent_id agent-1, got %s", req.AgentID)
+		}
+
+		if req.Model != "haiku" {
+			t.Errorf("expected model haiku, got %s", req.Model)
+		}
+
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.ClaimTask(context.Background(), "task123", "agent-1", "haiku")
+	if err != nil {
+		t.Fatalf("ClaimTask failed: %v", err)
+	}
+}
+
+func TestClaimTaskAlreadyClaimed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusConflict)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "ALREADY_CLAIMED",
+				"message": "Task is already claimed",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.ClaimTask(context.Background(), "task123", "agent-1", "haiku")
+	if err == nil {
+		t.Fatal("Expected error from 409 response, got nil")
+	}
+
+	if !errors.Is(err, ErrAlreadyClaimed) {
+		t.Fatalf("Expected ErrAlreadyClaimed, got %T: %v", err, err)
+	}
+}
+
+func TestClaimTaskServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "INTERNAL_ERROR",
+				"message": "Internal server error",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+	err := client.ClaimTask(context.Background(), "task123", "agent-1", "haiku")
+	if err == nil {
+		t.Fatal("Expected error from 500 response, got nil")
+	}
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("Expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusInternalServerError {
+		t.Errorf("Expected StatusCode 500, got %d", apiErr.StatusCode)
+	}
+}
