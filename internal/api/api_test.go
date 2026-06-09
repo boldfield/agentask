@@ -3373,3 +3373,128 @@ func TestGetTaskEventsRequiresAuth(t *testing.T) {
 		t.Errorf("expected status 401, got %d", eventsW.Code)
 	}
 }
+
+// TestAPIResponseStrictlyValidJSONWithStoredControlChars verifies the read path
+// always returns strictly-valid JSON even when a task's free-text fields contain
+// raw control characters in the store (e.g. legacy data that predates write-side
+// sanitization). The bad bytes are injected directly into the DB to bypass the
+// write path, simulating an existing bad row. Both encoding/json (json.Valid uses
+// the same scanner jq uses, which rejects unescaped U+0000–U+001F) and a full
+// json.Unmarshal must accept the response, and the control chars must be ESCAPED —
+// not stripped — so the spec round-trips losslessly on the wire.
+func TestAPIResponseStrictlyValidJSONWithStoredControlChars(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a clean task first.
+	taskPayload := []store.TaskInput{{
+		Title:      "Control char task",
+		Spec:       "clean spec",
+		DocumentID: docID,
+	}}
+	taskBody, _ := json.Marshal(taskPayload)
+	req := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	var created []store.Task
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+	taskID := created[0].ID
+
+	// Inject raw control characters directly into the store, bypassing the write
+	// path's sanitization, to simulate pre-existing bad data.
+	badSpec := "line one\nline two\x00\x0bnull-and-vtab"
+	badResult := "result with\x01\x1fcontrol"
+	if _, err := server.store.Conn().ExecContext(context.Background(),
+		"UPDATE task SET spec = ?, result = ? WHERE id = ?", badSpec, badResult, taskID); err != nil {
+		t.Fatalf("failed to inject control chars: %v", err)
+	}
+
+	// Both GET /tasks/{id} and GET /projects/{id}/tasks must return strictly-valid JSON.
+	for _, ep := range []string{"/tasks/" + taskID, "/projects/" + projectID + "/tasks"} {
+		getReq := httptest.NewRequest("GET", ep, nil)
+		getReq.Header.Set("Authorization", authHeader)
+		getW := httptest.NewRecorder()
+		server.mux.ServeHTTP(getW, getReq)
+		if getW.Code != http.StatusOK {
+			t.Fatalf("%s: expected 200, got %d", ep, getW.Code)
+		}
+		body := getW.Body.Bytes()
+
+		// Strict-parser check: equivalent to what jq enforces.
+		if !json.Valid(body) {
+			t.Errorf("%s: response is not strictly-valid JSON: %q", ep, string(body))
+		}
+		// No literal control bytes may appear in the wire body (json.Encoder writes a
+		// single trailing newline, which is the only legitimate raw \n).
+		for i, b := range body {
+			if b < 0x20 && b != '\n' {
+				t.Errorf("%s: raw response contains unescaped control byte 0x%02x at offset %d", ep, b, i)
+				break
+			}
+		}
+	}
+
+	// Field readability + lossless escaping: spec/result must unmarshal back to exactly
+	// what was stored — control chars preserved, just escaped on the wire.
+	getReq := httptest.NewRequest("GET", "/tasks/"+taskID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW := httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+	var got store.TaskWithDepsAndLinks
+	if err := json.Unmarshal(getW.Body.Bytes(), &got); err != nil {
+		t.Fatalf("strict unmarshal failed: %v", err)
+	}
+	if got.Spec != badSpec {
+		t.Errorf("spec not preserved through escaping:\n got %q\nwant %q", got.Spec, badSpec)
+	}
+	if got.Result == nil || *got.Result != badResult {
+		t.Errorf("result not preserved through escaping: got %v want %q", got.Result, badResult)
+	}
+}
+
+// TestCreateTaskSanitizesControlChars verifies the write path strips raw control
+// characters from free-text on create while preserving legitimate newlines and tabs,
+// and that the response is strictly-valid JSON.
+func TestCreateTaskSanitizesControlChars(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	spec := "first line\nsecond\tline\x00\x0b\x1fjunk"
+	wantSpec := "first line\nsecond\tlinejunk" // \n and \t kept; \x00 \x0b \x1f dropped
+	taskPayload := []store.TaskInput{{
+		Title:      "Title\x00with\x07controls",
+		Spec:       spec,
+		DocumentID: docID,
+	}}
+	taskBody, _ := json.Marshal(taskPayload)
+	req := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	req.Header.Set("Authorization", authHeader)
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+	server.mux.ServeHTTP(w, req)
+	if w.Code != http.StatusCreated {
+		t.Fatalf("create: expected 201, got %d: %s", w.Code, w.Body.String())
+	}
+	if !json.Valid(w.Body.Bytes()) {
+		t.Errorf("create response is not strictly-valid JSON")
+	}
+	var created []store.Task
+	if err := json.NewDecoder(w.Body).Decode(&created); err != nil {
+		t.Fatalf("decode created: %v", err)
+	}
+	if created[0].Spec != wantSpec {
+		t.Errorf("spec not sanitized:\n got %q\nwant %q", created[0].Spec, wantSpec)
+	}
+	if created[0].Title != "Titlewithcontrols" {
+		t.Errorf("title not sanitized: got %q", created[0].Title)
+	}
+}
