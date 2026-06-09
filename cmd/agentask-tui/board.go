@@ -1752,7 +1752,8 @@ func (m *BoardModel) renderColumnTasks() string {
 		if len(task.ID) > 8 {
 			taskIDDisplay = task.ID[:8]
 		}
-		b.WriteString(fmt.Sprintf("%s %s  %s\n", prefix, taskIDDisplay, task.Title))
+		modelBadge := fmt.Sprintf("[%s]", task.Model)
+		b.WriteString(fmt.Sprintf("%s %s %s  %s\n", prefix, taskIDDisplay, modelBadge, task.Title))
 
 		// Show assignee for in_progress, review, approved, and done states
 		shouldShowAssignee := task.State == stateInProgress || task.State == stateReview ||
