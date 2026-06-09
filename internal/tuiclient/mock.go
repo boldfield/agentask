@@ -82,7 +82,13 @@ func (m *MockClient) HeartbeatTask(ctx context.Context, id, agentID string) erro
 	return nil
 }
 
-	SubmitTaskFunc     func(ctx context.Context, id, agentID, result string, verdict *string, links []LinkInput) error
+func (m *MockClient) SubmitTask(ctx context.Context, id, agentID, result string, verdict *string, links []LinkInput) error {
+	if m.SubmitTaskFunc != nil {
+		return m.SubmitTaskFunc(ctx, id, agentID, result, verdict, links)
+	}
+	return nil
+}
+
 func (m *MockClient) HoldTask(ctx context.Context, id string) error {
 	if m.HoldTaskFunc != nil {
 		return m.HoldTaskFunc(ctx, id)

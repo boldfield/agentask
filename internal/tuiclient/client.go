@@ -455,7 +455,32 @@ func (c *HTTPClient) HeartbeatTask(ctx context.Context, id, agentID string) erro
 	return nil
 }
 
-	SubmitTask(ctx context.Context, id, agentID, result string, verdict *string, links []LinkInput) error
+// submitTaskRequest is the request body for SubmitTask.
+type submitTaskRequest struct {
+	AgentID string      `json:"agent_id"`
+	Result  string      `json:"result"`
+	Verdict *string     `json:"verdict,omitempty"`
+	Links   []LinkInput `json:"links"`
+}
+
+// SubmitTask submits a task result with optional verdict and links.
+func (c *HTTPClient) SubmitTask(ctx context.Context, id, agentID, result string, verdict *string, links []LinkInput) error {
+	body := submitTaskRequest{
+		AgentID: agentID,
+		Result:  result,
+		Verdict: verdict,
+		Links:   links,
+	}
+
+	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/submit", id), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
 // ArchiveTask archives a task.
 func (c *HTTPClient) ArchiveTask(ctx context.Context, id string) error {
 	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/archive", id), nil)
