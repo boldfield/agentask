@@ -234,3 +234,29 @@ func parseAllowedModels(modelsStr string) []string {
 	}
 	return result
 }
+
+func resolveAgentIdentity(agentFlag, modelFlag string) (agentID, model string, err error) {
+	// Resolve agent ID: prefer flag, fallback to AGENT_ID env
+	if agentFlag != "" {
+		agentID = agentFlag
+	} else {
+		agentID = os.Getenv("AGENT_ID")
+	}
+
+	// Resolve model: prefer flag, fallback to AGENT_MODEL env
+	if modelFlag != "" {
+		model = modelFlag
+	} else {
+		model = os.Getenv("AGENT_MODEL")
+	}
+
+	// Validate required fields
+	if agentID == "" {
+		return "", "", fmt.Errorf("agent ID is required (set --agent flag or AGENT_ID environment variable)")
+	}
+	if model == "" {
+		return "", "", fmt.Errorf("model is required (set --model flag or AGENT_MODEL environment variable)")
+	}
+
+	return agentID, model, nil
+}

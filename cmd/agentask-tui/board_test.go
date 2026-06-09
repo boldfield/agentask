@@ -592,7 +592,7 @@ func TestBoardModel_PromoteTask(t *testing.T) {
 			promoteTaskID = id
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			// On refetch after promotion, task-1 should be in ready
 			return []tuiclient.Task{
 				{ID: "task-1", Title: "Task 1", State: "ready"},
@@ -1062,7 +1062,7 @@ func TestBoardModel_ApproveFlow_ConfirmY(t *testing.T) {
 			capturedTransitionNote = note
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			// After approve, the task should be in done.
 			return []tuiclient.Task{
@@ -1173,7 +1173,7 @@ func TestBoardModel_ApproveFlow_EmptyNote(t *testing.T) {
 			capturedTransitionNote = note
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			return []tuiclient.Task{}, nil
 		},
 	}
@@ -1371,7 +1371,7 @@ func TestBoardModel_RejectFlow_NonEmptyReason(t *testing.T) {
 			capturedTransitionNote = note
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			// After reject, the task returns to ready.
 			return []tuiclient.Task{
@@ -1469,7 +1469,7 @@ func TestBoardModel_ApproveTransition409(t *testing.T) {
 				Message:    "task already transitioned",
 			}
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			// After the 409, refetch should still work.
 			return []tuiclient.Task{
 				{ID: "review-task-1", Title: "Review Task", State: "done"},
@@ -2191,7 +2191,7 @@ func TestDetail_ReviewApproveFromDetail(t *testing.T) {
 			callLog = append(callLog, "transition:"+to)
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			return []tuiclient.Task{
 				{ID: "review-detail-task-1", Title: "Detail Review Task", State: "done"},
@@ -2328,7 +2328,7 @@ func TestDetail_ReviewApproveFromDetail_409Visible(t *testing.T) {
 				Message:    "task already transitioned",
 			}
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			// Refetch after 409: task is already done.
 			return []tuiclient.Task{
 				{ID: "review-detail-409", Title: "Detail 409 Task", State: "done"},
@@ -2973,7 +2973,7 @@ func TestBoardModel_UnblockFlow(t *testing.T) {
 			capturedTransitionNote = note
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			// After unblock, the task should be in ready.
 			return []tuiclient.Task{
@@ -3069,7 +3069,7 @@ func TestBoardModel_FailFlow(t *testing.T) {
 			capturedTransitionNote = note
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			// After fail, the task should be in failed.
 			return []tuiclient.Task{
@@ -3517,7 +3517,7 @@ func TestBoardModel_ArchiveTaskFlow_ConfirmY(t *testing.T) {
 			capturedArchiveID = id
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			// After archive, the task should be gone from its column
 			return []tuiclient.Task{
@@ -3611,7 +3611,7 @@ func TestBoardModel_ArchiveTaskFlow_ConfirmN(t *testing.T) {
 			archiveCalled = true
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			return []tuiclient.Task{{ID: "ready-task-1", Title: "Ready Task", State: "ready"}}, nil
 		},
 	}
@@ -3673,7 +3673,7 @@ func TestBoardModel_ArchiveTaskNoBareKeypress(t *testing.T) {
 			archiveCalled = true
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			return []tuiclient.Task{{ID: "ready-task-1", Title: "Ready Task", State: "ready"}}, nil
 		},
 	}
@@ -3878,7 +3878,7 @@ func TestBoardModel_HoldTaskFlow_ConfirmY(t *testing.T) {
 			capturedHoldID = id
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			// After hold, refetch returns the same tasks (no state change for held)
 			return []tuiclient.Task{
@@ -3969,7 +3969,7 @@ func TestBoardModel_ReleaseTaskFlow_ConfirmY(t *testing.T) {
 			capturedReleaseID = id
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			callLog = append(callLog, "refetch")
 			// After release, the task is no longer held
 			return []tuiclient.Task{
@@ -4058,7 +4058,7 @@ func TestBoardModel_HoldTaskFlow_ConfirmN(t *testing.T) {
 			holdCalled = true
 			return nil
 		},
-		ListTasksFunc: func(ctx context.Context, projectID string) ([]tuiclient.Task, error) {
+		ListTasksFunc: func(ctx context.Context, projectID string, options ...tuiclient.TaskListOption) ([]tuiclient.Task, error) {
 			return []tuiclient.Task{
 				{ID: "ready-task-1", Title: "Ready Task", State: "ready"},
 			}, nil
