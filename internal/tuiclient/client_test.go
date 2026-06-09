@@ -619,3 +619,131 @@ func TestArchiveProject(t *testing.T) {
 		t.Fatalf("ArchiveProject failed: %v", err)
 	}
 }
+
+func TestSubmitTask(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != "POST" {
+			t.Errorf("expected POST, got %s", r.Method)
+		}
+		if r.URL.Path != "/tasks/task123/submit" {
+			t.Errorf("expected /tasks/task123/submit, got %s", r.URL.Path)
+		}
+
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		var req submitTaskRequest
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.AgentID != "agent-1" {
+			t.Errorf("expected agent_id agent-1, got %s", req.AgentID)
+		}
+
+		if req.Result != "completed successfully" {
+			t.Errorf("expected result 'completed successfully', got %s", req.Result)
+		}
+
+		if req.Verdict == nil || *req.Verdict != "approve" {
+			t.Errorf("expected verdict 'approve', got %v", req.Verdict)
+		}
+
+		if len(req.Links) != 2 {
+			t.Errorf("expected 2 links, got %d", len(req.Links))
+		}
+
+		if len(req.Links) > 0 && req.Links[0].Kind != "pr" {
+			t.Errorf("expected first link kind 'pr', got %s", req.Links[0].Kind)
+		}
+
+		if len(req.Links) > 1 && req.Links[1].Kind != "branch" {
+			t.Errorf("expected second link kind 'branch', got %s", req.Links[1].Kind)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	verdict := "approve"
+	links := []LinkInput{
+		{Kind: "pr", Value: "https://github.com/owner/repo/pull/123"},
+		{Kind: "branch", Value: "mr/abc123"},
+	}
+	err := client.SubmitTask(context.Background(), "task123", "agent-1", "completed successfully", &verdict, links)
+	if err != nil {
+		t.Fatalf("SubmitTask failed: %v", err)
+	}
+}
+
+func TestSubmitTaskWithoutVerdict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		rawBody, err := io.ReadAll(r.Body)
+		if err != nil {
+			t.Errorf("failed to read raw body: %v", err)
+		}
+		bodyStr := string(rawBody)
+
+		var req submitTaskRequest
+		if err := json.Unmarshal(rawBody, &req); err != nil {
+			t.Errorf("failed to decode request body: %v", err)
+		}
+
+		if req.Verdict != nil {
+			t.Errorf("expected verdict to be omitted (nil), got %v", req.Verdict)
+		}
+
+		if strings.Contains(bodyStr, `"verdict"`) {
+			t.Errorf("expected 'verdict' key to be absent from raw body, but found it: %s", bodyStr)
+		}
+
+		w.WriteHeader(http.StatusCreated)
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	links := []LinkInput{
+		{Kind: "pr", Value: "https://github.com/owner/repo/pull/123"},
+	}
+	err := client.SubmitTask(context.Background(), "task123", "agent-1", "completed successfully", nil, links)
+	if err != nil {
+		t.Fatalf("SubmitTask failed: %v", err)
+	}
+}
+
+func TestSubmitTaskNonSuccessStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "EMPTY_AGENT_ID",
+				"message": "agent_id cannot be empty",
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	links := []LinkInput{
+		{Kind: "pr", Value: "https://github.com/owner/repo/pull/123"},
+	}
+	err := client.SubmitTask(context.Background(), "task123", "", "completed", nil, links)
+	if err == nil {
+		t.Fatal("Expected error from 400 response, got nil")
+	}
+
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("Expected *APIError, got %T: %v", err, err)
+	}
+	if apiErr.StatusCode != http.StatusBadRequest {
+		t.Errorf("Expected StatusCode 400, got %d", apiErr.StatusCode)
+	}
+}
