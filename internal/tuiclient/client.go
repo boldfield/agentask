@@ -24,6 +24,7 @@ type Client interface {
 	ClaimTask(ctx context.Context, id, agentID, model string) error
 	ReviewTask(ctx context.Context, id, actor, verdict string, note *string) error
 	TransitionTask(ctx context.Context, id, to string, note *string) error
+	HeartbeatTask(ctx context.Context, id, agentID string) error
 	HoldTask(ctx context.Context, id string) error
 	ReleaseTask(ctx context.Context, id string) error
 	ArchiveTask(ctx context.Context, id string) error
@@ -355,6 +356,26 @@ func (c *HTTPClient) TransitionTask(ctx context.Context, id, to string, note *st
 	}
 
 	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/transition", id), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+// heartbeatTaskRequest is the request body for HeartbeatTask.
+type heartbeatTaskRequest struct {
+	AgentID string `json:"agent_id"`
+}
+
+// HeartbeatTask extends a task's lease.
+func (c *HTTPClient) HeartbeatTask(ctx context.Context, id, agentID string) error {
+	body := heartbeatTaskRequest{
+		AgentID: agentID,
+	}
+
+	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/heartbeat", id), body)
 	if err != nil {
 		return err
 	}
