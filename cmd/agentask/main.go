@@ -118,6 +118,11 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "heartbeat":
+		if err := executeHeartbeat(ctx, baseURL, token, args); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command '%s'\n", verb)
 		os.Exit(1)
@@ -159,6 +164,45 @@ func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool
 	return nil
 }
 
+func executeHeartbeat(ctx context.Context, baseURL, token string, args []string) error {
+	// Validate configuration
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	// Parse arguments: task ID + optional --agent flag
+	if len(args) == 0 {
+		return fmt.Errorf("task ID is required")
+	}
+
+	taskID := args[0]
+	var agentFlag string
+
+	for i := 1; i < len(args); i++ {
+		if args[i] == "--agent" {
+			if i+1 < len(args) {
+				agentFlag = args[i+1]
+				i++
+			} else {
+				return fmt.Errorf("--agent flag requires a value")
+			}
+		}
+	}
+
+	// Resolve agent ID
+	agentID, err := resolveAgentID(agentFlag)
+	if err != nil {
+		return err
+	}
+
+	// Create client and heartbeat
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	return client.HeartbeatTask(ctx, taskID, agentID)
+}
+
 func parseAllowedModels(modelsStr string) []string {
 	const defaultModels = "haiku,sonnet,opus"
 	if modelsStr == "" {
@@ -175,6 +219,20 @@ func parseAllowedModels(modelsStr string) []string {
 		}
 	}
 	return result
+}
+
+func resolveAgentID(agentFlag string) (string, error) {
+	// Resolve agent ID: prefer flag, fallback to AGENT_ID env
+	if agentFlag != "" {
+		return agentFlag, nil
+	}
+
+	agentID := os.Getenv("AGENT_ID")
+	if agentID == "" {
+		return "", fmt.Errorf("agent ID is required (set --agent flag or AGENT_ID environment variable)")
+	}
+
+	return agentID, nil
 }
 
 func resolveAgentIdentity(agentFlag, modelFlag string) (agentID, model string, err error) {

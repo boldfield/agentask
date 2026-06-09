@@ -244,3 +244,150 @@ func TestResolveAgentIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveAgentID(t *testing.T) {
+	tests := []struct {
+		name          string
+		agentFlag     string
+		envAgent      string
+		expectedAgent string
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:          "flag wins",
+			agentFlag:     "flag-agent",
+			envAgent:      "env-agent",
+			expectedAgent: "flag-agent",
+		},
+		{
+			name:          "fallback to env when flag empty",
+			agentFlag:     "",
+			envAgent:      "env-agent",
+			expectedAgent: "env-agent",
+		},
+		{
+			name:          "error when both missing",
+			agentFlag:     "",
+			envAgent:      "",
+			expectError:   true,
+			errorContains: "agent ID is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldAgent := os.Getenv("AGENT_ID")
+			defer func() {
+				os.Setenv("AGENT_ID", oldAgent)
+			}()
+
+			if tt.envAgent != "" {
+				os.Setenv("AGENT_ID", tt.envAgent)
+			} else {
+				os.Unsetenv("AGENT_ID")
+			}
+
+			agent, err := resolveAgentID(tt.agentFlag)
+
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("expected error to contain %q, got: %v", tt.errorContains, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+				if agent != tt.expectedAgent {
+					t.Errorf("expected agent %q, got %q", tt.expectedAgent, agent)
+				}
+			}
+		})
+	}
+}
+
+func TestExecuteHeartbeat(t *testing.T) {
+	tests := []struct {
+		name        string
+		args        []string
+		envAgent    string
+		serverError bool
+		expectError bool
+		errorMsg    string
+	}{
+		{
+			name:        "heartbeat with task ID and agent flag",
+			args:        []string{"task-123", "--agent", "agent-xyz"},
+			expectError: false,
+		},
+		{
+			name:        "heartbeat with task ID from env",
+			args:        []string{"task-123"},
+			envAgent:    "env-agent",
+			expectError: false,
+		},
+		{
+			name:        "heartbeat missing task ID",
+			args:        []string{},
+			expectError: true,
+			errorMsg:    "task ID is required",
+		},
+		{
+			name:        "heartbeat missing agent ID",
+			args:        []string{"task-123"},
+			envAgent:    "",
+			expectError: true,
+			errorMsg:    "agent ID is required",
+		},
+		{
+			name:        "heartbeat server error",
+			args:        []string{"task-123", "--agent", "agent-xyz"},
+			serverError: true,
+			expectError: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldAgent := os.Getenv("AGENT_ID")
+			defer func() {
+				os.Setenv("AGENT_ID", oldAgent)
+			}()
+
+			if tt.envAgent != "" {
+				os.Setenv("AGENT_ID", tt.envAgent)
+			} else {
+				os.Unsetenv("AGENT_ID")
+			}
+
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if tt.serverError {
+					w.WriteHeader(http.StatusInternalServerError)
+					return
+				}
+				if strings.HasPrefix(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/heartbeat") {
+					w.WriteHeader(http.StatusOK)
+				}
+			}))
+			defer server.Close()
+
+			err := executeHeartbeat(context.Background(), server.URL, "test-token", tt.args)
+
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if tt.errorMsg != "" && !strings.Contains(err.Error(), tt.errorMsg) {
+					t.Errorf("expected error to contain %q, got: %v", tt.errorMsg, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+			}
+		})
+	}
+}
