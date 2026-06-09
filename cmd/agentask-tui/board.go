@@ -773,7 +773,7 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					break
 				}
 			}
-			return m, nil
+			return m, m.fetchProjects()
 
 		// Approve: only on review column tasks
 		case "a":
@@ -939,10 +939,21 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case projectsFetchedMsg:
 		if msg.err != nil {
 			m.error = fmt.Sprintf("Error fetching projects: %v", msg.err)
-			m.mode = modeNormal
+			if m.mode == modeProjectSwitch {
+				m.mode = modeNormal
+			}
 			return m, nil
 		}
 		m.projects = msg.projects
+		// If we're in project switcher mode, preserve the current project selection by ID
+		if m.mode == modeProjectSwitch {
+			for i, proj := range m.projects {
+				if proj.ID == m.project.ID {
+					m.projectSwitchIndex = i
+					break
+				}
+			}
+		}
 		return m, nil
 
 	case projectArchiveMsg:
@@ -1089,7 +1100,7 @@ func (m *BoardModel) updateDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				break
 			}
 		}
-		return m, nil
+		return m, m.fetchProjects()
 	}
 
 	return m, nil
