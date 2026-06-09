@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -120,6 +121,7 @@ func TestExecuteProjectsMissingToken(t *testing.T) {
 }
 
 func TestExecuteTasksTable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasSuffix(r.URL.Path, "/tasks") {
 			w.Header().Set("Content-Type", "application/json")
 			json.NewEncoder(w).Encode([]tuiclient.Task{
@@ -285,6 +287,19 @@ func TestExecuteTasksMissingProject(t *testing.T) {
 		t.Errorf("expected error to mention --project, got: %v", err)
 	}
 }
+func TestResolveAgentIdentity(t *testing.T) {
+	tests := []struct {
+		name          string
+		agentFlag     string
+		modelFlag     string
+		envAgent      string
+		envModel      string
+		expectedAgent string
+		expectedModel string
+		expectError   bool
+		errorContains string
+	}{
+		{
 			name:          "flag wins",
 			agentFlag:     "flag-agent",
 			modelFlag:     "flag-model",
