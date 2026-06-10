@@ -3382,7 +3382,7 @@ func TestTransitionBlockedToReady(t *testing.T) {
 
 	// Transition task 1 to blocked state (from backlog)
 	blockedNote := "blocker: dependency failed"
-	task1, err := store.TransitionTask(ctx, taskID1, "blocked", &blockedNote)
+	task1, err := store.TransitionTask(ctx, taskID1, "blocked", &blockedNote, nil)
 	if err != nil {
 		t.Fatalf("failed to transition to blocked: %v", err)
 	}
@@ -3413,7 +3413,7 @@ func TestTransitionBlockedToReady(t *testing.T) {
 
 	// Test 1: Transition blocked→ready succeeds and clears assignee/lease
 	unblockNote := "blocker cleared"
-	unblocked, err := store.TransitionTask(ctx, taskID1, "ready", &unblockNote)
+	unblocked, err := store.TransitionTask(ctx, taskID1, "ready", &unblockNote, nil)
 	if err != nil {
 		t.Fatalf("failed to transition blocked→ready: %v", err)
 	}
@@ -3453,7 +3453,7 @@ func TestTransitionBlockedToReady(t *testing.T) {
 	}
 
 	approvedNote := "ready to claim"
-	readyFromApproved, err := store.TransitionTask(ctx, taskID2, "ready", &approvedNote)
+	readyFromApproved, err := store.TransitionTask(ctx, taskID2, "ready", &approvedNote, nil)
 	if err != nil {
 		t.Fatalf("failed to transition approved→ready: %v", err)
 	}
@@ -3478,19 +3478,19 @@ func TestTransitionBlockedToReady(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to set task to approved: %v", err)
 	}
-	_, err = store.TransitionTask(ctx, taskID3, "done", nil)
+	_, err = store.TransitionTask(ctx, taskID3, "done", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to transition to done: %v", err)
 	}
 
 	// Try to transition done→ready (should fail)
-	_, err = store.TransitionTask(ctx, taskID3, "ready", nil)
+	_, err = store.TransitionTask(ctx, taskID3, "ready", nil, nil)
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("expected done→ready to return ErrConflict, got %v", err)
 	}
 
 	// Try to transition ready→done (should fail - task 1 is in ready state)
-	_, err = store.TransitionTask(ctx, taskID1, "done", nil)
+	_, err = store.TransitionTask(ctx, taskID1, "done", nil, nil)
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("expected ready→done to return ErrConflict, got %v", err)
 	}
@@ -3535,7 +3535,7 @@ func TestTransitionBlockedToFailed(t *testing.T) {
 
 	// Test 1: Transition a task to blocked state
 	blockedNote := "blocker: unresolvable"
-	task1, err := store.TransitionTask(ctx, taskID1, "blocked", &blockedNote)
+	task1, err := store.TransitionTask(ctx, taskID1, "blocked", &blockedNote, nil)
 	if err != nil {
 		t.Fatalf("failed to transition to blocked: %v", err)
 	}
@@ -3545,7 +3545,7 @@ func TestTransitionBlockedToFailed(t *testing.T) {
 
 	// Test 2: blocked→failed succeeds (main test case)
 	failedNote := "dead-end blocker"
-	failed, err := store.TransitionTask(ctx, taskID1, "failed", &failedNote)
+	failed, err := store.TransitionTask(ctx, taskID1, "failed", &failedNote, nil)
 	if err != nil {
 		t.Fatalf("failed to transition blocked→failed: %v", err)
 	}
@@ -3572,7 +3572,7 @@ func TestTransitionBlockedToFailed(t *testing.T) {
 	// Test 4: active→failed still works (unchanged behavior)
 	// Task 2 is in ready state, transition to failed
 	readyFailedNote := "ready to fail"
-	readyFailed, err := store.TransitionTask(ctx, taskID2, "failed", &readyFailedNote)
+	readyFailed, err := store.TransitionTask(ctx, taskID2, "failed", &readyFailedNote, nil)
 	if err != nil {
 		t.Fatalf("failed to transition ready→failed: %v", err)
 	}
@@ -3581,12 +3581,12 @@ func TestTransitionBlockedToFailed(t *testing.T) {
 	}
 
 	// Test 5: blocked→ready still works (unchanged behavior)
-	_, err = store.TransitionTask(ctx, taskID3, "blocked", nil)
+	_, err = store.TransitionTask(ctx, taskID3, "blocked", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to transition to blocked: %v", err)
 	}
 	unblockNote := "unblock and retry"
-	unblocked, err := store.TransitionTask(ctx, taskID3, "ready", &unblockNote)
+	unblocked, err := store.TransitionTask(ctx, taskID3, "ready", &unblockNote, nil)
 	if err != nil {
 		t.Fatalf("failed to transition blocked→ready: %v", err)
 	}
@@ -3602,13 +3602,13 @@ func TestTransitionBlockedToFailed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to set task to approved: %v", err)
 	}
-	_, err = store.TransitionTask(ctx, taskID4, "done", nil)
+	_, err = store.TransitionTask(ctx, taskID4, "done", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to transition to done: %v", err)
 	}
 
 	// Now try to transition done→failed (should fail)
-	_, err = store.TransitionTask(ctx, taskID4, "failed", nil)
+	_, err = store.TransitionTask(ctx, taskID4, "failed", nil, nil)
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("expected done→failed to return ErrConflict, got %v", err)
 	}
@@ -3621,11 +3621,11 @@ func TestTransitionBlockedToFailed(t *testing.T) {
 		t.Fatalf("failed to create task 5: %v", err)
 	}
 	taskID5 := task5[0].ID
-	_, err = store.TransitionTask(ctx, taskID5, "blocked", nil)
+	_, err = store.TransitionTask(ctx, taskID5, "blocked", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to transition to blocked: %v", err)
 	}
-	_, err = store.TransitionTask(ctx, taskID5, "blocked", nil)
+	_, err = store.TransitionTask(ctx, taskID5, "blocked", nil, nil)
 	if !errors.Is(err, ErrConflict) {
 		t.Errorf("expected blocked→blocked to return ErrConflict, got %v", err)
 	}
@@ -3690,7 +3690,7 @@ func TestListProjectsWithClaimableFilter(t *testing.T) {
 	}
 
 	// Transition task 2 to blocked to exclude it from claimable results
-	_, err = store.TransitionTask(ctx, tasks2[0].ID, "blocked", nil)
+	_, err = store.TransitionTask(ctx, tasks2[0].ID, "blocked", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to transition task 2 to blocked: %v", err)
 	}
@@ -4717,7 +4717,7 @@ func TestRejectVerdictOnTerminalTaskDoesNotResurrect(t *testing.T) {
 	}
 
 	// Transition parent to failed state
-	_, err = store.TransitionTask(ctx, taskID, "failed", nil)
+	_, err = store.TransitionTask(ctx, taskID, "failed", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to transition task to failed: %v", err)
 	}
@@ -4789,7 +4789,7 @@ func TestRejectVerdictOnTerminalTaskDoesNotResurrect(t *testing.T) {
 	}
 
 	// Transition second parent to blocked state
-	_, err = store.TransitionTask(ctx, taskID2, "blocked", nil)
+	_, err = store.TransitionTask(ctx, taskID2, "blocked", nil, nil)
 	if err != nil {
 		t.Fatalf("failed to transition second task to blocked: %v", err)
 	}
@@ -4929,7 +4929,7 @@ func TestSubmitImplementTaskNoOpResolution(t *testing.T) {
 	}
 
 	// agent_merge parent reaches done via approved -> done with no PR/merge.
-	done, err := store.TransitionTask(ctx, taskID, "done", nil)
+	done, err := store.TransitionTask(ctx, taskID, "done", nil, nil)
 	if err != nil {
 		t.Fatalf("approved->done should succeed without a PR/merge, got error: %v", err)
 	}
@@ -4971,5 +4971,135 @@ func TestSubmitNoOpLinkKindAccepted(t *testing.T) {
 	}
 	if _, err = store.SubmitTask(ctx, taskID, "agent-1", "noop", nil, []LinkInput{{Kind: "no_op", Value: "already-satisfied"}}, 5); err != nil {
 		t.Fatalf("expected no_op link kind to be accepted, got: %v", err)
+	}
+}
+
+// TestTransitionSuperseded tests the superseded terminal state and superseded_by guard.
+func TestTransitionSuperseded(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create tasks
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 1 - Original", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 2 - Replacement", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 3 - Another", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	originalTaskID := tasks[0].ID
+	replacementTaskID := tasks[1].ID
+	anotherTaskID := tasks[2].ID
+
+	// Test 1: Transition to superseded without superseded_by should fail
+	note := "being replaced"
+	_, err = store.TransitionTask(ctx, originalTaskID, "superseded", &note, nil)
+	if err == nil {
+		t.Errorf("expected transition to superseded without superseded_by to fail, but it succeeded")
+	}
+	var validationErr *ValidationError
+	if !errors.As(err, &validationErr) || validationErr.Code != "MISSING_SUPERSEDED_BY" {
+		t.Errorf("expected ValidationError with code MISSING_SUPERSEDED_BY, got %v", err)
+	}
+
+	// Test 2: Transition to superseded with empty superseded_by should fail
+	emptyID := ""
+	_, err = store.TransitionTask(ctx, originalTaskID, "superseded", &note, &emptyID)
+	if err == nil {
+		t.Errorf("expected transition to superseded with empty superseded_by to fail, but it succeeded")
+	}
+	if !errors.As(err, &validationErr) || validationErr.Code != "MISSING_SUPERSEDED_BY" {
+		t.Errorf("expected ValidationError with code MISSING_SUPERSEDED_BY for empty superseded_by, got %v", err)
+	}
+
+	// Test 3: Transition to superseded from backlog with valid superseded_by should succeed
+	superseded, err := store.TransitionTask(ctx, originalTaskID, "superseded", &note, &replacementTaskID)
+	if err != nil {
+		t.Fatalf("failed to transition to superseded: %v", err)
+	}
+	if superseded.State != "superseded" {
+		t.Errorf("expected task state='superseded', got '%s'", superseded.State)
+	}
+	if superseded.SupersededBy == nil || *superseded.SupersededBy != replacementTaskID {
+		t.Errorf("expected task superseded_by=%s, got %v", replacementTaskID, superseded.SupersededBy)
+	}
+
+	// Test 4: Verify the superseded_by field is persisted in the database
+	retrieved, err := store.GetTask(ctx, originalTaskID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+	if retrieved.SupersededBy == nil || *retrieved.SupersededBy != replacementTaskID {
+		t.Errorf("expected persisted task superseded_by=%s, got %v", replacementTaskID, retrieved.SupersededBy)
+	}
+
+	// Test 5: Transition from superseded (terminal state) should fail
+	_, err = store.TransitionTask(ctx, originalTaskID, "ready", nil, nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected transition from superseded to return ErrConflict, got %v", err)
+	}
+
+	// Test 6: Verify superseded is recognized as terminal by trying other transitions
+	_, err = store.TransitionTask(ctx, originalTaskID, "blocked", nil, nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected transition from superseded to blocked to return ErrConflict, got %v", err)
+	}
+
+	// Test 7: Test transitioning from another state (ready) to superseded
+	// First promote the task to ready
+	_, err = store.PromoteTask(ctx, anotherTaskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	readyTask, err := store.GetTask(ctx, anotherTaskID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+	if readyTask.State != "ready" {
+		t.Errorf("expected task state='ready' after promote, got '%s'", readyTask.State)
+	}
+
+	// Transition from ready to superseded
+	supersededFromReady, err := store.TransitionTask(ctx, anotherTaskID, "superseded", &note, &replacementTaskID)
+	if err != nil {
+		t.Fatalf("failed to transition ready→superseded: %v", err)
+	}
+	if supersededFromReady.State != "superseded" {
+		t.Errorf("expected task state='superseded' after ready→superseded, got '%s'", supersededFromReady.State)
+	}
+
+	// Test 8: Verify transition event is recorded with the note
+	events, err := store.ListEvents(ctx, originalTaskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+	if len(events) < 1 {
+		t.Fatalf("expected at least 1 event (transition to superseded), got %d", len(events))
+	}
+	lastEvent := events[len(events)-1]
+	if lastEvent.Kind != "transition" {
+		t.Errorf("expected last event kind='transition', got '%s'", lastEvent.Kind)
+	}
+	if lastEvent.Note == nil || *lastEvent.Note != note {
+		t.Errorf("expected event note='%s', got %v", note, lastEvent.Note)
 	}
 }

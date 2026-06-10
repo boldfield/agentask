@@ -606,8 +606,9 @@ func (s *Server) handleTransition(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 
 	var payload struct {
-		To   string  `json:"to"`
-		Note *string `json:"note"`
+		To           string  `json:"to"`
+		Note         *string `json:"note"`
+		SupersededBy *string `json:"superseded_by"`
 	}
 
 	if err := s.decodeJSON(w, r, &payload); err != nil {
@@ -615,7 +616,7 @@ func (s *Server) handleTransition(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Transition the task
-	task, err := s.store.TransitionTask(r.Context(), taskID, payload.To, payload.Note)
+	task, err := s.store.TransitionTask(r.Context(), taskID, payload.To, payload.Note, payload.SupersededBy)
 	if err != nil {
 		// Check if it's a ValidationError
 		var validationErr *store.ValidationError
