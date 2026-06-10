@@ -6950,3 +6950,370 @@ func TestEscalateRoundTrip(t *testing.T) {
 		t.Errorf("new task from supersede should have escalate=false, got %v", newTask.Escalate)
 	}
 }
+
+func TestPruneEventsRemovesTerminalTaskEvents(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create a terminal task (done state)
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Terminal Task", Spec: "Spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	terminalTaskID := tasks[0].ID
+
+	// Promote, claim, submit to get events
+	_, err = store.PromoteTask(ctx, terminalTaskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	_, err = store.ClaimTask(ctx, terminalTaskID, "agent-1", "haiku", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Verify the terminal task has events
+	events, err := store.ListEvents(ctx, terminalTaskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Errorf("terminal task should have events before pruning, got %d", len(events))
+	}
+	initialEventCount := len(events)
+
+	// Manually set task to done state for testing
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = 'done' WHERE id = ?", terminalTaskID)
+	if err != nil {
+		t.Fatalf("failed to update task state: %v", err)
+	}
+
+	// Run prune with 0-day retention for terminal tasks (should delete all terminal task events)
+	pruned, err := store.PruneEvents(ctx, 0)
+	if err != nil {
+		t.Fatalf("failed to prune events: %v", err)
+	}
+
+	if pruned == 0 {
+		t.Errorf("PruneEvents should have removed at least %d terminal task events, but removed %d", initialEventCount, pruned)
+	}
+
+	// Verify events are actually gone
+	afterEvents, err := store.ListEvents(ctx, terminalTaskID)
+	if err != nil {
+		t.Fatalf("failed to list events after prune: %v", err)
+	}
+	if len(afterEvents) > 0 {
+		t.Errorf("terminal task should have no events after pruning with 0-day retention, got %d", len(afterEvents))
+	}
+}
+
+func TestPruneEventsKeepsActiveTaskEvents(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create an active task (in_progress state)
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Active Task", Spec: "Spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	activeTaskID := tasks[0].ID
+
+	// Promote to ready
+	_, err = store.PromoteTask(ctx, activeTaskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	// Claim task to make it in_progress (generates claim event)
+	_, err = store.ClaimTask(ctx, activeTaskID, "agent-1", "haiku", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Verify the active task has events
+	events, err := store.ListEvents(ctx, activeTaskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Errorf("active task should have events after claim, got %d", len(events))
+	}
+	initialEventCount := len(events)
+
+	// Run prune with 0-day retention (should NOT delete active task events)
+	_, err = store.PruneEvents(ctx, 0)
+	if err != nil {
+		t.Fatalf("failed to prune events: %v", err)
+	}
+
+	// Verify events are NOT deleted for active tasks
+	afterEvents, err := store.ListEvents(ctx, activeTaskID)
+	if err != nil {
+		t.Fatalf("failed to list events after prune: %v", err)
+	}
+	if len(afterEvents) != initialEventCount {
+		t.Errorf("active task events should be preserved during pruning, had %d before, got %d after", initialEventCount, len(afterEvents))
+	}
+}
+
+func TestPruneEventsPreservesRecentTerminalTaskEvents(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create a terminal task
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Terminal Task", Spec: "Spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	terminalTaskID := tasks[0].ID
+
+	// Promote and claim to generate events
+	_, err = store.PromoteTask(ctx, terminalTaskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	_, err = store.ClaimTask(ctx, terminalTaskID, "agent-1", "haiku", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Mark as done
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = 'done' WHERE id = ?", terminalTaskID)
+	if err != nil {
+		t.Fatalf("failed to update task state: %v", err)
+	}
+
+	// Verify events exist
+	events, err := store.ListEvents(ctx, terminalTaskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+	if len(events) == 0 {
+		t.Errorf("terminal task should have events, got %d", len(events))
+	}
+	initialEventCount := len(events)
+
+	// Run prune with high retention (7 days) - recent events should be kept
+	_, err = store.PruneEvents(ctx, 7)
+	if err != nil {
+		t.Fatalf("failed to prune events: %v", err)
+	}
+
+	// Verify events are preserved (pruned == 0 since events are recent)
+	afterEvents, err := store.ListEvents(ctx, terminalTaskID)
+	if err != nil {
+		t.Fatalf("failed to list events after prune: %v", err)
+	}
+	if len(afterEvents) != initialEventCount {
+		t.Errorf("recent terminal task events should be preserved, had %d before, got %d after", initialEventCount, len(afterEvents))
+	}
+}
+
+func TestPruneEventsListEventsStillReturnsKeptEvents(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create two tasks: one active, one terminal
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Active Task", Spec: "Spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Terminal Task", Spec: "Spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+	activeTaskID := tasks[0].ID
+	terminalTaskID := tasks[1].ID
+
+	// Set up both tasks with events
+	for _, taskID := range []string{activeTaskID, terminalTaskID} {
+		_, err = store.PromoteTask(ctx, taskID)
+		if err != nil {
+			t.Fatalf("failed to promote task: %v", err)
+		}
+
+		_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", time.Minute)
+		if err != nil {
+			t.Fatalf("failed to claim task: %v", err)
+		}
+	}
+
+	// Mark terminal task as done
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = 'done' WHERE id = ?", terminalTaskID)
+	if err != nil {
+		t.Fatalf("failed to update task state: %v", err)
+	}
+
+	// Get event counts before prune
+	activeEventsBefore, err := store.ListEvents(ctx, activeTaskID)
+	if err != nil {
+		t.Fatalf("failed to list active task events: %v", err)
+	}
+
+	// Run prune
+	_, err = store.PruneEvents(ctx, 0)
+	if err != nil {
+		t.Fatalf("failed to prune events: %v", err)
+	}
+
+	// Verify ListEvents still returns kept events
+	activeEventsAfter, err := store.ListEvents(ctx, activeTaskID)
+	if err != nil {
+		t.Fatalf("failed to list active task events after prune: %v", err)
+	}
+	if len(activeEventsAfter) != len(activeEventsBefore) {
+		t.Errorf("active task events not preserved in ListEvents: had %d before, got %d after", len(activeEventsBefore), len(activeEventsAfter))
+	}
+
+	terminalEventsAfter, err := store.ListEvents(ctx, terminalTaskID)
+	if err != nil {
+		t.Fatalf("failed to list terminal task events after prune: %v", err)
+	}
+	if len(terminalEventsAfter) > 0 {
+		t.Errorf("terminal task events should be pruned, but ListEvents returned %d", len(terminalEventsAfter))
+	}
+}
+
+func TestHeartbeatTaskDoesNotCreateEvent(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create a task
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote to ready
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	// Claim task
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Get event count after claim
+	eventsBefore, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events before heartbeat: %v", err)
+	}
+	countBefore := len(eventsBefore)
+
+	// Heartbeat the task
+	_, err = store.HeartbeatTask(ctx, taskID, "agent-1", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to heartbeat task: %v", err)
+	}
+
+	// Get event count after heartbeat
+	eventsAfter, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events after heartbeat: %v", err)
+	}
+	countAfter := len(eventsAfter)
+
+	// Verify heartbeat did NOT create an event
+	if countAfter != countBefore {
+		t.Errorf("heartbeat should not create an event, had %d events before, got %d after", countBefore, countAfter)
+	}
+
+	// Verify we have at least the claim event
+	if countAfter < 1 {
+		t.Errorf("expected at least 1 event (claim), got %d", countAfter)
+	}
+}

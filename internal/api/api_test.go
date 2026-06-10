@@ -1860,8 +1860,8 @@ func TestHeartbeatEmptyAgentIDReturns400(t *testing.T) {
 	}
 }
 
-// TestHeartbeatAppendsHeartbeatEvent verifies that a heartbeat appends a heartbeat event.
-func TestHeartbeatAppendsHeartbeatEvent(t *testing.T) {
+// TestHeartbeatDoesNotAppendEvent verifies that a heartbeat does NOT append an event.
+func TestHeartbeatDoesNotAppendEvent(t *testing.T) {
 	server := setupTestServer(t, "test-token")
 	authHeader := "Bearer test-token"
 
@@ -1892,22 +1892,16 @@ func TestHeartbeatAppendsHeartbeatEvent(t *testing.T) {
 		t.Fatalf("failed to list events after heartbeat: %v", err)
 	}
 
-	// Verify a new heartbeat event was appended
-	if len(eventsAfter) <= len(eventsBefore) {
-		t.Errorf("expected more events after heartbeat, got same count: %d", len(eventsAfter))
+	// Verify no new event was appended for heartbeat
+	if len(eventsAfter) != len(eventsBefore) {
+		t.Errorf("expected same number of events after heartbeat, got %d before and %d after", len(eventsBefore), len(eventsAfter))
 	}
 
-	// Find the heartbeat event
-	heartbeatFound := false
+	// Verify no heartbeat event exists
 	for _, event := range eventsAfter {
-		if event.Kind == "heartbeat" && event.Actor == "test-agent" {
-			heartbeatFound = true
-			break
+		if event.Kind == "heartbeat" {
+			t.Error("unexpected heartbeat event found in events")
 		}
-	}
-
-	if !heartbeatFound {
-		t.Error("heartbeat event not found in events after heartbeat")
 	}
 }
 

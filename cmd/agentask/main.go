@@ -148,12 +148,32 @@ func runServer() {
 		log.Fatal("AGENTASK_MODELS configuration resulted in empty allowlist")
 	}
 
+	// Parse event retention configuration
+	eventTerminalRetentionDaysStr := os.Getenv("AGENTASK_EVENT_TERMINAL_RETENTION_DAYS")
+	if eventTerminalRetentionDaysStr == "" {
+		eventTerminalRetentionDaysStr = "1"
+	}
+	eventTerminalRetentionDays, err := strconv.Atoi(eventTerminalRetentionDaysStr)
+	if err != nil {
+		log.Fatalf("failed to parse AGENTASK_EVENT_TERMINAL_RETENTION_DAYS: %v", err)
+	}
+
 	// Open the store
 	s, err := store.Open(dbPath, allowedModels)
 	if err != nil {
 		log.Fatalf("failed to open store: %v", err)
 	}
 	defer s.Close()
+
+	// Prune old events on startup
+	ctx := context.Background()
+	deletedCount, err := s.PruneEvents(ctx, eventTerminalRetentionDays)
+	if err != nil {
+		log.Fatalf("failed to prune events: %v", err)
+	}
+	if deletedCount > 0 {
+		log.Printf("pruned %d old events", deletedCount)
+	}
 
 	// Create API server
 	apiServer := api.New(s, authToken, leaseTTL, maxReviewRounds, escalationThresholds)
