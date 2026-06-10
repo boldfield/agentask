@@ -4973,3 +4973,141 @@ func TestSubmitNoOpLinkKindAccepted(t *testing.T) {
 		t.Fatalf("expected no_op link kind to be accepted, got: %v", err)
 	}
 }
+
+// TestSuperseededByNilByDefault verifies that SupersededBy is nil by default.
+func TestSuperseededByNilByDefault(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Test spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Verify SupersededBy is nil by default
+	if tasks[0].SupersededBy != nil {
+		t.Errorf("expected SupersededBy to be nil by default, got %v", tasks[0].SupersededBy)
+	}
+
+	// Also verify via GetTask
+	taskWithDeps, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+
+	if taskWithDeps.SupersededBy != nil {
+		t.Errorf("expected SupersededBy to be nil in GetTask, got %v", taskWithDeps.SupersededBy)
+	}
+
+	// And via ListTasks
+	listTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	if len(listTasks) != 1 {
+		t.Errorf("expected 1 task, got %d", len(listTasks))
+	}
+
+	if listTasks[0].SupersededBy != nil {
+		t.Errorf("expected SupersededBy to be nil in ListTasks, got %v", listTasks[0].SupersededBy)
+	}
+}
+
+// TestSuperseededByWithValue verifies that SupersededBy is properly propagated when set.
+func TestSuperseededByWithValue(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Test spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Create a second task to be referenced as the superseding task
+	otherTasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Other Task", Spec: "Other spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create other task: %v", err)
+	}
+	otherTaskID := otherTasks[0].ID
+
+	// Manually set superseded_by in the database
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET superseded_by = ? WHERE id = ?", otherTaskID, taskID)
+	if err != nil {
+		t.Fatalf("failed to set superseded_by: %v", err)
+	}
+
+	// Verify GetTask returns the superseded_by value
+	taskWithDeps, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+
+	if taskWithDeps.SupersededBy == nil {
+		t.Errorf("expected SupersededBy to be set in GetTask, got nil")
+	} else if *taskWithDeps.SupersededBy != otherTaskID {
+		t.Errorf("expected SupersededBy to be %s, got %s", otherTaskID, *taskWithDeps.SupersededBy)
+	}
+
+	// Verify ListTasks returns the superseded_by value
+	listTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var foundTask *Task
+	for i := range listTasks {
+		if listTasks[i].ID == taskID {
+			foundTask = &listTasks[i]
+			break
+		}
+	}
+
+	if foundTask == nil {
+		t.Fatalf("expected to find task %s in ListTasks", taskID)
+	}
+
+	if foundTask.SupersededBy == nil {
+		t.Errorf("expected SupersededBy to be set in ListTasks, got nil")
+	} else if *foundTask.SupersededBy != otherTaskID {
+		t.Errorf("expected SupersededBy to be %s in ListTasks, got %s", otherTaskID, *foundTask.SupersededBy)
+	}
+}
