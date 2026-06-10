@@ -60,6 +60,12 @@ spec:
             secretKeyRef:
               name: agentask-secret
               key: token
+        # Escalation ladder: list order = tiers; per-tier value = consecutive reject rounds
+        # before escalating to the next model. fable is the top tier (last resort, 1 try then block).
+        - name: AGENTASK_MODELS
+          value: "haiku,sonnet,opus,fable"
+        - name: AGENTASK_ESCALATION_THRESHOLDS
+          value: "haiku=6,sonnet=4,opus=2,fable=1"
         volumeMounts:
         - name: data
           mountPath: /data
