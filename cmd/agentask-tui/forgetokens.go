@@ -15,7 +15,7 @@ import (
 //
 // Returns empty string if owner not found or file is missing.
 func forgeTokenForOwner(owner string) string {
-	home, err := os.UserHomeDir()
+	home, err := userHomeDirFunc()
 	if err != nil {
 		return ""
 	}

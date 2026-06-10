@@ -15,6 +15,15 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
+// commandContextFunc is the function used to create exec commands (made mockable for testing).
+var commandContextFunc func(ctx context.Context, name string, args ...string) *exec.Cmd = exec.CommandContext
+
+// lookPathFunc is the function used to look up executables (made mockable for testing).
+var lookPathFunc func(file string) (string, error) = exec.LookPath
+
+// userHomeDirFunc is the function used to get the home directory (made mockable for testing).
+var userHomeDirFunc func() (string, error) = os.UserHomeDir
+
 // detailFetchedMsg carries the result of a GetTask + ListDocuments + ListEvents call for the detail view.
 type detailFetchedMsg struct {
 	task      tuiclient.TaskDetail
@@ -409,18 +418,34 @@ func defaultURLOpener(rawURL string) error {
 	return fmt.Errorf("no browser found: set $BROWSER or install xdg-open")
 }
 
-// defaultGHMerger merges a PR via `gh pr merge <prURL> --squash`.
-// Returns an error if gh is not found or the merge fails.
+// defaultGHMerger merges a PR via the GitHub REST API with per-owner token support.
+// Returns an error if parsing fails, gh is not found, or the merge fails.
 func defaultGHMerger(ctx context.Context, prURL string) error {
-	if _, err := exec.LookPath("gh"); err != nil {
+	if _, err := lookPathFunc("gh"); err != nil {
 		return fmt.Errorf("gh command not found: install GitHub CLI (https://cli.github.com)")
 	}
 
-	// Run gh pr merge with the PR URL and squash flag.
-	// The PR URL is expected to be in the form "owner/repo#PR_NUMBER" or a full GitHub URL.
-	cmd := exec.CommandContext(ctx, "gh", "pr", "merge", prURL, "--squash")
+	// Parse the PR URL to extract owner, repo, and number.
+	owner, repo, number, err := parsePRURL(prURL)
+	if err != nil {
+		return fmt.Errorf("gh api merge failed: %w", err)
+	}
+
+	// Get the per-owner token from forge-tokens file.
+	token := forgeTokenForOwner(owner)
+
+	// Run gh api PUT repos/{owner}/{repo}/pulls/{number}/merge with squash method.
+	// The API endpoint performs the merge using the owner's token if available.
+	endpoint := fmt.Sprintf("repos/%s/%s/pulls/%d/merge", owner, repo, number)
+	cmd := commandContextFunc(ctx, "gh", "api", "--method", "PUT", endpoint, "-f", "merge_method=squash")
+
+	// If a token was found, set GH_TOKEN in the command's environment.
+	if token != "" {
+		cmd.Env = append(os.Environ(), "GH_TOKEN="+token)
+	}
+
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gh pr merge failed: %w", err)
+		return fmt.Errorf("gh api merge failed: %w", err)
 	}
 	return nil
 }
