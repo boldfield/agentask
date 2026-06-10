@@ -82,9 +82,7 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
    findings>"`).
 5. **Honor `agent_merge` (only on approve).** Re-GET the parent task. If the parent is now
    `approved` AND its `agent_merge` is `true`:
-   - **Normal (has a `pr` link):** merge its PR with `gh pr merge "<parent-pr-url>" --auto`
-     (CI-gated — merges only once required checks pass); if the merge succeeds, transition the
-     parent: `agentask transition <parent-id> --to done`.
+   - **Normal (has a `pr` link):** merge its PR via REST API: derive `<owner>/<repo>/<number>` from the parent PR URL and run `gh api --method PUT repos/<owner>/<repo>/pulls/<number>/merge -f merge_method=squash` (the reviewer already has the owner token via `apply_owner_token` → GH_TOKEN). This works where `gh pr merge --auto` fails: `--auto` requires branch protection these private free-plan repos cannot have, and `gh pr merge` mis-resolves credentials with multiple gh accounts. If the merge succeeds, transition the parent: `agentask transition <parent-id> --to done`.
    - **NO-OP (verified no-op, no `pr` link):** there is NOTHING to merge — do NOT run `gh pr merge`.
      Drive it straight to done via the same transition: `agentask transition <parent-id> --to done
      --note "no-op verified against main; no merge needed"`.
