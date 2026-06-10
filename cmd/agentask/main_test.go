@@ -83,6 +83,37 @@ func TestRunUnknownCommand(t *testing.T) {
 	}
 }
 
+func TestSplitJSONFlag(t *testing.T) {
+	cases := []struct {
+		name     string
+		args     []string
+		wantJSON bool
+		wantRest []string
+	}{
+		{"trailing json with filters", []string{"--claimable", "--model", "haiku", "--json"}, true, []string{"--claimable", "--model", "haiku"}},
+		{"leading json", []string{"--json", "--kind", "review"}, true, []string{"--kind", "review"}},
+		{"no json", []string{"--model", "haiku"}, false, []string{"--model", "haiku"}},
+		{"only json", []string{"--json"}, true, []string{}},
+		{"empty", []string{}, false, []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotJSON, gotRest := splitJSONFlag(tc.args)
+			if gotJSON != tc.wantJSON {
+				t.Errorf("json = %v, want %v", gotJSON, tc.wantJSON)
+			}
+			if len(gotRest) != len(tc.wantRest) {
+				t.Fatalf("rest = %v, want %v", gotRest, tc.wantRest)
+			}
+			for i := range gotRest {
+				if gotRest[i] != tc.wantRest[i] {
+					t.Errorf("rest[%d] = %q, want %q", i, gotRest[i], tc.wantRest[i])
+				}
+			}
+		})
+	}
+}
+
 func TestExecuteProjectsTable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/projects" {

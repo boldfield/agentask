@@ -185,15 +185,25 @@ func runServer() {
 	}
 }
 
-func runClient(verb string, args []string) error {
-	// Parse --json flag
-	var jsonOutput bool
+// splitJSONFlag pulls the global --json flag out of args so per-verb FlagSets
+// never see it. Returns whether --json was present and the remaining args.
+func splitJSONFlag(args []string) (bool, []string) {
+	jsonOutput := false
+	rest := make([]string, 0, len(args))
 	for _, arg := range args {
 		if arg == "--json" {
 			jsonOutput = true
-			break
+			continue
 		}
+		rest = append(rest, arg)
 	}
+	return jsonOutput, rest
+}
+
+func runClient(verb string, args []string) error {
+	// Strip the global --json flag so no verb's FlagSet sees it (verbs with their
+	// own FlagSet, e.g. projects, would otherwise error on a trailing --json).
+	jsonOutput, args := splitJSONFlag(args)
 
 	// Read configuration from environment
 	baseURL := os.Getenv("AGENTASK_URL")
