@@ -6244,3 +6244,205 @@ func TestTaskEscalateFlag(t *testing.T) {
 		t.Errorf("task3 escalate should be true")
 	}
 }
+
+// TestEscalateRoundTrip verifies that the escalate flag is preserved through all task operations.
+func TestEscalateRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "test-project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create an implement task with escalate=false
+	escalateFalse := false
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Implement Task", Spec: "Implementation spec", DocumentID: doc.ID, Model: "haiku", Escalate: &escalateFalse},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote to ready so it can be claimed
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+
+	// Test ClaimTask preserves escalate
+	claimedTask, err := store.ClaimTask(ctx, taskID, "agent-1", "haiku", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	if claimedTask.Escalate {
+		t.Errorf("claimed task should have escalate=false, got %v", claimedTask.Escalate)
+	}
+
+	// Test HeartbeatTask preserves escalate
+	heartbeatTask, err := store.HeartbeatTask(ctx, taskID, "agent-1", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to heartbeat task: %v", err)
+	}
+	if heartbeatTask.Escalate {
+		t.Errorf("heartbeat task should have escalate=false, got %v", heartbeatTask.Escalate)
+	}
+
+	// Test SubmitTask preserves escalate
+	submittedTask, err := store.SubmitTask(ctx, taskID, "agent-1", "implementation result", nil, []LinkInput{{Kind: "pr", Value: "https://github.com/test/test/pull/1"}}, 5)
+	if err != nil {
+		t.Fatalf("failed to submit task: %v", err)
+	}
+	if submittedTask.Escalate {
+		t.Errorf("submitted task should have escalate=false, got %v", submittedTask.Escalate)
+	}
+
+	// Create a ready task with escalate=false for other operations
+	escalateFalse2 := false
+	tasks2, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Ready Task", Spec: "Ready spec", DocumentID: doc.ID, Model: "haiku", Escalate: &escalateFalse2},
+	})
+	if err != nil {
+		t.Fatalf("failed to create ready task: %v", err)
+	}
+	readyTaskID := tasks2[0].ID
+
+	// Test HoldTask preserves escalate
+	heldTask, err := store.HoldTask(ctx, readyTaskID)
+	if err != nil {
+		t.Fatalf("failed to hold task: %v", err)
+	}
+	if heldTask.Escalate {
+		t.Errorf("held task should have escalate=false, got %v", heldTask.Escalate)
+	}
+
+	// Test ReleaseTask preserves escalate
+	releasedTask, err := store.ReleaseTask(ctx, readyTaskID)
+	if err != nil {
+		t.Fatalf("failed to release task: %v", err)
+	}
+	if releasedTask.Escalate {
+		t.Errorf("released task should have escalate=false, got %v", releasedTask.Escalate)
+	}
+
+	// Create two tasks for dependency update: one with escalate=false, one with escalate=true
+	escalateFalse3 := false
+	tasks3, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task with escalate false", Spec: "Spec", DocumentID: doc.ID, Model: "haiku", Escalate: &escalateFalse3},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task 3: %v", err)
+	}
+	task3ID := tasks3[0].ID
+
+	escalateTrue := true
+	tasks4, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task with escalate true", Spec: "Spec", DocumentID: doc.ID, Model: "haiku", Escalate: &escalateTrue},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task 4: %v", err)
+	}
+	task4ID := tasks4[0].ID
+
+	// Test UpdateTaskDependsOn preserves escalate
+	updatedTask, err := store.UpdateTaskDependsOn(ctx, task3ID, []string{task4ID})
+	if err != nil {
+		t.Fatalf("failed to update task dependencies: %v", err)
+	}
+	if updatedTask.Escalate {
+		t.Errorf("updated task should have escalate=false, got %v", updatedTask.Escalate)
+	}
+
+	// Test SupersedeTask preserves escalate
+	// First promote task4, then claim and submit it to put it in review
+	_, err = store.PromoteTask(ctx, task4ID)
+	if err != nil {
+		t.Fatalf("failed to promote task 4: %v", err)
+	}
+
+	_, err = store.ClaimTask(ctx, task4ID, "agent-2", "haiku", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task 4: %v", err)
+	}
+	_, err = store.SubmitTask(ctx, task4ID, "agent-2", "result", nil, []LinkInput{{Kind: "pr", Value: "https://github.com/test/test/pull/2"}}, 5)
+	if err != nil {
+		t.Fatalf("failed to submit task 4: %v", err)
+	}
+
+	// Now reject it to put it back in ready, then supersede it
+	_, err = store.AddReview(ctx, task4ID, "reviewer", "reject", nil)
+	if err != nil {
+		t.Fatalf("failed to add review: %v", err)
+	}
+
+	supersededTask, err := store.SupersedeTask(ctx, task4ID, nil)
+	if err != nil {
+		t.Fatalf("failed to supersede task: %v", err)
+	}
+	if !supersededTask.Escalate {
+		t.Errorf("superseded task should have escalate=true (original), got %v", supersededTask.Escalate)
+	}
+
+	// Verify the replacement task preserves escalate
+	// We'll just verify that the escalate is preserved by checking GetTask on task4
+	getTask4, err := store.GetTask(ctx, task4ID)
+	if err != nil {
+		t.Fatalf("failed to get task 4: %v", err)
+	}
+	if !getTask4.Escalate {
+		t.Errorf("original task 4 should still have escalate=true, got %v", getTask4.Escalate)
+	}
+
+	// Create a task with escalate=false and verify it through supersede
+	escalateFalse4 := false
+	tasks5, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task to supersede", Spec: "Spec", DocumentID: doc.ID, Model: "haiku", Escalate: &escalateFalse4},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task 5: %v", err)
+	}
+	task5ID := tasks5[0].ID
+
+	// Promote to ready
+	_, err = store.PromoteTask(ctx, task5ID)
+	if err != nil {
+		t.Fatalf("failed to promote task 5: %v", err)
+	}
+
+	// Claim, submit, reject, then supersede
+	claimedTask5, err := store.ClaimTask(ctx, task5ID, "agent-3", "haiku", time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task 5: %v", err)
+	}
+	if claimedTask5.Escalate {
+		t.Errorf("claimed task 5 should have escalate=false, got %v", claimedTask5.Escalate)
+	}
+
+	_, err = store.SubmitTask(ctx, task5ID, "agent-3", "result", nil, []LinkInput{{Kind: "pr", Value: "https://github.com/test/test/pull/3"}}, 5)
+	if err != nil {
+		t.Fatalf("failed to submit task 5: %v", err)
+	}
+
+	_, err = store.AddReview(ctx, task5ID, "reviewer", "reject", nil)
+	if err != nil {
+		t.Fatalf("failed to add review to task 5: %v", err)
+	}
+
+	newTask, err := store.SupersedeTask(ctx, task5ID, nil)
+	if err != nil {
+		t.Fatalf("failed to supersede task 5: %v", err)
+	}
+	if newTask.Escalate {
+		t.Errorf("new task from supersede should have escalate=false, got %v", newTask.Escalate)
+	}
+}
