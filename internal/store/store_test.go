@@ -5686,3 +5686,135 @@ func TestSupersededTaskNotFound(t *testing.T) {
 		t.Errorf("expected ErrNotFound, got %v", err)
 	}
 }
+
+func TestSupersededTaskWithPriorFeedback(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create task with original spec
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task", Spec: "Original spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	oldTask := tasks[0]
+
+	// Add reject feedback events manually (simulating review feedback)
+	conn := store.Conn()
+	tx, err := conn.BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("failed to begin tx: %v", err)
+	}
+
+	// Add first reject feedback
+	verdict1 := "reject"
+	note1 := "Found critical bug in line 42"
+	_, err = store.AppendEvent(ctx, tx, oldTask.ID, "reviewer1", "review", &verdict1, &note1)
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("failed to append event: %v", err)
+	}
+
+	// Add second reject feedback
+	verdict2 := "reject"
+	note2 := "Tests are failing"
+	_, err = store.AppendEvent(ctx, tx, oldTask.ID, "reviewer2", "review", &verdict2, &note2)
+	if err != nil {
+		tx.Rollback()
+		t.Fatalf("failed to append event: %v", err)
+	}
+
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("failed to commit tx: %v", err)
+	}
+
+	// Supersede the task
+	newTask, err := store.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+
+	// Verify new task spec contains prior feedback
+	if !strings.Contains(newTask.Spec, "## Prior attempt feedback") {
+		t.Errorf("expected spec to contain feedback header, got: %q", newTask.Spec)
+	}
+
+	if !strings.Contains(newTask.Spec, "reviewer1") {
+		t.Errorf("expected spec to contain reviewer1, got: %q", newTask.Spec)
+	}
+
+	if !strings.Contains(newTask.Spec, "reviewer2") {
+		t.Errorf("expected spec to contain reviewer2, got: %q", newTask.Spec)
+	}
+
+	if !strings.Contains(newTask.Spec, "Found critical bug in line 42") {
+		t.Errorf("expected spec to contain first feedback note, got: %q", newTask.Spec)
+	}
+
+	if !strings.Contains(newTask.Spec, "Tests are failing") {
+		t.Errorf("expected spec to contain second feedback note, got: %q", newTask.Spec)
+	}
+
+	// Verify spec starts with original spec
+	if !strings.HasPrefix(newTask.Spec, "Original spec") {
+		t.Errorf("expected spec to start with original spec, got: %q", newTask.Spec)
+	}
+}
+
+func TestSupersededTaskWithoutFeedback(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create task without feedback
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task", Spec: "Original spec unchanged", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	oldTask := tasks[0]
+
+	// Supersede the task (without adding any feedback)
+	newTask, err := store.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+
+	// Verify new task spec is unchanged (no feedback header added)
+	if newTask.Spec != "Original spec unchanged" {
+		t.Errorf("expected spec to be unchanged, got: %q", newTask.Spec)
+	}
+
+	if strings.Contains(newTask.Spec, "## Prior attempt feedback") {
+		t.Errorf("expected spec to not contain feedback header when no feedback, got: %q", newTask.Spec)
+	}
+}
