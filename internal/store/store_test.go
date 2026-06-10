@@ -2980,6 +2980,7 @@ func TestReviewRoundCircuitBreaker(t *testing.T) {
 		t.Fatalf("failed to create document: %v", err)
 	}
 
+	escalateFalse := false
 	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
 		{
 			Title:        "Implement feature",
@@ -2987,6 +2988,7 @@ func TestReviewRoundCircuitBreaker(t *testing.T) {
 			DocumentID:   doc.ID,
 			Model:        "haiku",
 			ReviewModels: []string{"opus"},
+			Escalate:     &escalateFalse,
 		},
 	})
 	if err != nil {
@@ -3102,6 +3104,437 @@ func TestReviewRoundCircuitBreaker(t *testing.T) {
 		t.Errorf("expected auto-blocked transition event")
 	} else if !strings.Contains(*blockedEvent.Note, "9 consecutive review rounds") {
 		t.Errorf("expected event note about 9 rounds, got: %s", *blockedEvent.Note)
+	}
+}
+
+// TestEscalateHaikuToSonnet verifies that a haiku task with escalate=true
+// is superseded to sonnet when review_round exceeds the threshold.
+func TestEscalateHaikuToSonnet(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	escalateTrue := true
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+			Escalate:     &escalateTrue,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+	maxReviewRounds := 5
+
+	submitAndReject := func(roundNum int) {
+		task, err := store.GetTask(ctx, taskID)
+		if err != nil {
+			t.Fatalf("failed to get task (round %d): %v", roundNum, err)
+		}
+		if task.State == "backlog" {
+			_, err := store.PromoteTask(ctx, taskID)
+			if err != nil {
+				t.Fatalf("failed to promote task (round %d): %v", roundNum, err)
+			}
+		}
+
+		_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+		if err != nil {
+			t.Fatalf("failed to claim task (round %d): %v", roundNum, err)
+		}
+
+		_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, maxReviewRounds, nil)
+		if err != nil {
+			t.Fatalf("failed to submit implement task (round %d): %v", roundNum, err)
+		}
+
+		allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+		if err != nil {
+			t.Fatalf("failed to list tasks (round %d): %v", roundNum, err)
+		}
+
+		var reviewTask *Task
+		for i := range allTasks {
+			if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID && allTasks[i].State == "ready" {
+				reviewTask = &allTasks[i]
+				break
+			}
+		}
+		if reviewTask == nil {
+			t.Fatalf("review task not found (round %d)", roundNum)
+		}
+
+		_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+		if err != nil {
+			t.Fatalf("failed to claim review task (round %d): %v", roundNum, err)
+		}
+
+		reject := "reject"
+		_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, maxReviewRounds, nil)
+		if err != nil {
+			t.Fatalf("failed to submit review task (round %d): %v", roundNum, err)
+		}
+	}
+
+	// Rounds 1-8: should transition to ready
+	for i := 1; i <= 8; i++ {
+		submitAndReject(i)
+
+		parent, err := store.GetTask(ctx, taskID)
+		if err != nil {
+			t.Fatalf("failed to get task (round %d): %v", i, err)
+		}
+		if parent.State != "ready" {
+			t.Errorf("round %d: expected parent state 'ready', got '%s'", i, parent.State)
+		}
+	}
+
+	// Round 9: should escalate to sonnet
+	submitAndReject(9)
+
+	// Original task should be superseded
+	parent, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get original task: %v", err)
+	}
+	if parent.State != "superseded" {
+		t.Errorf("expected original task state 'superseded', got '%s'", parent.State)
+	}
+	if parent.SupersededBy == nil {
+		t.Errorf("expected original task SupersededBy to be set")
+	} else {
+		// Verify the new task exists and has correct properties
+		newTask, err := store.GetTask(ctx, *parent.SupersededBy)
+		if err != nil {
+			t.Fatalf("failed to get escalated task: %v", err)
+		}
+		if newTask.Model != "sonnet" {
+			t.Errorf("expected escalated task model 'sonnet', got '%s'", newTask.Model)
+		}
+		if newTask.State != "backlog" {
+			t.Errorf("expected escalated task state 'backlog', got '%s'", newTask.State)
+		}
+		if newTask.ReviewRound != 0 {
+			t.Errorf("expected escalated task review_round 0, got %d", newTask.ReviewRound)
+		}
+	}
+
+	// Check for escalation event on original task
+	events, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+
+	var escalationEvent *Event
+	for i := range events {
+		if events[i].Kind == "escalation" {
+			escalationEvent = &events[i]
+			break
+		}
+	}
+	if escalationEvent == nil {
+		t.Errorf("expected escalation event on original task")
+	}
+}
+
+// TestEscalateSonnetToOpus verifies that a sonnet task with escalate=true
+// is superseded to opus when review_round exceeds the threshold (6 for sonnet).
+func TestEscalateSonnetToOpus(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	escalateTrue := true
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "sonnet",
+			ReviewModels: []string{"opus"},
+			Escalate:     &escalateTrue,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+	maxReviewRounds := 5
+
+	submitAndReject := func(roundNum int) {
+		task, err := store.GetTask(ctx, taskID)
+		if err != nil {
+			t.Fatalf("failed to get task (round %d): %v", roundNum, err)
+		}
+		if task.State == "backlog" {
+			_, err := store.PromoteTask(ctx, taskID)
+			if err != nil {
+				t.Fatalf("failed to promote task (round %d): %v", roundNum, err)
+			}
+		}
+
+		_, err = store.ClaimTask(ctx, taskID, "agent-1", "sonnet", 5*time.Minute)
+		if err != nil {
+			t.Fatalf("failed to claim task (round %d): %v", roundNum, err)
+		}
+
+		_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, maxReviewRounds, nil)
+		if err != nil {
+			t.Fatalf("failed to submit implement task (round %d): %v", roundNum, err)
+		}
+
+		allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+		if err != nil {
+			t.Fatalf("failed to list tasks (round %d): %v", roundNum, err)
+		}
+
+		var reviewTask *Task
+		for i := range allTasks {
+			if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID && allTasks[i].State == "ready" {
+				reviewTask = &allTasks[i]
+				break
+			}
+		}
+		if reviewTask == nil {
+			t.Fatalf("review task not found (round %d)", roundNum)
+		}
+
+		_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+		if err != nil {
+			t.Fatalf("failed to claim review task (round %d): %v", roundNum, err)
+		}
+
+		reject := "reject"
+		_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, maxReviewRounds, nil)
+		if err != nil {
+			t.Fatalf("failed to submit review task (round %d): %v", roundNum, err)
+		}
+	}
+
+	// Rounds 1-6: should transition to ready (sonnet threshold is 6)
+	for i := 1; i <= 6; i++ {
+		submitAndReject(i)
+
+		parent, err := store.GetTask(ctx, taskID)
+		if err != nil {
+			t.Fatalf("failed to get task (round %d): %v", i, err)
+		}
+		if parent.State != "ready" {
+			t.Errorf("round %d: expected parent state 'ready', got '%s'", i, parent.State)
+		}
+	}
+
+	// Round 7: should escalate to opus
+	submitAndReject(7)
+
+	// Original task should be superseded
+	parent, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get original task: %v", err)
+	}
+	if parent.State != "superseded" {
+		t.Errorf("expected original task state 'superseded', got '%s'", parent.State)
+	}
+	if parent.SupersededBy == nil {
+		t.Errorf("expected original task SupersededBy to be set")
+	} else {
+		// Verify the new task exists and has correct properties
+		newTask, err := store.GetTask(ctx, *parent.SupersededBy)
+		if err != nil {
+			t.Fatalf("failed to get escalated task: %v", err)
+		}
+		if newTask.Model != "opus" {
+			t.Errorf("expected escalated task model 'opus', got '%s'", newTask.Model)
+		}
+		if newTask.State != "backlog" {
+			t.Errorf("expected escalated task state 'backlog', got '%s'", newTask.State)
+		}
+		if newTask.ReviewRound != 0 {
+			t.Errorf("expected escalated task review_round 0, got %d", newTask.ReviewRound)
+		}
+	}
+
+	// Check for escalation event on original task
+	events, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+
+	var escalationEvent *Event
+	for i := range events {
+		if events[i].Kind == "escalation" {
+			escalationEvent = &events[i]
+			break
+		}
+	}
+	if escalationEvent == nil {
+		t.Errorf("expected escalation event on original task")
+	}
+}
+
+// TestEscalateOpusBlock verifies that an opus (top-tier) task with escalate=true
+// is blocked, not escalated, when review_round exceeds the threshold (4 for opus).
+func TestEscalateOpusBlock(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	escalateTrue := true
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "opus",
+			ReviewModels: []string{"sonnet"},
+			Escalate:     &escalateTrue,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+	maxReviewRounds := 5
+
+	submitAndReject := func(roundNum int) {
+		task, err := store.GetTask(ctx, taskID)
+		if err != nil {
+			t.Fatalf("failed to get task (round %d): %v", roundNum, err)
+		}
+		if task.State == "backlog" {
+			_, err := store.PromoteTask(ctx, taskID)
+			if err != nil {
+				t.Fatalf("failed to promote task (round %d): %v", roundNum, err)
+			}
+		}
+
+		_, err = store.ClaimTask(ctx, taskID, "agent-1", "opus", 5*time.Minute)
+		if err != nil {
+			t.Fatalf("failed to claim task (round %d): %v", roundNum, err)
+		}
+
+		_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, maxReviewRounds, nil)
+		if err != nil {
+			t.Fatalf("failed to submit implement task (round %d): %v", roundNum, err)
+		}
+
+		allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+		if err != nil {
+			t.Fatalf("failed to list tasks (round %d): %v", roundNum, err)
+		}
+
+		var reviewTask *Task
+		for i := range allTasks {
+			if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID && allTasks[i].State == "ready" {
+				reviewTask = &allTasks[i]
+				break
+			}
+		}
+		if reviewTask == nil {
+			t.Fatalf("review task not found (round %d)", roundNum)
+		}
+
+		_, err = store.ClaimTask(ctx, reviewTask.ID, "sonnet-reviewer", "sonnet", 5*time.Minute)
+		if err != nil {
+			t.Fatalf("failed to claim review task (round %d): %v", roundNum, err)
+		}
+
+		reject := "reject"
+		_, err = store.SubmitTask(ctx, reviewTask.ID, "sonnet-reviewer", "Needs work", &reject, []LinkInput{}, maxReviewRounds, nil)
+		if err != nil {
+			t.Fatalf("failed to submit review task (round %d): %v", roundNum, err)
+		}
+	}
+
+	// Rounds 1-4: should transition to ready (opus threshold is 4)
+	for i := 1; i <= 4; i++ {
+		submitAndReject(i)
+
+		parent, err := store.GetTask(ctx, taskID)
+		if err != nil {
+			t.Fatalf("failed to get task (round %d): %v", i, err)
+		}
+		if parent.State != "ready" {
+			t.Errorf("round %d: expected parent state 'ready', got '%s'", i, parent.State)
+		}
+	}
+
+	// Round 5: should transition to blocked (not escalated, since opus is top-tier)
+	submitAndReject(5)
+
+	parent, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get task (round 5): %v", err)
+	}
+	if parent.State != "blocked" {
+		t.Errorf("expected parent state 'blocked', got '%s'", parent.State)
+	}
+	if parent.SupersededBy != nil {
+		t.Errorf("expected SupersededBy to be nil for top-tier task, got %s", *parent.SupersededBy)
+	}
+
+	// Check that a transition event was appended
+	events, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+
+	var blockedEvent *Event
+	for i := range events {
+		if events[i].Kind == "transition" && events[i].Note != nil && strings.Contains(*events[i].Note, "auto-blocked") {
+			blockedEvent = &events[i]
+			break
+		}
+	}
+	if blockedEvent == nil {
+		t.Errorf("expected auto-blocked transition event")
 	}
 }
 
