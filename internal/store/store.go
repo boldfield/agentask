@@ -297,6 +297,31 @@ func (s *sqliteStore) AppendEvent(ctx context.Context, tx *sql.Tx, taskID, actor
 	}, nil
 }
 
+// setTaskDepends replaces a task's outgoing dependencies within a transaction.
+// It deletes all existing dependencies for the task and inserts new ones.
+func (s *sqliteStore) setTaskDepends(ctx context.Context, tx *sql.Tx, taskID string, depIDs []string) error {
+	// Delete existing dependencies
+	_, err := tx.ExecContext(ctx, `
+		DELETE FROM task_dep WHERE task_id = ?
+	`, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to delete existing dependencies: %w", err)
+	}
+
+	// Insert new dependencies
+	for _, depID := range depIDs {
+		_, err := tx.ExecContext(ctx, `
+			INSERT INTO task_dep (task_id, depends_on_id)
+			VALUES (?, ?)
+		`, taskID, depID)
+		if err != nil {
+			return fmt.Errorf("failed to insert dependency: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // ListEvents retrieves all events for a given task, ordered by created_at and id.
 func (s *sqliteStore) ListEvents(ctx context.Context, taskID string) ([]Event, error) {
 	rows, err := s.conn.QueryContext(ctx, `
