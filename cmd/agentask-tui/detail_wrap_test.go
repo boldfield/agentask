@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/boldfield/agentask/internal/tuiclient"
 )
@@ -12,7 +13,7 @@ func TestWrapText(t *testing.T) {
 	in := "the quick brown fox jumps over the lazy dog"
 	out := wrapText(in, 20)
 	for _, line := range strings.Split(out, "\n") {
-		if len(line) > 20 {
+		if utf8.RuneCountInString(line) > 20 {
 			t.Errorf("line %q exceeds width 20", line)
 		}
 	}
@@ -65,5 +66,49 @@ func TestBuildDetailContent(t *testing.T) {
 	specIdx := strings.Index(content, spec)
 	if titleIdx >= specIdx {
 		t.Errorf("title should appear before spec in scrollable content")
+	}
+}
+
+func TestBuildDetailContentWrapping(t *testing.T) {
+	now := time.Now().Format(time.RFC3339Nano)
+	// Create a title that's longer than the viewport width
+	longTitle := "This is a very long task title that should be wrapped when displayed in the detail view because it exceeds the width"
+	longSpec := "This is a very long specification that contains multiple sentences and should wrap correctly when rendered in the detail view without causing horizontal overflow or truncation of important content"
+
+	tests := []struct {
+		name  string
+		width int
+	}{
+		{"narrow terminal", 40},
+		{"standard terminal", 80},
+		{"wide terminal", 120},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			task := tuiclient.TaskDetail{
+				ID:        "task-123",
+				Title:     longTitle,
+				State:     "in_progress",
+				Spec:      longSpec,
+				CreatedAt: now,
+				UpdatedAt: now,
+			}
+
+			model := &BoardModel{
+				width: tt.width,
+			}
+			model.detailEvents = nil
+
+			content := model.buildDetailContent(task)
+
+			// Verify that no line exceeds the viewport width
+			for i, line := range strings.Split(content, "\n") {
+				lineWidth := utf8.RuneCountInString(line)
+				if lineWidth > tt.width {
+					t.Errorf("line %d exceeds width %d (got %d): %q", i, tt.width, lineWidth, line)
+				}
+			}
+		})
 	}
 }

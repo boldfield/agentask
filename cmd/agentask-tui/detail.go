@@ -178,9 +178,11 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 
 	// Header: title, state, and project
 	if m.project.Name != "" {
-		b.WriteString(fmt.Sprintf("Project: %s\n", m.project.Name))
+		wrappedProject := wrapText(m.project.Name, m.width-9)
+		b.WriteString(fmt.Sprintf("Project: %s\n", wrappedProject))
 	}
-	b.WriteString(fmt.Sprintf("Task: %s\n", task.Title))
+	wrappedTitle := wrapText(task.Title, m.width-6)
+	b.WriteString(fmt.Sprintf("Task: %s\n", wrappedTitle))
 	stateStr := fmt.Sprintf("State: %s", task.State)
 	if task.Held {
 		stateStr += "  [HELD]"
@@ -211,7 +213,8 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 			if len(shortID) > 8 {
 				shortID = shortID[:8]
 			}
-			b.WriteString(fmt.Sprintf("  - %s (%s)\n", title, shortID))
+			wrappedTitle := wrapText(title, m.width-6)
+			b.WriteString(fmt.Sprintf("  - %s (%s)\n", wrappedTitle, shortID))
 		}
 	}
 
@@ -219,7 +222,9 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 	if len(task.Links) > 0 {
 		b.WriteString("Links:\n")
 		for _, link := range task.Links {
-			b.WriteString(fmt.Sprintf("  [%s] %s\n", link.Kind, link.Value))
+			wrappedValue := wrapText(link.Value, m.width-4)
+			formattedLink := fmt.Sprintf("  [%s] %s", link.Kind, wrappedValue)
+			b.WriteString(formattedLink + "\n")
 		}
 	}
 
@@ -249,8 +254,8 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
-	// Spec content
-	b.WriteString(task.Spec)
+	// Spec content (wrapped to avoid horizontal overflow)
+	b.WriteString(wrapText(task.Spec, m.width))
 
 	return b.String()
 }
