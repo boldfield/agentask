@@ -134,7 +134,7 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
-		case "claim":
+	case "claim":
 		if err := executeClaim(ctx, baseURL, token, args); err != nil {
 			var claimErr *claimError
 			if errors.As(err, &claimErr) {
