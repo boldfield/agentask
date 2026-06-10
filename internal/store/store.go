@@ -36,6 +36,7 @@ type Store interface {
 	CreateTasks(ctx context.Context, projectID string, tasks []TaskInput) ([]Task, error)
 	GetTask(ctx context.Context, id string) (TaskWithDepsAndLinks, error)
 	ListTasks(ctx context.Context, projectID string, filter TaskListFilter) ([]Task, error)
+	ListDependents(ctx context.Context, taskID string) ([]string, error)
 	ClaimTask(ctx context.Context, taskID, agentID, model string, leaseTTL time.Duration) (Task, error)
 	HeartbeatTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 	PromoteTask(ctx context.Context, taskID string) (Task, error)
@@ -1155,6 +1156,32 @@ func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter Ta
 	}
 
 	return tasks, nil
+}
+
+// ListDependents returns all task IDs that depend on the given taskID (reverse dependencies).
+// Returns an empty slice if the task has no dependents.
+func (s *sqliteStore) ListDependents(ctx context.Context, taskID string) ([]string, error) {
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT task_id FROM task_dep WHERE depends_on_id = ? ORDER BY task_id
+	`, taskID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to query dependents: %w", err)
+	}
+	defer rows.Close()
+
+	dependents := make([]string, 0)
+	for rows.Next() {
+		var depID string
+		if err := rows.Scan(&depID); err != nil {
+			return nil, fmt.Errorf("failed to scan dependent: %w", err)
+		}
+		dependents = append(dependents, depID)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("error iterating dependents: %w", err)
+	}
+
+	return dependents, nil
 }
 
 // ClaimTask atomically claims a task as in_progress by a given agent.

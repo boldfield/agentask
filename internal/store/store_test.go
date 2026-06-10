@@ -5192,3 +5192,71 @@ func TestSuperseededByWithValue(t *testing.T) {
 		t.Errorf("expected SupersededBy to be %s in ListTasks, got %s", otherTaskID, *foundTask.SupersededBy)
 	}
 }
+
+func TestListDependents(t *testing.T) {
+	dbPath := ":memory:"
+	store, err := Open(dbPath, defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-proj", "github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create tasks: A (no dependencies), B and C (both depend on A)
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Key: "task-a", Title: "Task A", Spec: "Spec A", DocumentID: doc.ID},
+		{Title: "Task B", Spec: "Spec B", DocumentID: doc.ID, DependsOn: []string{"task-a"}},
+		{Title: "Task C", Spec: "Spec C", DocumentID: doc.ID, DependsOn: []string{"task-a"}},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	taskA := tasks[0]
+	taskB := tasks[1]
+	taskC := tasks[2]
+
+	// ListDependents(A) should return [B, C]
+	dependents, err := store.ListDependents(ctx, taskA.ID)
+	if err != nil {
+		t.Fatalf("failed to list dependents: %v", err)
+	}
+
+	if len(dependents) != 2 {
+		t.Errorf("expected 2 dependents, got %d", len(dependents))
+	}
+
+	// Check that both B and C are in the dependents
+	dependentSet := make(map[string]bool)
+	for _, id := range dependents {
+		dependentSet[id] = true
+	}
+
+	if !dependentSet[taskB.ID] {
+		t.Errorf("expected task B (%s) in dependents, got %v", taskB.ID, dependents)
+	}
+	if !dependentSet[taskC.ID] {
+		t.Errorf("expected task C (%s) in dependents, got %v", taskC.ID, dependents)
+	}
+
+	// ListDependents(B) should return empty (B has no dependents)
+	dependentsB, err := store.ListDependents(ctx, taskB.ID)
+	if err != nil {
+		t.Fatalf("failed to list dependents of B: %v", err)
+	}
+
+	if len(dependentsB) != 0 {
+		t.Errorf("expected 0 dependents for task B, got %d", len(dependentsB))
+	}
+}
