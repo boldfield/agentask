@@ -115,7 +115,9 @@ func TestBuildDetailContentWrapping(t *testing.T) {
 
 func TestBuildDetailContentWithLongURL(t *testing.T) {
 	now := time.Now().Format(time.RFC3339Nano)
-	longURL := "https://github.com/boldfield/agentask/pull/144"
+
+	// Use a very long URL to test hard-breaking
+	longURL := "https://github.com/boldfield/agentask/pull/144/review/new/very/long/path/that/exceeds/viewport"
 
 	task := tuiclient.TaskDetail{
 		ID:        "task-123",
@@ -138,6 +140,47 @@ func TestBuildDetailContentWithLongURL(t *testing.T) {
 	content := model.buildDetailContent(task)
 
 	// Verify that no line exceeds the viewport width, including the PR URL line
+	for i, line := range strings.Split(content, "\n") {
+		lineWidth := utf8.RuneCountInString(line)
+		if lineWidth > width {
+			t.Errorf("line %d exceeds width %d (got %d): %q", i, width, lineWidth, line)
+		}
+	}
+}
+
+func TestBuildDetailContentWithLongDependency(t *testing.T) {
+	now := time.Now().Format(time.RFC3339Nano)
+	longDepID := "dep-with-long-title-id"
+	longDepTitle := "This is a very long dependency title that exceeds viewport width"
+
+	depTask := tuiclient.Task{
+		ID:    longDepID,
+		Title: longDepTitle,
+		State: "in_progress",
+	}
+
+	task := tuiclient.TaskDetail{
+		ID:        "task-123",
+		Title:     "Test Task",
+		State:     "in_progress",
+		Spec:      "Test spec",
+		CreatedAt: now,
+		UpdatedAt: now,
+		DependsOn: []string{longDepID},
+	}
+
+	width := 40
+	model := &BoardModel{
+		width: width,
+		tasks: map[string][]tuiclient.Task{
+			"ready": {depTask},
+		},
+	}
+	model.detailEvents = nil
+
+	content := model.buildDetailContent(task)
+
+	// Verify that no line exceeds the viewport width, including dependency lines
 	for i, line := range strings.Split(content, "\n") {
 		lineWidth := utf8.RuneCountInString(line)
 		if lineWidth > width {

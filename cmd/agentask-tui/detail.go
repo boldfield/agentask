@@ -214,7 +214,8 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 			if len(shortID) > 8 {
 				shortID = shortID[:8]
 			}
-			wrappedTitle := wrapText(title, m.width-6)
+			// Account for "  - " prefix (4 chars) and " (shortID)" suffix (max 11 chars)
+			wrappedTitle := wrapText(title, m.width-15)
 			b.WriteString(fmt.Sprintf("  - %s (%s)\n", wrappedTitle, shortID))
 		}
 	}
