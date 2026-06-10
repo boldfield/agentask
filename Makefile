@@ -32,9 +32,11 @@ release:
 	@if ! git diff --quiet; then echo "ERROR: Working tree has uncommitted changes"; exit 1; fi
 	@if ! git diff --cached --quiet; then echo "ERROR: Index has staged changes"; exit 1; fi
 	@if [ "$$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then echo "ERROR: Not on main branch"; exit 1; fi
+	docker build --platform linux/amd64 --build-arg VERSION=$(VERSION) -t ghcr.io/boldfield/agentask:$(VERSION) .
+	docker push ghcr.io/boldfield/agentask:$(VERSION)
 	git tag $(VERSION)
 	git push origin $(VERSION)
-	@echo "CI is building ghcr.io/boldfield/agentask:$(VERSION); when green, run: make deploy VERSION=$(VERSION)"
+	@echo "Released ghcr.io/boldfield/agentask:$(VERSION) (linux/amd64); deploy with: make deploy VERSION=$(VERSION)"
 
 deploy:
 	@echo "Resolving image digest for ghcr.io/boldfield/agentask:$(VERSION)..."
