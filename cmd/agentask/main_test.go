@@ -733,6 +733,154 @@ func TestExecuteSubmitMissingAgent(t *testing.T) {
 	}
 }
 
+func TestExecuteTasksTable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-1", State: "ready", Model: "haiku", Kind: "implement", Title: "Task 1"},
+				{ID: "task-2", State: "in_progress", Model: "sonnet", Kind: "review", Title: "Task 2"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeTasks(context.Background(), server.URL, "test-token", false, []string{"--project", "proj-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeTasks failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "task-1") {
+		t.Errorf("expected output to contain 'task-1', got: %s", output)
+	}
+	if !strings.Contains(output, "task-2") {
+		t.Errorf("expected output to contain 'task-2', got: %s", output)
+	}
+	if !strings.Contains(output, "ID") || !strings.Contains(output, "STATE") {
+		t.Errorf("expected table headers in output, got: %s", output)
+	}
+}
+
+func TestExecuteTasksWithStateFilter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-1", State: "ready", Model: "haiku", Kind: "implement", Title: "Task 1"},
+				{ID: "task-2", State: "in_progress", Model: "sonnet", Kind: "review", Title: "Task 2"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeTasks(context.Background(), server.URL, "test-token", false, []string{"--project", "proj-1", "--state", "ready"}, buf)
+	if err != nil {
+		t.Fatalf("executeTasks failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "task-1") {
+		t.Errorf("expected output to contain 'task-1', got: %s", output)
+	}
+	if strings.Contains(output, "task-2") {
+		t.Errorf("expected output to NOT contain 'task-2' (filtered by state), got: %s", output)
+	}
+}
+
+func TestExecuteTasksWithModelFilter(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-1", State: "ready", Model: "haiku", Kind: "implement", Title: "Task 1"},
+				{ID: "task-2", State: "in_progress", Model: "sonnet", Kind: "review", Title: "Task 2"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeTasks(context.Background(), server.URL, "test-token", false, []string{"--project", "proj-1", "--model", "sonnet"}, buf)
+	if err != nil {
+		t.Fatalf("executeTasks failed: %v", err)
+	}
+
+	output := buf.String()
+	if strings.Contains(output, "task-1") {
+		t.Errorf("expected output to NOT contain 'task-1' (filtered by model), got: %s", output)
+	}
+	if !strings.Contains(output, "task-2") {
+		t.Errorf("expected output to contain 'task-2', got: %s", output)
+	}
+}
+
+func TestExecuteTasksJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-1", State: "ready", Model: "haiku", Kind: "implement", Title: "Task 1"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeTasks(context.Background(), server.URL, "test-token", true, []string{"--project", "proj-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeTasks failed: %v", err)
+	}
+
+	output := buf.String()
+	var result []tuiclient.Task
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	if len(result) != 1 {
+		t.Errorf("expected 1 task in JSON, got %d", len(result))
+	}
+	if result[0].ID != "task-1" {
+		t.Errorf("expected task ID 'task-1', got %q", result[0].ID)
+	}
+}
+
+func TestExecuteTasksMissingProject(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeTasks(context.Background(), "http://localhost:8080", "test-token", false, []string{}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing --project, got nil")
+	}
+	if !strings.Contains(err.Error(), "--project") {
+		t.Errorf("expected error to mention --project, got: %v", err)
+	}
+}
+
+func TestExecuteTasksMissingURL(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeTasks(context.Background(), "", "test-token", false, []string{"--project", "proj-1"}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_URL") {
+		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	}
+}
+
+func TestExecuteTasksMissingToken(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeTasks(context.Background(), "http://localhost:8080", "", false, []string{"--project", "proj-1"}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
+		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
 func TestResolveAgentIdentity(t *testing.T) {
 	tests := []struct {
 		name          string
