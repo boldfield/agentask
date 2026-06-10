@@ -44,6 +44,7 @@ type Store interface {
 	SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput, maxReviewRounds int) (TaskWithDepsAndLinks, error)
 	AddReview(ctx context.Context, taskID, actor, verdict string, note *string) (Event, error)
 	TransitionTask(ctx context.Context, taskID, to string, note *string) (Task, error)
+	SupersedeTask(ctx context.Context, taskID string, modelOverride *string) (Task, error)
 	HoldTask(ctx context.Context, taskID string) (Task, error)
 	ReleaseTask(ctx context.Context, taskID string) (Task, error)
 	ArchiveTask(ctx context.Context, taskID string) (Task, error)
@@ -2063,6 +2064,127 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 	}
 
 	return t, nil
+}
+
+// SupersedeTask atomically creates a replacement task with copied fields and dependencies,
+// re-points all dependents, and marks the old task as superseded.
+// Returns the new Task or ErrNotFound if the old task doesn't exist.
+func (s *sqliteStore) SupersedeTask(ctx context.Context, taskID string, modelOverride *string) (Task, error) {
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	// 1. Load old task
+	var oldTask Task
+	var reviewModelsJSON *string
+	err = tx.QueryRowContext(ctx, `
+		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, held, created_at, updated_at, archived_at, superseded_by
+		FROM task WHERE id = ?
+	`, taskID).Scan(&oldTask.ID, &oldTask.ProjectID, &oldTask.DocumentID, &oldTask.Title, &oldTask.Spec, &oldTask.State, &oldTask.Assignee, &oldTask.LeaseExpiresAt, &oldTask.Result, &oldTask.Model, &oldTask.Kind, &reviewModelsJSON, &oldTask.ReviewRound, &oldTask.TargetTaskID, &oldTask.Verdict, &oldTask.AgentMerge, &oldTask.Held, &oldTask.CreatedAt, &oldTask.UpdatedAt, &oldTask.ArchivedAt, &oldTask.SupersededBy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, ErrNotFound
+	}
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to load old task: %w", err)
+	}
+
+	// Unmarshal review_models
+	oldTask.ReviewModels = []string{}
+	if reviewModelsJSON != nil {
+		if err := json.Unmarshal([]byte(*reviewModelsJSON), &oldTask.ReviewModels); err != nil {
+			return Task{}, fmt.Errorf("failed to unmarshal review_models: %w", err)
+		}
+	}
+
+	// 2. Create replacement task
+	newTaskID := GenerateID()
+	now := nowTimestamp()
+
+	model := oldTask.Model
+	if modelOverride != nil {
+		model = *modelOverride
+	}
+
+	// Validate model against allowlist
+	if !s.allowedModelsM[model] {
+		return Task{}, invalid("UNKNOWN_MODEL", fmt.Sprintf("unknown model: %s", model))
+	}
+
+	var newReviewModelsJSON *string
+	if len(oldTask.ReviewModels) > 0 {
+		data, err := json.Marshal(oldTask.ReviewModels)
+		if err != nil {
+			return Task{}, fmt.Errorf("failed to marshal review_models: %w", err)
+		}
+		str := string(data)
+		newReviewModelsJSON = &str
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, review_models, review_round, agent_merge, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+	`, newTaskID, oldTask.ProjectID, oldTask.DocumentID, oldTask.Title, oldTask.Spec, "backlog", model, oldTask.Kind, newReviewModelsJSON, 0, oldTask.AgentMerge, now, now)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to insert replacement task: %w", err)
+	}
+
+	// 3. Copy upstream dependencies
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO task_dep (task_id, depends_on_id)
+		SELECT ?, depends_on_id FROM task_dep WHERE task_id = ?
+	`, newTaskID, taskID)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to copy dependencies: %w", err)
+	}
+
+	// 4. Re-point dependents
+	_, err = tx.ExecContext(ctx, `
+		UPDATE task_dep SET depends_on_id = ? WHERE depends_on_id = ?
+	`, newTaskID, taskID)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to re-point dependents: %w", err)
+	}
+
+	// 5. Retire old task
+	_, err = tx.ExecContext(ctx, `
+		UPDATE task SET state = ?, superseded_by = ?, updated_at = ? WHERE id = ?
+	`, "superseded", newTaskID, now, taskID)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to retire old task: %w", err)
+	}
+
+	// 6. Emit event
+	note := fmt.Sprintf("Superseded by %s", newTaskID)
+	_, err = s.AppendEvent(ctx, tx, taskID, "system", "task_superseded", nil, &note)
+	if err != nil {
+		return Task{}, err
+	}
+
+	// Commit transaction
+	if err := tx.Commit(); err != nil {
+		return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Return the new task
+	newTask := Task{
+		ID:           newTaskID,
+		ProjectID:    oldTask.ProjectID,
+		DocumentID:   oldTask.DocumentID,
+		Title:        oldTask.Title,
+		Spec:         oldTask.Spec,
+		State:        "backlog",
+		Model:        model,
+		Kind:         oldTask.Kind,
+		ReviewModels: oldTask.ReviewModels,
+		ReviewRound:  0,
+		AgentMerge:   oldTask.AgentMerge,
+		CreatedAt:    now,
+		UpdatedAt:    now,
+	}
+
+	return newTask, nil
 }
 
 // ArchiveTask sets the archived_at timestamp for a task to the current time.
