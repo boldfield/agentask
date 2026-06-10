@@ -30,12 +30,24 @@ func (e *claimError) Error() string {
 	return e.message
 }
 
+type handledError struct {
+	code int
+}
+
+func (e *handledError) Error() string {
+	return "handled"
+}
+
 func main() {
 	if err := run(os.Args); err != nil {
 		var claimErr *claimError
 		if errors.As(err, &claimErr) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", claimErr.Error())
 			os.Exit(claimErr.code)
+		}
+		var handledErr *handledError
+		if errors.As(err, &handledErr) {
+			os.Exit(handledErr.code)
 		}
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(1)
@@ -58,13 +70,18 @@ func run(args []string) error {
 	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition":
 		return runClient(args[1], args[2:])
 	default:
-		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", args[1])
-		return fmt.Errorf("unknown command")
+		fmt.Fprintf(os.Stderr, "error: unknown command %q\n\n", args[1])
+		printUsageWriter(os.Stderr)
+		return &handledError{code: 1}
 	}
 }
 
 func printUsage() {
-	fmt.Printf(`agentask version %s
+	printUsageWriter(os.Stdout)
+}
+
+func printUsageWriter(w io.Writer) {
+	fmt.Fprintf(w, `agentask version %s
 
 usage: agentask <command> [options]
 

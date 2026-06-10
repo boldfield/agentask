@@ -48,12 +48,38 @@ func TestRunServer(t *testing.T) {
 }
 
 func TestRunUnknownCommand(t *testing.T) {
+	// Capture stderr
+	stderrBackup := os.Stderr
+	r, w, _ := os.Pipe()
+	os.Stderr = w
+
 	err := run([]string{"agentask", "invalid"})
+
+	w.Close()
+	os.Stderr = stderrBackup
+	var buf bytes.Buffer
+	buf.ReadFrom(r)
+	stderrOutput := buf.String()
+
 	if err == nil {
 		t.Error("expected error for unknown command, got nil")
 	}
-	if !strings.Contains(err.Error(), "unknown command") {
-		t.Errorf("expected error to contain 'unknown command', got: %v", err)
+
+	var handledErr *handledError
+	if !errors.As(err, &handledErr) {
+		t.Errorf("expected handledError, got %T: %v", err, err)
+	}
+
+	if !strings.Contains(stderrOutput, "error: unknown command") {
+		t.Errorf("expected stderr to contain 'error: unknown command', got: %s", stderrOutput)
+	}
+
+	if !strings.Contains(stderrOutput, "usage: agentask") {
+		t.Errorf("expected stderr to contain usage, got: %s", stderrOutput)
+	}
+
+	if !strings.Contains(stderrOutput, "projects") {
+		t.Errorf("expected stderr to contain verb list with 'projects', got: %s", stderrOutput)
 	}
 }
 
