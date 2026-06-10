@@ -1741,9 +1741,10 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			var parentHeld bool
 			var parentModel string
 			var parentEscalate bool
+			var parentAgentMerge bool
 			err = tx.QueryRowContext(ctx, `
-				SELECT review_round, state, held, model, escalate FROM task WHERE id = ?
-			`, *targetTaskID).Scan(&parentReviewRound, &parentState, &parentHeld, &parentModel, &parentEscalate)
+				SELECT review_round, state, held, model, escalate, agent_merge FROM task WHERE id = ?
+			`, *targetTaskID).Scan(&parentReviewRound, &parentState, &parentHeld, &parentModel, &parentEscalate, &parentAgentMerge)
 			if err != nil {
 				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to fetch parent task review_round: %w", err)
 			}
@@ -1776,8 +1777,35 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 						// Not all done yet; parent stays in review
 						newParentState = ""
 					} else if doneReviewTasks == totalReviewTasks && approveReviewTasks == totalReviewTasks {
-						// All done and all approved; move to approved
+						// All done and all approved; check if this is an agent_merge no_op
 						newParentState = "approved"
+
+						if parentAgentMerge {
+							// Check if parent has a no_op link (and no pr link)
+							var hasNoOp bool
+							var hasPR bool
+							rows, err := tx.QueryContext(ctx, `
+								SELECT kind FROM task_link WHERE task_id = ?
+							`, *targetTaskID)
+							if err == nil {
+								defer rows.Close()
+								for rows.Next() {
+									var kind string
+									if err := rows.Scan(&kind); err == nil {
+										if kind == "no_op" {
+											hasNoOp = true
+										} else if kind == "pr" {
+											hasPR = true
+										}
+									}
+								}
+							}
+
+							// If agent_merge=true and no_op link with no pr link, go straight to done
+							if hasNoOp && !hasPR {
+								newParentState = "done"
+							}
+						}
 					} else if doneReviewTasks == totalReviewTasks && approveReviewTasks < totalReviewTasks {
 						// All done but at least one rejected
 						// Circuit breaker: if review_round > threshold, check escalation vs blocking
@@ -1827,6 +1855,8 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 					var eventNote string
 					if newParentState == "approved" {
 						eventNote = "Aggregation: all reviewers approved"
+					} else if newParentState == "done" {
+						eventNote = "auto-finalized: agent_merge no-op approved by all reviewers"
 					} else if newParentState == "ready" {
 						eventNote = "Aggregation: at least one reviewer rejected"
 					} else if newParentState == "blocked" {
