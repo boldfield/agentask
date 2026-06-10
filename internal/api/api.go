@@ -56,6 +56,7 @@ func New(s store.Store, authToken string, leaseTTL time.Duration, maxReviewRound
 	mux.HandleFunc("POST /tasks/{id}/submit", server.authMiddleware(server.handleSubmit))
 	mux.HandleFunc("POST /tasks/{id}/review", server.authMiddleware(server.handleReview))
 	mux.HandleFunc("POST /tasks/{id}/transition", server.authMiddleware(server.handleTransition))
+	mux.HandleFunc("PATCH /tasks/{id}", server.authMiddleware(server.handleUpdateTask))
 	mux.HandleFunc("POST /tasks/{id}/hold", server.authMiddleware(server.handleHold))
 	mux.HandleFunc("POST /tasks/{id}/release", server.authMiddleware(server.handleRelease))
 	mux.HandleFunc("POST /tasks/{id}/archive", server.authMiddleware(server.handleArchiveTask))
@@ -632,6 +633,48 @@ func (s *Server) handleTransition(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.errorResponse(w, http.StatusInternalServerError, "TRANSITION_ERROR", "Failed to transition task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleUpdateTask handles PATCH /tasks/{id} to update a task's dependencies.
+func (s *Server) handleUpdateTask(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	var payload struct {
+		DependsOn []string `json:"depends_on"`
+	}
+
+	if err := s.decodeJSON(w, r, &payload); err != nil {
+		return // decodeJSON already wrote error response
+	}
+
+	// Update the task's dependencies
+	task, err := s.store.UpdateTaskDependsOn(r.Context(), taskID, payload.DependsOn)
+	if err != nil {
+		// Check if it's a ValidationError
+		var validationErr *store.ValidationError
+		if errors.As(err, &validationErr) {
+			s.errorResponse(w, http.StatusBadRequest, validationErr.Code, validationErr.Message)
+			return
+		}
+		// Check for ConflictError with specific code
+		var conflictErr *store.ConflictError
+		if errors.As(err, &conflictErr) {
+			s.errorResponse(w, http.StatusConflict, conflictErr.Code, conflictErr.Message)
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			s.errorResponse(w, http.StatusConflict, "CONFLICT", "Failed to update dependencies")
+			return
+		}
+		s.errorResponse(w, http.StatusInternalServerError, "UPDATE_ERROR", "Failed to update task")
 		return
 	}
 

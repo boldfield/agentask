@@ -2437,6 +2437,9 @@ func (s *sqliteStore) UpdateTaskDependsOn(ctx context.Context, taskID string, de
 		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, held, created_at, updated_at, archived_at, superseded_by
 		FROM task WHERE id = ?
 	`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.Held, &t.CreatedAt, &t.UpdatedAt, &t.ArchivedAt, &t.SupersededBy)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Task{}, ErrNotFound
+	}
 	if err != nil {
 		return Task{}, fmt.Errorf("failed to fetch updated task: %w", err)
 	}
