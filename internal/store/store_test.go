@@ -5818,3 +5818,330 @@ func TestSupersededTaskWithoutFeedback(t *testing.T) {
 		t.Errorf("expected spec to not contain feedback header when no feedback, got: %q", newTask.Spec)
 	}
 }
+
+// completeTask transitions a task to done state.
+func completeTask(ctx context.Context, store *sqliteStore, taskID string, t *testing.T) {
+	// Use raw SQL to set task to approved state (shortcut for testing)
+	_, err := store.Conn().ExecContext(ctx, "UPDATE task SET state = 'approved' WHERE id = ?", taskID)
+	if err != nil {
+		t.Fatalf("failed to set task to approved: %v", err)
+	}
+
+	// Transition approved -> done
+	_, err = store.TransitionTask(ctx, taskID, "done", nil)
+	if err != nil {
+		t.Fatalf("failed to transition to done: %v", err)
+	}
+}
+
+// TestSupersedeDependentClaimability proves that superseding a task re-gates
+// dependents so they are claimable only when the NEW task is done, not the old.
+func TestSupersedeDependentClaimability(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create: oldTask <- dependent
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Old Task", Spec: "Spec", DocumentID: doc.ID},
+		{Title: "Dependent Task", Spec: "Spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	oldTask := tasks[0]
+	dependent := tasks[1]
+
+	// Set dependent -> oldTask
+	_, err = store.UpdateTaskDependsOn(ctx, dependent.ID, []string{oldTask.ID})
+	if err != nil {
+		t.Fatalf("failed to set dependency: %v", err)
+	}
+
+	// Promote dependent to ready (but it's not claimable yet because oldTask is not done)
+	_, err = store.PromoteTask(ctx, dependent.ID)
+	if err != nil {
+		t.Fatalf("failed to promote dependent: %v", err)
+	}
+
+	// Verify initial state: dependent is NOT claimable (oldTask is not done)
+	claimableBefore, err := store.ListTasks(ctx, proj.ID, TaskListFilter{Claimable: true})
+	if err != nil {
+		t.Fatalf("failed to list claimable tasks: %v", err)
+	}
+	for _, task := range claimableBefore {
+		if task.ID == dependent.ID {
+			t.Errorf("expected dependent to not be claimable before oldTask is done")
+		}
+	}
+
+	// Supersede oldTask
+	newTask, err := store.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+
+	// Verify dependent now depends on newTask (re-gated)
+	dependentAfterSupersede, err := store.GetTask(ctx, dependent.ID)
+	if err != nil {
+		t.Fatalf("failed to get dependent after supersede: %v", err)
+	}
+	if len(dependentAfterSupersede.DependsOn) != 1 || dependentAfterSupersede.DependsOn[0] != newTask.ID {
+		t.Errorf("expected dependent to depend on newTask, got %v", dependentAfterSupersede.DependsOn)
+	}
+
+	// Dependent should still NOT be claimable (newTask is not done yet)
+	claimableAfterSupersede1, err := store.ListTasks(ctx, proj.ID, TaskListFilter{Claimable: true})
+	if err != nil {
+		t.Fatalf("failed to list claimable tasks: %v", err)
+	}
+	for _, task := range claimableAfterSupersede1 {
+		if task.ID == dependent.ID {
+			t.Errorf("expected dependent to not be claimable when newTask is not done")
+		}
+	}
+
+	// Transition newTask to done
+	completeTask(ctx, store.(*sqliteStore), newTask.ID, t)
+
+	// Now dependent SHOULD be claimable (newTask is done)
+	claimableAfterNewTaskDone, err := store.ListTasks(ctx, proj.ID, TaskListFilter{Claimable: true})
+	if err != nil {
+		t.Fatalf("failed to list claimable tasks: %v", err)
+	}
+	found := false
+	for _, task := range claimableAfterNewTaskDone {
+		if task.ID == dependent.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected dependent to be claimable after newTask is done")
+	}
+}
+
+// TestSupersededTaskExcludedFromListTasks proves that superseded old tasks
+// are excluded from active queries by default.
+func TestSupersededTaskExcludedFromListTasks(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create oldTask
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Old Task", Spec: "Spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	oldTask := tasks[0]
+
+	// Verify oldTask appears in ListTasks before superseding
+	listBefore, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+	found := false
+	for _, task := range listBefore {
+		if task.ID == oldTask.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected oldTask to appear in ListTasks before superseding")
+	}
+
+	// Supersede oldTask
+	newTask, err := store.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+
+	// Verify oldTask is excluded from ListTasks by default
+	listAfter, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+	for _, task := range listAfter {
+		if task.ID == oldTask.ID {
+			t.Errorf("expected oldTask to be excluded from ListTasks after superseding")
+		}
+	}
+
+	// Verify newTask appears in ListTasks
+	found = false
+	for _, task := range listAfter {
+		if task.ID == newTask.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected newTask to appear in ListTasks after superseding")
+	}
+
+	// Verify oldTask can still be retrieved by GetTask directly
+	oldTaskDirect, err := store.GetTask(ctx, oldTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get oldTask directly: %v", err)
+	}
+	if oldTaskDirect.State != "superseded" {
+		t.Errorf("expected oldTask state to be superseded, got %q", oldTaskDirect.State)
+	}
+}
+
+// TestSupersededLineageTracingWithMultipleDependents proves that lineage
+// (SupersededBy field) correctly traces to the replacement, and that
+// re-gating works for multiple dependents.
+func TestSupersededLineageTracingWithMultipleDependents(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create: oldTask <- dep1, oldTask <- dep2
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Old Task", Spec: "Spec", DocumentID: doc.ID},
+		{Title: "Dependent 1", Spec: "Spec", DocumentID: doc.ID},
+		{Title: "Dependent 2", Spec: "Spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	oldTask := tasks[0]
+	dep1 := tasks[1]
+	dep2 := tasks[2]
+
+	// Set up dependencies
+	_, err = store.UpdateTaskDependsOn(ctx, dep1.ID, []string{oldTask.ID})
+	if err != nil {
+		t.Fatalf("failed to set dep1 dependency: %v", err)
+	}
+
+	_, err = store.UpdateTaskDependsOn(ctx, dep2.ID, []string{oldTask.ID})
+	if err != nil {
+		t.Fatalf("failed to set dep2 dependency: %v", err)
+	}
+
+	// Promote dependents to ready (but not claimable yet because oldTask is not done)
+	_, err = store.PromoteTask(ctx, dep1.ID)
+	if err != nil {
+		t.Fatalf("failed to promote dep1: %v", err)
+	}
+
+	_, err = store.PromoteTask(ctx, dep2.ID)
+	if err != nil {
+		t.Fatalf("failed to promote dep2: %v", err)
+	}
+
+	// Supersede oldTask
+	newTask, err := store.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+
+	// Verify lineage: oldTask.SupersededBy == newTask.ID
+	oldTaskAfter, err := store.GetTask(ctx, oldTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get oldTask: %v", err)
+	}
+	if oldTaskAfter.SupersededBy == nil || *oldTaskAfter.SupersededBy != newTask.ID {
+		t.Errorf("expected oldTask.SupersededBy to be %s, got %v", newTask.ID, oldTaskAfter.SupersededBy)
+	}
+
+	// Verify both dependents are re-gated to newTask
+	dep1After, err := store.GetTask(ctx, dep1.ID)
+	if err != nil {
+		t.Fatalf("failed to get dep1: %v", err)
+	}
+	if len(dep1After.DependsOn) != 1 || dep1After.DependsOn[0] != newTask.ID {
+		t.Errorf("expected dep1 to depend on newTask, got %v", dep1After.DependsOn)
+	}
+
+	dep2After, err := store.GetTask(ctx, dep2.ID)
+	if err != nil {
+		t.Fatalf("failed to get dep2: %v", err)
+	}
+	if len(dep2After.DependsOn) != 1 || dep2After.DependsOn[0] != newTask.ID {
+		t.Errorf("expected dep2 to depend on newTask, got %v", dep2After.DependsOn)
+	}
+
+	// Verify claimability for both dependents only when newTask is done
+	claimableBefore, err := store.ListTasks(ctx, proj.ID, TaskListFilter{Claimable: true})
+	if err != nil {
+		t.Fatalf("failed to list claimable tasks: %v", err)
+	}
+	for _, task := range claimableBefore {
+		if task.ID == dep1.ID || task.ID == dep2.ID {
+			t.Errorf("expected dependents to not be claimable when newTask is not done")
+		}
+	}
+
+	// Transition newTask to done
+	completeTask(ctx, store.(*sqliteStore), newTask.ID, t)
+
+	// Now both dependents should be claimable
+	claimableAfter, err := store.ListTasks(ctx, proj.ID, TaskListFilter{Claimable: true})
+	if err != nil {
+		t.Fatalf("failed to list claimable tasks: %v", err)
+	}
+	dep1Found := false
+	dep2Found := false
+	for _, task := range claimableAfter {
+		if task.ID == dep1.ID {
+			dep1Found = true
+		}
+		if task.ID == dep2.ID {
+			dep2Found = true
+		}
+	}
+	if !dep1Found {
+		t.Errorf("expected dep1 to be claimable after newTask is done")
+	}
+	if !dep2Found {
+		t.Errorf("expected dep2 to be claimable after newTask is done")
+	}
+}
