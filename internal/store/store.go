@@ -521,20 +521,22 @@ type TaskWithDepsAndLinks struct {
 
 // TaskListFilter contains filters for listing tasks.
 type TaskListFilter struct {
-	State           *string
-	Assignee        *string
-	Model           *string
-	Kind            *string
-	Claimable       bool
-	IncludeArchived bool
+	State             *string
+	Assignee          *string
+	Model             *string
+	Kind              *string
+	Claimable         bool
+	IncludeArchived   bool
+	IncludeSuperseded bool
 }
 
 // ProjectListFilter contains filters for listing projects.
 type ProjectListFilter struct {
-	Model           *string
-	Kind            *string
-	Claimable       bool
-	IncludeArchived bool
+	Model             *string
+	Kind              *string
+	Claimable         bool
+	IncludeArchived   bool
+	IncludeSuperseded bool
 }
 
 // Event represents an audit/event log entry.
@@ -678,10 +680,14 @@ func (s *sqliteStore) ListProjects(ctx context.Context, filter ProjectListFilter
 	whereAdded := false
 
 	if filter.Claimable {
+		supersededCondition := ""
+		if !filter.IncludeSuperseded {
+			supersededCondition = ` AND state != 'superseded'`
+		}
 		query += ` WHERE EXISTS (
 			SELECT 1 FROM task
 			WHERE task.project_id = project.id
-			AND archived_at IS NULL
+			AND archived_at IS NULL` + supersededCondition + `
 			AND ` + claimableSQL
 		args = append(args, nowTimestamp())
 		whereAdded = true
@@ -1126,6 +1132,10 @@ func (s *sqliteStore) ListTasks(ctx context.Context, projectID string, filter Ta
 
 	if !filter.IncludeArchived {
 		query += ` AND archived_at IS NULL`
+	}
+
+	if !filter.IncludeSuperseded {
+		query += ` AND state != 'superseded'`
 	}
 
 	if filter.State != nil {

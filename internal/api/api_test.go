@@ -3896,3 +3896,117 @@ func TestSupersedTaskRequiresAuth(t *testing.T) {
 		t.Errorf("expected status 401, got %d", supersedeW.Code)
 	}
 }
+
+// TestListTasksWithIncludeSupersededFilter verifies that superseded tasks are excluded by default
+// but can be included with the include_superseded filter.
+func TestListTasksWithIncludeSupersededFilter(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a task
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task to Supersede",
+			Spec:       "Test specification",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	oldTaskID := createdTasks[0].ID
+
+	// Verify old task appears in list before superseding
+	listReq1 := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks", nil)
+	listReq1.Header.Set("Authorization", authHeader)
+	listW1 := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW1, listReq1)
+
+	var listBefore []store.Task
+	json.NewDecoder(listW1.Body).Decode(&listBefore)
+	found := false
+	for _, task := range listBefore {
+		if task.ID == oldTaskID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected oldTask to appear in list before superseding")
+	}
+
+	// Supersede the task
+	supersedePayload := map[string]interface{}{}
+	supersedeBody, _ := json.Marshal(supersedePayload)
+	supersedeReq := httptest.NewRequest("POST", "/tasks/"+oldTaskID+"/supersede", bytes.NewReader(supersedeBody))
+	supersedeReq.Header.Set("Authorization", authHeader)
+	supersedeReq.Header.Set("Content-Type", "application/json")
+	supersedeW := httptest.NewRecorder()
+	server.mux.ServeHTTP(supersedeW, supersedeReq)
+
+	if supersedeW.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d", supersedeW.Code)
+	}
+
+	var newTask store.Task
+	json.NewDecoder(supersedeW.Body).Decode(&newTask)
+
+	// Verify old task is excluded from list by default
+	listReq2 := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks", nil)
+	listReq2.Header.Set("Authorization", authHeader)
+	listW2 := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW2, listReq2)
+
+	var listAfter []store.Task
+	json.NewDecoder(listW2.Body).Decode(&listAfter)
+	for _, task := range listAfter {
+		if task.ID == oldTaskID {
+			t.Errorf("expected oldTask to be excluded from list after superseding")
+		}
+	}
+
+	// Verify new task appears in list
+	found = false
+	for _, task := range listAfter {
+		if task.ID == newTask.ID {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected newTask to appear in list after superseding")
+	}
+
+	// Verify old task can be included with include_superseded=true
+	listReq3 := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?include_superseded=true", nil)
+	listReq3.Header.Set("Authorization", authHeader)
+	listW3 := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW3, listReq3)
+
+	var listWithSuperseded []store.Task
+	json.NewDecoder(listW3.Body).Decode(&listWithSuperseded)
+	found = false
+	for _, task := range listWithSuperseded {
+		if task.ID == oldTaskID {
+			found = true
+			if task.State != "superseded" {
+				t.Errorf("expected oldTask state to be superseded, got %q", task.State)
+			}
+			if task.SupersededBy == nil || *task.SupersededBy != newTask.ID {
+				t.Errorf("expected oldTask.SupersededBy to be %s, got %v", newTask.ID, task.SupersededBy)
+			}
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected oldTask to appear in list with include_superseded=true")
+	}
+}

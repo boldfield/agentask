@@ -220,6 +220,10 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 		filter.IncludeArchived = true
 	}
 
+	if includeSuperseded := r.URL.Query().Get("include_superseded"); includeSuperseded == "true" {
+		filter.IncludeSuperseded = true
+	}
+
 	projects, err := s.store.ListProjects(r.Context(), filter)
 	if err != nil {
 		s.errorResponse(w, http.StatusInternalServerError, "LIST_ERROR", "Failed to list projects")
@@ -389,6 +393,10 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 
 	if includeArchived := r.URL.Query().Get("include_archived"); includeArchived == "true" {
 		filter.IncludeArchived = true
+	}
+
+	if includeSuperseded := r.URL.Query().Get("include_superseded"); includeSuperseded == "true" {
+		filter.IncludeSuperseded = true
 	}
 
 	tasks, err := s.store.ListTasks(r.Context(), projectID, filter)
