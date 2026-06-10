@@ -135,8 +135,8 @@ func TestMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations: %v", err)
 	}
-	if migrationCount != 9 {
-		t.Errorf("expected 9 migrations to be recorded, but got %d", migrationCount)
+	if migrationCount != 10 {
+		t.Errorf("expected 10 migrations to be recorded, but got %d", migrationCount)
 	}
 
 	// Verify idempotency: re-open the same database and it should work
@@ -151,8 +151,8 @@ func TestMigrations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after re-open: %v", err)
 	}
-	if migrationCount != 9 {
-		t.Errorf("expected 9 migrations after re-open (idempotency), but got %d", migrationCount)
+	if migrationCount != 10 {
+		t.Errorf("expected 10 migrations after re-open (idempotency), but got %d", migrationCount)
 	}
 }
 
@@ -248,8 +248,8 @@ func TestOpenSamePath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to count migrations after second open: %v", err)
 	}
-	if migrationCount != 9 {
-		t.Errorf("expected 9 migrations after second open, but got %d", migrationCount)
+	if migrationCount != 10 {
+		t.Errorf("expected 10 migrations after second open, but got %d", migrationCount)
 	}
 }
 
@@ -6143,5 +6143,104 @@ func TestSupersededLineageTracingWithMultipleDependents(t *testing.T) {
 	}
 	if !dep2Found {
 		t.Errorf("expected dep2 to be claimable after newTask is done")
+	}
+}
+
+// TestTaskEscalateFlag verifies that the escalate flag defaults to true and can be set to false.
+func TestTaskEscalateFlag(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "test-project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Test 1: Default escalate=true
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 1", Spec: "Spec 1", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task 1: %v", err)
+	}
+
+	task1, err := store.GetTask(ctx, tasks[0].ID)
+	if err != nil {
+		t.Fatalf("failed to get task 1: %v", err)
+	}
+	if !task1.Escalate {
+		t.Errorf("expected escalate=true by default, got %v", task1.Escalate)
+	}
+
+	// Test 2: Create with escalate=false
+	escalateFalse := false
+	tasks2, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 2", Spec: "Spec 2", DocumentID: doc.ID, Escalate: &escalateFalse},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task 2: %v", err)
+	}
+
+	task2, err := store.GetTask(ctx, tasks2[0].ID)
+	if err != nil {
+		t.Fatalf("failed to get task 2: %v", err)
+	}
+	if task2.Escalate {
+		t.Errorf("expected escalate=false, got %v", task2.Escalate)
+	}
+
+	// Test 3: Create with escalate=true (explicit)
+	escalateTrue := true
+	tasks3, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 3", Spec: "Spec 3", DocumentID: doc.ID, Escalate: &escalateTrue},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task 3: %v", err)
+	}
+
+	task3, err := store.GetTask(ctx, tasks3[0].ID)
+	if err != nil {
+		t.Fatalf("failed to get task 3: %v", err)
+	}
+	if !task3.Escalate {
+		t.Errorf("expected escalate=true (explicit), got %v", task3.Escalate)
+	}
+
+	// Test 4: ListTasks includes escalate field
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	found := map[string]bool{}
+	for _, task := range allTasks {
+		if task.ID == task1.ID {
+			found["task1"] = task.Escalate
+		}
+		if task.ID == task2.ID {
+			found["task2"] = !task.Escalate
+		}
+		if task.ID == task3.ID {
+			found["task3"] = task.Escalate
+		}
+	}
+
+	if !found["task1"] {
+		t.Errorf("task1 escalate should be true")
+	}
+	if !found["task2"] {
+		t.Errorf("task2 escalate should be false")
+	}
+	if !found["task3"] {
+		t.Errorf("task3 escalate should be true")
 	}
 }
