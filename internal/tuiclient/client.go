@@ -25,6 +25,7 @@ type Client interface {
 	ReviewTask(ctx context.Context, id, actor, verdict string, note *string) error
 	TransitionTask(ctx context.Context, id, to string, note *string) error
 	HeartbeatTask(ctx context.Context, id, agentID string) error
+	SubmitTask(ctx context.Context, id, agentID, result string, verdict *string, links []LinkInput) error
 	HoldTask(ctx context.Context, id string) error
 	ReleaseTask(ctx context.Context, id string) error
 	ArchiveTask(ctx context.Context, id string) error
@@ -80,6 +81,11 @@ type TaskLink struct {
 	TaskID string `json:"task_id"`
 	Kind   string `json:"kind"`
 	Value  string `json:"value"`
+}
+
+type LinkInput struct {
+	Kind  string `json:"kind"`
+	Value string `json:"value"`
 }
 
 type Document struct {
@@ -441,6 +447,32 @@ func (c *HTTPClient) HeartbeatTask(ctx context.Context, id, agentID string) erro
 	}
 
 	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/heartbeat", id), body)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+
+	return nil
+}
+
+// submitTaskRequest is the request body for SubmitTask.
+type submitTaskRequest struct {
+	AgentID string      `json:"agent_id"`
+	Result  string      `json:"result"`
+	Verdict *string     `json:"verdict,omitempty"`
+	Links   []LinkInput `json:"links"`
+}
+
+// SubmitTask submits a task result with optional verdict and links.
+func (c *HTTPClient) SubmitTask(ctx context.Context, id, agentID, result string, verdict *string, links []LinkInput) error {
+	body := submitTaskRequest{
+		AgentID: agentID,
+		Result:  result,
+		Verdict: verdict,
+		Links:   links,
+	}
+
+	resp, err := c.do(ctx, "POST", fmt.Sprintf("/tasks/%s/submit", id), body)
 	if err != nil {
 		return err
 	}

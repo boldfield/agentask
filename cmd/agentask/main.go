@@ -134,6 +134,11 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "transition":
+		if err := executeTransition(ctx, baseURL, token, args); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	case "claim":
 		if err := executeClaim(ctx, baseURL, token, args); err != nil {
 			var claimErr *claimError
@@ -219,6 +224,61 @@ func executeHeartbeat(ctx context.Context, baseURL, token string, args []string)
 	// Create client and heartbeat
 	client := tuiclient.NewHTTPClient(baseURL, token)
 	return client.HeartbeatTask(ctx, taskID, agentID)
+}
+
+func executeTransition(ctx context.Context, baseURL, token string, args []string) error {
+	// Validate configuration
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	// Parse arguments: id, --to state, [--note text]
+	if len(args) < 1 {
+		return fmt.Errorf("missing task id")
+	}
+
+	taskID := args[0]
+	var toState string
+	var note *string
+	var i int
+
+	// Parse remaining arguments for --to and --note
+	for i = 1; i < len(args); i++ {
+		switch args[i] {
+		case "--to":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--to requires a value")
+			}
+			toState = args[i]
+		case "--note":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--note requires a value")
+			}
+			note = &args[i]
+		case "--json":
+			// Skip --json flag, already handled by runClient
+		default:
+			return fmt.Errorf("unknown flag: %s", args[i])
+		}
+	}
+
+	// Validate required --to flag
+	if toState == "" {
+		return fmt.Errorf("--to flag is required")
+	}
+
+	// Create client and transition task
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	if err := client.TransitionTask(ctx, taskID, toState, note); err != nil {
+		return fmt.Errorf("failed to transition task: %w", err)
+	}
+
+	return nil
 }
 
 func executeClaim(ctx context.Context, baseURL, token string, args []string) error {

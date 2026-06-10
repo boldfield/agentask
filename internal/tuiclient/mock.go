@@ -16,6 +16,7 @@ type MockClient struct {
 	ReviewTaskFunc     func(ctx context.Context, id, actor, verdict string, note *string) error
 	TransitionTaskFunc func(ctx context.Context, id, to string, note *string) error
 	HeartbeatTaskFunc  func(ctx context.Context, id, agentID string) error
+	SubmitTaskFunc     func(ctx context.Context, id, agentID, result string, verdict *string, links []LinkInput) error
 	HoldTaskFunc       func(ctx context.Context, id string) error
 	ReleaseTaskFunc    func(ctx context.Context, id string) error
 	ArchiveTaskFunc    func(ctx context.Context, id string) error
@@ -77,6 +78,13 @@ func (m *MockClient) TransitionTask(ctx context.Context, id, to string, note *st
 func (m *MockClient) HeartbeatTask(ctx context.Context, id, agentID string) error {
 	if m.HeartbeatTaskFunc != nil {
 		return m.HeartbeatTaskFunc(ctx, id, agentID)
+	}
+	return nil
+}
+
+func (m *MockClient) SubmitTask(ctx context.Context, id, agentID, result string, verdict *string, links []LinkInput) error {
+	if m.SubmitTaskFunc != nil {
+		return m.SubmitTaskFunc(ctx, id, agentID, result, verdict, links)
 	}
 	return nil
 }
