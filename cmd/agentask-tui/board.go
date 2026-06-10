@@ -216,6 +216,14 @@ type projectArchiveMsg struct {
 	err      string
 }
 
+// prResolvedMsg is returned when a PR is resolved from a deterministic branch.
+// It carries the resolved PR URL and task ID, or an error string.
+type prResolvedMsg struct {
+	taskID string
+	prURL  string
+	err    string
+}
+
 // reviewApprove creates a command that calls ReviewTask(approve) then TransitionTask(done),
 // in that order. If ReviewTask fails, TransitionTask is not called. Both calls use note,
 // which may be nil. fromDetail records whether the action was initiated from the detail view
@@ -325,6 +333,32 @@ func (m *BoardModel) mergePRCmd(taskID string, prURL string, fromDetail bool) te
 		msg := m.fetchTasksInline(ctx, "")
 		msg.fromDetail = fromDetail
 		return msg
+	}
+}
+
+// resolvePRAndMerge creates a command that resolves a PR from the deterministic branch.
+// It returns a prResolvedMsg with either the resolved PR URL or an error.
+func (m *BoardModel) resolvePRAndMerge(taskID string) tea.Cmd {
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+
+		// Extract owner and repo from the project's repo URL.
+		owner, repo, err := extractGitHubOwnerRepo(m.project.Repo)
+		if err != nil {
+			return prResolvedMsg{taskID: taskID, err: fmt.Sprintf("cannot resolve PR: %v", err)}
+		}
+
+		// Build the deterministic branch name.
+		branch := "mr/" + taskID[:8]
+
+		// Resolve the PR URL from the branch.
+		prURL, err := findOpenPRURL(ctx, owner, repo, branch)
+		if err != nil {
+			return prResolvedMsg{taskID: taskID, err: fmt.Sprintf("no PR found on branch %s: %v", branch, err)}
+		}
+
+		return prResolvedMsg{taskID: taskID, prURL: prURL}
 	}
 }
 
@@ -894,6 +928,24 @@ func (m *BoardModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.detailMessage = msg.message
 		return m, nil
 
+	case prResolvedMsg:
+		if msg.err != "" {
+			m.detailMessage = msg.err
+			return m, nil
+		}
+		// Enter merge confirm mode with the resolved PR.
+		m.pendingTaskID = msg.taskID
+		m.pendingPRURL = msg.prURL
+		m.reviewFromDetail = true
+		m.reviewInput.Placeholder = fmt.Sprintf("merge %s and complete? [y/N]", msg.prURL)
+		m.reviewInput.SetValue("")
+		m.reviewInput.Focus()
+		m.inputHint = ""
+		m.mode = modeMergeConfirm
+		var cmd tea.Cmd
+		m.reviewInput, cmd = m.reviewInput.Update(nil)
+		return m, cmd
+
 	case promoteErrorMsg:
 		m.error = msg.err
 		return m, nil
@@ -1070,9 +1122,9 @@ func (m *BoardModel) updateDetailMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				}
 			}
 
+			// If no PR link, try to resolve from the deterministic branch.
 			if prURL == "" {
-				m.detailMessage = "no PR link on this task; cannot merge"
-				return m, nil
+				return m, m.resolvePRAndMerge(m.detailTask.ID)
 			}
 
 			m.pendingTaskID = m.detailTask.ID

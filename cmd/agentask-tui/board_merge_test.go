@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"os/exec"
 	"strings"
 	"testing"
 	"time"
@@ -40,7 +41,7 @@ func buildApprovedModel(t *testing.T, approvedClient *tuiclient.MockClient) *Boa
 		Actor:        "reviewer-bot",
 		PollInterval: 100 * time.Millisecond,
 	}
-	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+	project := tuiclient.Project{ID: "project-1", Name: "Test", Repo: "https://github.com/boldfield/agentask"}
 
 	model := NewBoardModel(approvedClient, config, project)
 	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
@@ -119,8 +120,26 @@ func TestBoardModel_MergePRConfirmFlow(t *testing.T) {
 }
 
 // TestBoardModel_MergePRNoPRLink tests that pressing 'm' on an approved task with no PR link
-// shows a clear message.
+// tries to resolve from the branch and shows an error if not found.
 func TestBoardModel_MergePRNoPRLink(t *testing.T) {
+	// Save and mock the command functions
+	oldCommandContextFunc := commandContextFunc
+	oldLookPathFunc := lookPathFunc
+	defer func() {
+		commandContextFunc = oldCommandContextFunc
+		lookPathFunc = oldLookPathFunc
+	}()
+
+	// Mock lookPathFunc to simulate gh being available
+	lookPathFunc = func(file string) (string, error) {
+		return "/usr/bin/gh", nil
+	}
+
+	// Mock commandContextFunc to return empty PR list
+	commandContextFunc = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		return exec.Command("echo", `[]`)
+	}
+
 	mockClient := &tuiclient.MockClient{
 		GetTaskFunc: func(ctx context.Context, taskID string) (tuiclient.TaskDetail, error) {
 			return tuiclient.TaskDetail{
@@ -145,16 +164,20 @@ func TestBoardModel_MergePRNoPRLink(t *testing.T) {
 	// Execute the detail fetch command to load the task detail.
 	model = executeReviewCmd(t, model, detailCmd)
 
-	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
+	m, resolveCmd := model.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'m'}})
 	model = m.(*BoardModel)
 
-	// Should stay in detail mode with an error message.
+	// Should return a command to resolve the PR.
+	// Execute the resolve command (which will try to find the PR and fail).
+	model = executeReviewCmd(t, model, resolveCmd)
+
+	// Should stay in detail mode with an error message containing "no PR".
 	if model.mode != modeDetail {
 		t.Fatalf("Expected modeDetail (merge not initiated), got mode %d", model.mode)
 	}
 
-	if !strings.Contains(model.detailMessage, "no PR link") {
-		t.Errorf("Expected 'no PR link' message, got %q", model.detailMessage)
+	if !strings.Contains(model.detailMessage, "no PR") {
+		t.Errorf("Expected 'no PR' message in %q", model.detailMessage)
 	}
 }
 
