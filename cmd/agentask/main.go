@@ -194,27 +194,26 @@ func executeHeartbeat(ctx context.Context, baseURL, token string, args []string)
 		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
 	}
 
-	// Parse flags
-	fs := flag.NewFlagSet("heartbeat", flag.ContinueOnError)
-	fs.SetOutput(io.Discard)
-	agentFlag := fs.String("agent", "", "agent ID")
-	if err := fs.Parse(args); err != nil {
-		return fmt.Errorf("failed to parse flags: %w", err)
+	var taskID, agentFlag string
+
+	// Manually parse arguments: support both "task [--agent id]" and "[--agent id] task" orders
+	for i := 0; i < len(args); i++ {
+		if args[i] == "--agent" && i+1 < len(args) {
+			agentFlag = args[i+1]
+			i++
+		} else if !strings.HasPrefix(args[i], "--") && taskID == "" {
+			taskID = args[i]
+		}
 	}
 
-	// Get positional argument (task ID)
-	if fs.NArg() < 1 {
+	if taskID == "" {
 		return fmt.Errorf("task ID is required")
 	}
-	taskID := fs.Arg(0)
 
 	// Resolve agent ID
-	agentID := *agentFlag
-	if agentID == "" {
-		agentID = os.Getenv("AGENT_ID")
-	}
-	if agentID == "" {
-		return fmt.Errorf("agent ID is required (set --agent flag or AGENT_ID environment variable)")
+	agentID, err := resolveAgentID(agentFlag)
+	if err != nil {
+		return err
 	}
 
 	// Create client and heartbeat
@@ -280,6 +279,17 @@ func parseAllowedModels(modelsStr string) []string {
 		}
 	}
 	return result
+}
+
+func resolveAgentID(agentFlag string) (string, error) {
+	agentID := agentFlag
+	if agentID == "" {
+		agentID = os.Getenv("AGENT_ID")
+	}
+	if agentID == "" {
+		return "", fmt.Errorf("agent ID is required (set --agent flag or AGENT_ID environment variable)")
+	}
+	return agentID, nil
 }
 
 func resolveAgentIdentity(agentFlag, modelFlag string) (agentID, model string, err error) {
