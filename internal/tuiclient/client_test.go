@@ -21,6 +21,10 @@ func TestListProjects(t *testing.T) {
 		if r.URL.Path != "/projects" {
 			t.Errorf("expected /projects, got %s", r.URL.Path)
 		}
+		// No query params should be present
+		if r.URL.RawQuery != "" {
+			t.Errorf("expected no query params, got %s", r.URL.RawQuery)
+		}
 
 		// Check authorization header
 		auth := r.Header.Get("Authorization")
@@ -53,6 +57,150 @@ func TestListProjects(t *testing.T) {
 
 	if projects[0].ID != "proj1" {
 		t.Errorf("expected ID proj1, got %s", projects[0].ID)
+	}
+}
+
+func TestListProjectsWithFilters(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/projects" {
+			t.Errorf("expected /projects, got %s", r.URL.Path)
+		}
+		// Verify query params contain all filters
+		query := r.URL.Query()
+		if query.Get("model") != "haiku" {
+			t.Errorf("expected model=haiku, got %s", query.Get("model"))
+		}
+		if query.Get("kind") != "implement" {
+			t.Errorf("expected kind=implement, got %s", query.Get("kind"))
+		}
+		if query.Get("claimable") != "true" {
+			t.Errorf("expected claimable=true, got %s", query.Get("claimable"))
+		}
+
+		// Write response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		projects := []Project{
+			{ID: "proj2", Name: "Project 2", Repo: "repo2", CreatedAt: "2024-01-01T00:00:00Z"},
+		}
+		json.NewEncoder(w).Encode(projects)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test with all filters
+	projects, err := client.ListProjects(context.Background(),
+		WithProjectModel("haiku"),
+		WithProjectKind("implement"),
+		WithProjectClaimable(true),
+	)
+	if err != nil {
+		t.Fatalf("ListProjects with filters failed: %v", err)
+	}
+
+	if len(projects) != 1 {
+		t.Errorf("expected 1 project, got %d", len(projects))
+	}
+
+	if projects[0].ID != "proj2" {
+		t.Errorf("expected ID proj2, got %s", projects[0].ID)
+	}
+}
+
+func TestListProjectsWithPartialFilters(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/projects" {
+			t.Errorf("expected /projects, got %s", r.URL.Path)
+		}
+		// Verify only set filters appear in query params
+		query := r.URL.Query()
+		if query.Get("model") != "opus" {
+			t.Errorf("expected model=opus, got %s", query.Get("model"))
+		}
+		if query.Get("kind") != "" {
+			t.Errorf("expected no kind filter, got %s", query.Get("kind"))
+		}
+		if query.Get("claimable") != "true" {
+			t.Errorf("expected claimable=true, got %s", query.Get("claimable"))
+		}
+
+		// Write response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode([]Project{})
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test with only model and claimable filters
+	_, err := client.ListProjects(context.Background(),
+		WithProjectModel("opus"),
+		WithProjectClaimable(true),
+	)
+	if err != nil {
+		t.Fatalf("ListProjects with partial filters failed: %v", err)
+	}
+}
+
+func TestGetProject(t *testing.T) {
+	// Create a test server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Verify request
+		if r.Method != "GET" {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		if r.URL.Path != "/projects/proj123" {
+			t.Errorf("expected /projects/proj123, got %s", r.URL.Path)
+		}
+
+		// Check authorization header
+		auth := r.Header.Get("Authorization")
+		if auth != "Bearer testtoken" {
+			t.Errorf("expected Bearer testtoken, got %s", auth)
+		}
+
+		// Write response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		project := Project{
+			ID:        "proj123",
+			Name:      "Test Project",
+			Repo:      "test-repo",
+			CreatedAt: "2024-01-01T00:00:00Z",
+		}
+		json.NewEncoder(w).Encode(project)
+	}))
+	defer server.Close()
+
+	// Create client
+	client := NewHTTPClient(server.URL, "testtoken")
+
+	// Test
+	project, err := client.GetProject(context.Background(), "proj123")
+	if err != nil {
+		t.Fatalf("GetProject failed: %v", err)
+	}
+
+	if project.ID != "proj123" {
+		t.Errorf("expected ID proj123, got %s", project.ID)
+	}
+
+	if project.Name != "Test Project" {
+		t.Errorf("expected Name 'Test Project', got %s", project.Name)
 	}
 }
 

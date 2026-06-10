@@ -15,7 +15,8 @@ var ErrAlreadyClaimed = errors.New("task already claimed")
 
 // Client is the interface for TUI interactions with the Agentask API.
 type Client interface {
-	ListProjects(ctx context.Context) ([]Project, error)
+	ListProjects(ctx context.Context, options ...ProjectListOption) ([]Project, error)
+	GetProject(ctx context.Context, id string) (Project, error)
 	ListTasks(ctx context.Context, projectID string, options ...TaskListOption) ([]Task, error)
 	GetTask(ctx context.Context, id string) (TaskDetail, error)
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
@@ -208,9 +209,62 @@ func (c *HTTPClient) do(ctx context.Context, method, path string, body interface
 	return resp, nil
 }
 
-// ListProjects fetches all projects.
-func (c *HTTPClient) ListProjects(ctx context.Context) ([]Project, error) {
-	resp, err := c.do(ctx, "GET", "/projects", nil)
+// ProjectListOptions holds optional filters for ListProjects.
+type ProjectListOptions struct {
+	Model     string
+	Kind      string
+	Claimable bool
+}
+
+// ProjectListOption is a functional option for ListProjects.
+type ProjectListOption func(*ProjectListOptions)
+
+// WithProjectModel sets the model filter for projects.
+func WithProjectModel(model string) ProjectListOption {
+	return func(opts *ProjectListOptions) {
+		opts.Model = model
+	}
+}
+
+// WithProjectKind sets the kind filter for projects.
+func WithProjectKind(kind string) ProjectListOption {
+	return func(opts *ProjectListOptions) {
+		opts.Kind = kind
+	}
+}
+
+// WithProjectClaimable sets the claimable filter for projects.
+func WithProjectClaimable(claimable bool) ProjectListOption {
+	return func(opts *ProjectListOptions) {
+		opts.Claimable = claimable
+	}
+}
+
+// ListProjects fetches all projects, optionally filtered by model, kind, and claimable status.
+func (c *HTTPClient) ListProjects(ctx context.Context, options ...ProjectListOption) ([]Project, error) {
+	opts := &ProjectListOptions{}
+	for _, opt := range options {
+		opt(opts)
+	}
+
+	path := "/projects"
+	if opts.Model != "" || opts.Kind != "" || opts.Claimable {
+		var params []string
+		if opts.Model != "" {
+			params = append(params, fmt.Sprintf("model=%s", opts.Model))
+		}
+		if opts.Kind != "" {
+			params = append(params, fmt.Sprintf("kind=%s", opts.Kind))
+		}
+		if opts.Claimable {
+			params = append(params, "claimable=true")
+		}
+		if len(params) > 0 {
+			path += "?" + join(params, "&")
+		}
+	}
+
+	resp, err := c.do(ctx, "GET", path, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -222,6 +276,22 @@ func (c *HTTPClient) ListProjects(ctx context.Context) ([]Project, error) {
 	}
 
 	return projects, nil
+}
+
+// GetProject fetches a single project by ID.
+func (c *HTTPClient) GetProject(ctx context.Context, id string) (Project, error) {
+	resp, err := c.do(ctx, "GET", fmt.Sprintf("/projects/%s", id), nil)
+	if err != nil {
+		return Project{}, err
+	}
+	defer resp.Body.Close()
+
+	var project Project
+	if err := json.NewDecoder(resp.Body).Decode(&project); err != nil {
+		return Project{}, fmt.Errorf("failed to decode response: %w", err)
+	}
+
+	return project, nil
 }
 
 // TaskListOptions holds optional filters for ListTasks.
