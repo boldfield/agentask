@@ -1500,7 +1500,7 @@ func (s *sqliteStore) PromoteTask(ctx context.Context, taskID string) (Task, err
 // For known models without overrides, use built-in defaults: haiku=8, sonnet=6, opus=4.
 func thresholdFor(model string, escalationThresholds map[string]int, maxReviewRounds int) int {
 	defaults := map[string]int{"haiku": 8, "sonnet": 6, "opus": 4}
-	if escalationThresholds != nil && len(escalationThresholds) > 0 {
+	if len(escalationThresholds) > 0 {
 		if threshold, ok := escalationThresholds[model]; ok {
 			return threshold
 		}

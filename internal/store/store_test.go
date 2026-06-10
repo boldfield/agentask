@@ -3108,60 +3108,60 @@ func TestReviewRoundCircuitBreaker(t *testing.T) {
 // TestThresholdFor tests the thresholdFor function for per-model escalation thresholds.
 func TestThresholdFor(t *testing.T) {
 	tests := []struct {
-		name                   string
-		model                  string
-		escalationThresholds   map[string]int
-		maxReviewRounds        int
-		expectedThreshold      int
+		name                 string
+		model                string
+		escalationThresholds map[string]int
+		maxReviewRounds      int
+		expectedThreshold    int
 	}{
 		{
-			name:              "haiku default threshold",
-			model:             "haiku",
+			name:                 "haiku default threshold",
+			model:                "haiku",
 			escalationThresholds: nil,
-			maxReviewRounds:    5,
-			expectedThreshold: 8,
+			maxReviewRounds:      5,
+			expectedThreshold:    8,
 		},
 		{
-			name:              "sonnet default threshold",
-			model:             "sonnet",
+			name:                 "sonnet default threshold",
+			model:                "sonnet",
 			escalationThresholds: nil,
-			maxReviewRounds:    5,
-			expectedThreshold: 6,
+			maxReviewRounds:      5,
+			expectedThreshold:    6,
 		},
 		{
-			name:              "opus default threshold",
-			model:             "opus",
+			name:                 "opus default threshold",
+			model:                "opus",
 			escalationThresholds: nil,
-			maxReviewRounds:    5,
-			expectedThreshold: 4,
+			maxReviewRounds:      5,
+			expectedThreshold:    4,
 		},
 		{
-			name:              "unknown model falls back to maxReviewRounds",
-			model:             "claude",
+			name:                 "unknown model falls back to maxReviewRounds",
+			model:                "claude",
 			escalationThresholds: nil,
-			maxReviewRounds:    5,
-			expectedThreshold: 5,
+			maxReviewRounds:      5,
+			expectedThreshold:    5,
 		},
 		{
-			name:              "override haiku default with custom threshold",
-			model:             "haiku",
+			name:                 "override haiku default with custom threshold",
+			model:                "haiku",
 			escalationThresholds: map[string]int{"haiku": 3},
-			maxReviewRounds:    5,
-			expectedThreshold: 3,
+			maxReviewRounds:      5,
+			expectedThreshold:    3,
 		},
 		{
-			name:              "custom thresholds for all models",
-			model:             "sonnet",
+			name:                 "custom thresholds for all models",
+			model:                "sonnet",
 			escalationThresholds: map[string]int{"haiku": 10, "sonnet": 7, "opus": 5},
-			maxReviewRounds:    5,
-			expectedThreshold: 7,
+			maxReviewRounds:      5,
+			expectedThreshold:    7,
 		},
 		{
-			name:              "unknown model with custom thresholds falls back to maxReviewRounds",
-			model:             "claude",
+			name:                 "unknown model with custom thresholds falls back to maxReviewRounds",
+			model:                "claude",
 			escalationThresholds: map[string]int{"haiku": 10, "sonnet": 7},
-			maxReviewRounds:    5,
-			expectedThreshold: 5,
+			maxReviewRounds:      5,
+			expectedThreshold:    5,
 		},
 	}
 
