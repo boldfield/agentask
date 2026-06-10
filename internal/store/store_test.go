@@ -5260,3 +5260,120 @@ func TestListDependents(t *testing.T) {
 		t.Errorf("expected 0 dependents for task B, got %d", len(dependentsB))
 	}
 }
+
+// TestSetTaskDepends verifies that setTaskDepends correctly replaces a task's dependencies within a transaction.
+func TestSetTaskDepends(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create tasks: A, B, C, D (B initially depends on A)
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Key: "task-a", Title: "Task A", Spec: "Spec A", DocumentID: doc.ID},
+		{Title: "Task B", Spec: "Spec B", DocumentID: doc.ID, DependsOn: []string{"task-a"}},
+		{Key: "task-c", Title: "Task C", Spec: "Spec C", DocumentID: doc.ID},
+		{Key: "task-d", Title: "Task D", Spec: "Spec D", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	taskA := tasks[0]
+	taskB := tasks[1]
+	taskC := tasks[2]
+	taskD := tasks[3]
+
+	// Verify initial state: B depends on A
+	taskBWithDeps, err := store.GetTask(ctx, taskB.ID)
+	if err != nil {
+		t.Fatalf("failed to get task B: %v", err)
+	}
+	if len(taskBWithDeps.DependsOn) != 1 || taskBWithDeps.DependsOn[0] != taskA.ID {
+		t.Errorf("expected B to depend on A, got %v", taskBWithDeps.DependsOn)
+	}
+
+	// Use setTaskDepends to change B's dependencies from [A] to [C, D]
+	tx, err := store.Conn().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("failed to begin transaction: %v", err)
+	}
+	defer tx.Rollback()
+
+	err = store.(*sqliteStore).setTaskDepends(ctx, tx, taskB.ID, []string{taskC.ID, taskD.ID})
+	if err != nil {
+		t.Fatalf("failed to set task depends: %v", err)
+	}
+
+	err = tx.Commit()
+	if err != nil {
+		t.Fatalf("failed to commit transaction: %v", err)
+	}
+
+	// Verify the change: B should now depend on C and D
+	taskBAfter, err := store.GetTask(ctx, taskB.ID)
+	if err != nil {
+		t.Fatalf("failed to get task B after update: %v", err)
+	}
+
+	if len(taskBAfter.DependsOn) != 2 {
+		t.Errorf("expected B to have 2 dependencies, got %d", len(taskBAfter.DependsOn))
+	}
+
+	// Check that both C and D are in the dependencies
+	depSet := make(map[string]bool)
+	for _, id := range taskBAfter.DependsOn {
+		depSet[id] = true
+	}
+
+	if !depSet[taskC.ID] {
+		t.Errorf("expected B to depend on C (%s), got %v", taskC.ID, taskBAfter.DependsOn)
+	}
+	if !depSet[taskD.ID] {
+		t.Errorf("expected B to depend on D (%s), got %v", taskD.ID, taskBAfter.DependsOn)
+	}
+
+	// Verify that A is no longer in B's dependencies
+	if depSet[taskA.ID] {
+		t.Errorf("expected A to not be in B's dependencies, but it is: %v", taskBAfter.DependsOn)
+	}
+
+	// Test replacing with an empty list (removing all dependencies)
+	tx2, err := store.Conn().BeginTx(ctx, nil)
+	if err != nil {
+		t.Fatalf("failed to begin second transaction: %v", err)
+	}
+	defer tx2.Rollback()
+
+	err = store.(*sqliteStore).setTaskDepends(ctx, tx2, taskB.ID, []string{})
+	if err != nil {
+		t.Fatalf("failed to clear dependencies: %v", err)
+	}
+
+	err = tx2.Commit()
+	if err != nil {
+		t.Fatalf("failed to commit second transaction: %v", err)
+	}
+
+	// Verify that B has no dependencies
+	taskBEmpty, err := store.GetTask(ctx, taskB.ID)
+	if err != nil {
+		t.Fatalf("failed to get task B after clearing: %v", err)
+	}
+
+	if len(taskBEmpty.DependsOn) != 0 {
+		t.Errorf("expected B to have 0 dependencies, got %d: %v", len(taskBEmpty.DependsOn), taskBEmpty.DependsOn)
+	}
+}
