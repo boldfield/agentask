@@ -4973,3 +4973,61 @@ func TestSubmitNoOpLinkKindAccepted(t *testing.T) {
 		t.Fatalf("expected no_op link kind to be accepted, got: %v", err)
 	}
 }
+
+// TestSuperseededByNilByDefault verifies that SupersededBy is nil by default.
+func TestSuperseededByNilByDefault(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Test spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Verify SupersededBy is nil by default
+	if tasks[0].SupersededBy != nil {
+		t.Errorf("expected SupersededBy to be nil by default, got %v", tasks[0].SupersededBy)
+	}
+
+	// Also verify via GetTask
+	taskWithDeps, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+
+	if taskWithDeps.SupersededBy != nil {
+		t.Errorf("expected SupersededBy to be nil in GetTask, got %v", taskWithDeps.SupersededBy)
+	}
+
+	// And via ListTasks
+	listTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	if len(listTasks) != 1 {
+		t.Errorf("expected 1 task, got %d", len(listTasks))
+	}
+
+	if listTasks[0].SupersededBy != nil {
+		t.Errorf("expected SupersededBy to be nil in ListTasks, got %v", listTasks[0].SupersededBy)
+	}
+}
