@@ -1878,6 +1878,7 @@ func (s *sqliteStore) AddReview(ctx context.Context, taskID, actor, verdict stri
 //   - to='ready': allowed from 'approved' or 'blocked' (blocked→ready clears stale assignee/lease)
 //   - to='blocked': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved)
 //   - to='failed': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved) or 'blocked' (retire a dead blocked task)
+//   - to='superseded': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved)
 //   - anything else: ErrConflict
 //
 // Returns the updated Task on success.
@@ -1886,9 +1887,9 @@ func (s *sqliteStore) AddReview(ctx context.Context, taskID, actor, verdict stri
 // Returns ValidationError if 'to' state is invalid.
 func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, note *string) (Task, error) {
 	// Validate 'to' state
-	validTargets := map[string]bool{"done": true, "ready": true, "blocked": true, "failed": true}
+	validTargets := map[string]bool{"done": true, "ready": true, "blocked": true, "failed": true, "superseded": true}
 	if !validTargets[to] {
-		return Task{}, invalid("INVALID_TARGET_STATE", "target state must be one of: done, ready, blocked, failed")
+		return Task{}, invalid("INVALID_TARGET_STATE", "target state must be one of: done, ready, blocked, failed, superseded")
 	}
 
 	// Strip raw control characters from the free-text note before storage.
@@ -1940,6 +1941,13 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 		// Allowed from any active state or blocked (retire a dead blocked task)
 		activeStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true, "approved": true}
 		if activeStates[taskState] || taskState == "blocked" {
+			canTransition = true
+		}
+
+	case "superseded":
+		// Allowed from any active state (backlog, ready, in_progress, review, approved)
+		activeStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true, "approved": true}
+		if activeStates[taskState] {
 			canTransition = true
 		}
 	}
