@@ -164,6 +164,16 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "next":
+		if err := executeNext(ctx, baseURL, token, jsonOutput, args); err != nil {
+			var claimErr *claimError
+			if errors.As(err, &claimErr) {
+				fmt.Fprintf(os.Stderr, "error: %v\n", claimErr.Error())
+				os.Exit(claimErr.code)
+			}
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command '%s'\n", verb)
 		os.Exit(1)
@@ -537,6 +547,92 @@ func parseAllowedModels(modelsStr string) []string {
 		}
 	}
 	return result
+}
+
+func executeNext(ctx context.Context, baseURL, token string, jsonOutput bool, args []string) error {
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	fs := flag.NewFlagSet("next", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	projectFlag := fs.String("project", "", "project ID")
+	modelFlag := fs.String("model", "", "model")
+	kindFlag := fs.String("kind", "", "kind (implement or review)")
+	claimFlag := fs.Bool("claim", false, "claim the task")
+	agentFlag := fs.String("agent", "", "agent ID")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
+	}
+
+	if *projectFlag == "" {
+		return fmt.Errorf("--project flag is required")
+	}
+	if *modelFlag == "" {
+		return fmt.Errorf("--model flag is required")
+	}
+	if *kindFlag == "" {
+		return fmt.Errorf("--kind flag is required")
+	}
+
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	tasks, err := client.ListTasks(ctx, *projectFlag,
+		tuiclient.WithModel(*modelFlag),
+		tuiclient.WithKind(*kindFlag),
+		tuiclient.WithClaimable(true),
+	)
+	if err != nil {
+		return fmt.Errorf("failed to list tasks: %w", err)
+	}
+
+	if len(tasks) == 0 {
+		return &claimError{message: "nothing claimable", code: 2}
+	}
+
+	task := tasks[0]
+
+	if *claimFlag {
+		agentID, model, err := resolveAgentIdentity(*agentFlag, *modelFlag)
+		if err != nil {
+			return err
+		}
+
+		if err := client.ClaimTask(ctx, task.ID, agentID, model); err != nil {
+			if errors.Is(err, tuiclient.ErrAlreadyClaimed) {
+				return &claimError{message: "raced, none claimed", code: 2}
+			}
+			return err
+		}
+
+		if jsonOutput {
+			task, err := client.GetTask(ctx, task.ID)
+			if err != nil {
+				return fmt.Errorf("failed to get task details: %w", err)
+			}
+			output, err := json.MarshalIndent(task, "", "  ")
+			if err != nil {
+				return fmt.Errorf("failed to marshal JSON: %w", err)
+			}
+			fmt.Println(string(output))
+		} else {
+			fmt.Println(task.ID)
+		}
+	} else {
+		if jsonOutput {
+			output, err := json.MarshalIndent(task, "", "  ")
+			if err != nil {
+				return fmt.Errorf("failed to marshal JSON: %w", err)
+			}
+			fmt.Println(string(output))
+		} else {
+			fmt.Println(task.ID)
+		}
+	}
+
+	return nil
 }
 
 func resolveAgentIdentity(agentFlag, modelFlag string) (agentID, model string, err error) {
