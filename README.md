@@ -106,7 +106,7 @@ Links are indexed and can be queried in reverse (e.g., find the task for a given
 ```bash
 # Server
 make build
-./bin/agentask
+./bin/agentask server
 
 # TUI (optional)
 make tui
@@ -126,7 +126,7 @@ export AGENTASK_ADDR=":8080"  # optional, default :8080
 Then run:
 
 ```bash
-./bin/agentask
+./bin/agentask server
 ```
 
 The server will listen on the configured address and expose the REST API. The database is created

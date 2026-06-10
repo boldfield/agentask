@@ -26,4 +26,4 @@ COPY --from=builder /agentask /agentask
 EXPOSE 8080
 
 # Run as non-root (nonroot user is built-in to distroless/static:nonroot)
-ENTRYPOINT ["/agentask"]
+ENTRYPOINT ["/agentask", "server"]
