@@ -2098,6 +2098,48 @@ func (s *sqliteStore) SupersedeTask(ctx context.Context, taskID string, modelOve
 		}
 	}
 
+	// 1b. Gather prior reject feedback
+	rows, err := tx.QueryContext(ctx, `
+		SELECT actor, verdict, note FROM event
+		WHERE task_id = ? AND kind IN ('review', 'submit') AND verdict = 'reject'
+		ORDER BY created_at ASC
+	`, taskID)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to query feedback events: %w", err)
+	}
+	defer rows.Close()
+
+	var feedbackBlock strings.Builder
+	var hasFeedback bool
+	for rows.Next() {
+		var actor string
+		var verdict *string
+		var note *string
+		if err := rows.Scan(&actor, &verdict, &note); err != nil {
+			return Task{}, fmt.Errorf("failed to scan feedback event: %w", err)
+		}
+
+		if !hasFeedback {
+			feedbackBlock.WriteString("## Prior attempt feedback\n\n")
+			hasFeedback = true
+		}
+
+		feedbackBlock.WriteString(fmt.Sprintf("**%s (verdict: %s)**\n", actor, *verdict))
+		if note != nil && *note != "" {
+			feedbackBlock.WriteString(fmt.Sprintf("%s\n", *note))
+		}
+		feedbackBlock.WriteString("\n")
+	}
+
+	if err := rows.Err(); err != nil {
+		return Task{}, fmt.Errorf("failed to iterate feedback events: %w", err)
+	}
+
+	// Prepend feedback to spec if any was found
+	if hasFeedback {
+		oldTask.Spec = oldTask.Spec + "\n\n" + feedbackBlock.String()
+	}
+
 	// 2. Create replacement task
 	newTaskID := GenerateID()
 	now := nowTimestamp()
