@@ -96,7 +96,7 @@ func TestExecuteProjectsTable(t *testing.T) {
 	defer server.Close()
 
 	buf := &bytes.Buffer{}
-	err := executeProjects(context.Background(), server.URL, "test-token", false, buf)
+	err := executeProjects(context.Background(), server.URL, "test-token", false, []string{}, buf)
 	if err != nil {
 		t.Fatalf("executeProjects failed: %v", err)
 	}
@@ -125,7 +125,7 @@ func TestExecuteProjectsJSON(t *testing.T) {
 	defer server.Close()
 
 	buf := &bytes.Buffer{}
-	err := executeProjects(context.Background(), server.URL, "test-token", true, buf)
+	err := executeProjects(context.Background(), server.URL, "test-token", true, []string{}, buf)
 	if err != nil {
 		t.Fatalf("executeProjects failed: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestExecuteProjectsJSON(t *testing.T) {
 
 func TestExecuteProjectsMissingURL(t *testing.T) {
 	buf := &bytes.Buffer{}
-	err := executeProjects(context.Background(), "", "test-token", false, buf)
+	err := executeProjects(context.Background(), "", "test-token", false, []string{}, buf)
 	if err == nil {
 		t.Fatal("expected error for missing AGENTASK_URL, got nil")
 	}
@@ -157,12 +157,124 @@ func TestExecuteProjectsMissingURL(t *testing.T) {
 
 func TestExecuteProjectsMissingToken(t *testing.T) {
 	buf := &bytes.Buffer{}
-	err := executeProjects(context.Background(), "http://localhost:8080", "", false, buf)
+	err := executeProjects(context.Background(), "http://localhost:8080", "", false, []string{}, buf)
 	if err == nil {
 		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
 	}
 	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
 		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
+func TestExecuteProjectsWithFilters(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects" {
+			query := r.URL.Query()
+			model := query.Get("model")
+			kind := query.Get("kind")
+			claimable := query.Get("claimable")
+
+			w.Header().Set("Content-Type", "application/json")
+			if model == "haiku" && kind == "implement" && claimable == "true" {
+				json.NewEncoder(w).Encode([]tuiclient.Project{
+					{ID: "proj-1", Name: "Project 1", Repo: "repo-1", CreatedAt: "2026-01-01T00:00:00Z"},
+				})
+			} else {
+				json.NewEncoder(w).Encode([]tuiclient.Project{})
+			}
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeProjects(context.Background(), server.URL, "test-token", false, []string{"--model", "haiku", "--kind", "implement", "--claimable"}, buf)
+	if err != nil {
+		t.Fatalf("executeProjects with filters failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "Project 1") {
+		t.Errorf("expected output to contain 'Project 1', got: %s", output)
+	}
+}
+
+func TestExecuteProjectTable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.Project{
+				ID:        "proj-1",
+				Name:      "Project 1",
+				Repo:      "repo-1",
+				CreatedAt: "2026-01-01T00:00:00Z",
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeProject(context.Background(), server.URL, "test-token", false, []string{"proj-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeProject failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "ID: proj-1") {
+		t.Errorf("expected 'ID: proj-1' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Name: Project 1") {
+		t.Errorf("expected 'Name: Project 1' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Repo: repo-1") {
+		t.Errorf("expected 'Repo: repo-1' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Created At:") {
+		t.Errorf("expected 'Created At:' in output, got: %s", output)
+	}
+}
+
+func TestExecuteProjectJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.Project{
+				ID:        "proj-1",
+				Name:      "Project 1",
+				Repo:      "repo-1",
+				CreatedAt: "2026-01-01T00:00:00Z",
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeProject(context.Background(), server.URL, "test-token", true, []string{"--json", "proj-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeProject with JSON failed: %v", err)
+	}
+
+	output := buf.String()
+	var result tuiclient.Project
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	if result.ID != "proj-1" {
+		t.Errorf("expected project ID 'proj-1', got %q", result.ID)
+	}
+	if result.Name != "Project 1" {
+		t.Errorf("expected project name 'Project 1', got %q", result.Name)
+	}
+}
+
+func TestExecuteProjectMissingID(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeProject(context.Background(), "http://localhost:8080", "test-token", false, []string{}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing project id, got nil")
+	}
+	if !strings.Contains(err.Error(), "project id required") {
+		t.Errorf("expected error to mention project id, got: %v", err)
 	}
 }
 

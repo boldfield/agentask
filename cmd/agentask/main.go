@@ -67,7 +67,7 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
-	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition":
+	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition", "project":
 		return runClient(args[1], args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n\n", args[1])
@@ -88,6 +88,7 @@ usage: agentask <command> [options]
 Commands:
   server                 Start the agentask server
   projects               List all projects
+  project                Show project details
   tasks                  List tasks for a project
   show                   Show task details
   claim                  Claim a task
@@ -179,7 +180,9 @@ func runClient(verb string, args []string) error {
 	// Dispatch to verb handler
 	switch verb {
 	case "projects":
-		return executeProjects(ctx, baseURL, token, jsonOutput, os.Stdout)
+		return executeProjects(ctx, baseURL, token, jsonOutput, args, os.Stdout)
+	case "project":
+		return executeProject(ctx, baseURL, token, jsonOutput, args, os.Stdout)
 	case "tasks":
 		return executeTasks(ctx, baseURL, token, jsonOutput, args, os.Stdout)
 	case "show":
@@ -217,7 +220,7 @@ func runClient(verb string, args []string) error {
 	}
 }
 
-func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool, out io.Writer) error {
+func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool, args []string, out io.Writer) error {
 	// Validate configuration
 	if baseURL == "" {
 		return fmt.Errorf("AGENTASK_URL environment variable not set")
@@ -226,9 +229,30 @@ func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool
 		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
 	}
 
+	// Parse flags
+	fs := flag.NewFlagSet("projects", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	modelFlag := fs.String("model", "", "filter by model")
+	kindFlag := fs.String("kind", "", "filter by kind")
+	claimableFlag := fs.Bool("claimable", false, "filter by claimable status")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
+	}
+
 	// Create client and list projects
 	client := tuiclient.NewHTTPClient(baseURL, token)
-	projects, err := client.ListProjects(ctx)
+	var opts []tuiclient.ProjectListOption
+	if *modelFlag != "" {
+		opts = append(opts, tuiclient.WithProjectModel(*modelFlag))
+	}
+	if *kindFlag != "" {
+		opts = append(opts, tuiclient.WithProjectKind(*kindFlag))
+	}
+	if *claimableFlag {
+		opts = append(opts, tuiclient.WithProjectClaimable(true))
+	}
+
+	projects, err := client.ListProjects(ctx, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to list projects: %w", err)
 	}
@@ -247,6 +271,52 @@ func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool
 			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", p.ID, p.Name, p.Repo, p.CreatedAt)
 		}
 		w.Flush()
+	}
+
+	return nil
+}
+
+func executeProject(ctx context.Context, baseURL, token string, jsonOutput bool, args []string, out io.Writer) error {
+	// Validate configuration
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	// Extract project ID from arguments
+	projectID := ""
+	for _, arg := range args {
+		if arg != "--json" {
+			projectID = arg
+			break
+		}
+	}
+
+	if projectID == "" {
+		return fmt.Errorf("project id required")
+	}
+
+	// Create client and get project
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	project, err := client.GetProject(ctx, projectID)
+	if err != nil {
+		return fmt.Errorf("failed to get project: %w", err)
+	}
+
+	// Output results
+	if jsonOutput {
+		output, err := json.MarshalIndent(project, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		fmt.Fprintln(out, string(output))
+	} else {
+		fmt.Fprintf(out, "ID: %s\n", project.ID)
+		fmt.Fprintf(out, "Name: %s\n", project.Name)
+		fmt.Fprintf(out, "Repo: %s\n", project.Repo)
+		fmt.Fprintf(out, "Created At: %s\n", project.CreatedAt)
 	}
 
 	return nil
