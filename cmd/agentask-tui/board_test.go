@@ -3366,17 +3366,20 @@ func TestBoardModel_DoneTabScrollingRendering(t *testing.T) {
 	project := tuiclient.Project{ID: "project-1", Name: "Test"}
 
 	model := NewBoardModel(mockClient, config, project)
-	// Set a small height to force scrolling: height=10 means 5 visible tasks (height - 5)
+	// Set height=10: line budget = 10 - 5 = 5 lines.
+	// Done tasks render 2 lines each (task + assignee), so visibleHeight = 5 / 2 = 2 tasks.
 	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 10})
 	model = m.(*BoardModel)
 
-	// Create many done tasks to force scrolling
+	// Create many done tasks (with assignees so they render 2 lines each) to force scrolling
+	assignee := "agent-1"
 	var doneTasks []tuiclient.Task
 	for i := 0; i < 15; i++ {
 		doneTasks = append(doneTasks, tuiclient.Task{
-			ID:    fmt.Sprintf("task-done-%d", i),
-			Title: fmt.Sprintf("Done Task %d", i),
-			State: "done",
+			ID:       fmt.Sprintf("task-done-%d", i),
+			Title:    fmt.Sprintf("Done Task %d", i),
+			State:    "done",
+			Assignee: &assignee,
 		})
 	}
 
@@ -3398,23 +3401,24 @@ func TestBoardModel_DoneTabScrollingRendering(t *testing.T) {
 		model = m.(*BoardModel)
 	}
 
-	// Get initial rendering: should show tasks 0-4
+	// Get initial rendering: should show tasks 0-1 (2 tasks visible with height=10)
 	initialOutput := model.View()
 
-	// Verify initial state shows tasks 0-4
-	for i := 0; i < 5; i++ {
-		if !strings.Contains(initialOutput, fmt.Sprintf("Done Task %d", i)) {
-			t.Errorf("Expected 'Done Task %d' in initial view, got:\n%s", i, initialOutput)
-		}
+	// Verify initial state shows tasks 0-1
+	if !strings.Contains(initialOutput, "Done Task 0") {
+		t.Errorf("Expected 'Done Task 0' in initial view, got:\n%s", initialOutput)
+	}
+	if !strings.Contains(initialOutput, "Done Task 1") {
+		t.Errorf("Expected 'Done Task 1' in initial view, got:\n%s", initialOutput)
 	}
 
-	// Verify Done Task 5 is NOT visible initially (it's below the fold)
-	if strings.Contains(initialOutput, "Done Task 5") {
-		t.Errorf("Expected 'Done Task 5' NOT in initial view (should be off-screen), got:\n%s", initialOutput)
+	// Verify Done Task 2 is NOT visible initially (it's below the fold)
+	if strings.Contains(initialOutput, "Done Task 2") {
+		t.Errorf("Expected 'Done Task 2' NOT in initial view (should be off-screen), got:\n%s", initialOutput)
 	}
 
-	// Now scroll down by selecting a task further down
-	for i := 0; i < 5; i++ {
+	// Now scroll down by selecting a task further down (move down 2 times to reach task-done-2)
+	for i := 0; i < 2; i++ {
 		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
 		model = m.(*BoardModel)
 	}
@@ -3422,9 +3426,12 @@ func TestBoardModel_DoneTabScrollingRendering(t *testing.T) {
 	// Get rendering after scrolling
 	scrolledOutput := model.View()
 
-	// After scrolling, Done Task 5 should now be visible
-	if !strings.Contains(scrolledOutput, "Done Task 5") {
-		t.Errorf("Expected 'Done Task 5' in scrolled view, got:\n%s", scrolledOutput)
+	// After scrolling to task 2, the window should show tasks 1-2
+	if !strings.Contains(scrolledOutput, "Done Task 1") {
+		t.Errorf("Expected 'Done Task 1' in scrolled view, got:\n%s", scrolledOutput)
+	}
+	if !strings.Contains(scrolledOutput, "Done Task 2") {
+		t.Errorf("Expected 'Done Task 2' in scrolled view, got:\n%s", scrolledOutput)
 	}
 
 	// But Done Task 0 should no longer be visible (scrolled out of view)
@@ -4303,5 +4310,161 @@ func TestBoardModel_ProjectSwitcher_ShowsNewProjects(t *testing.T) {
 	output := model.View()
 	if !strings.Contains(output, "Project 3") {
 		t.Errorf("Expected 'Project 3' to appear in project switcher View(), got:\n%s", output)
+	}
+}
+
+// TestBoardModel_RenderWindowingAndScroll tests that getVisibleTaskHeight correctly returns
+// a task count (not a line count), and that scrolling advances scrollOffset when navigating
+// past the visible window, revealing later tasks without overflow.
+func TestBoardModel_RenderWindowingAndScroll(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+
+	// Create a tall column with many tasks and assignees (2 lines each when rendered).
+	// Height=14 gives us (14-5)/2 = 4 tasks visible.
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 14})
+	model = m.(*BoardModel)
+
+	// Create 10 tasks in the done column; each will render 2 lines (task + assignee).
+	assignees := make([]*string, 10)
+	tasks := make([]tuiclient.Task, 10)
+	for i := 0; i < 10; i++ {
+		name := fmt.Sprintf("agent-%d", i)
+		assignees[i] = &name
+		tasks[i] = tuiclient.Task{
+			ID:       fmt.Sprintf("task-%d", i),
+			Title:    fmt.Sprintf("Task %d", i),
+			State:    stateDone,
+			Assignee: assignees[i],
+		}
+	}
+
+	bucketed := make(map[string][]tuiclient.Task)
+	bucketed["backlog"] = []tuiclient.Task{}
+	bucketed["ready"] = []tuiclient.Task{}
+	bucketed["in_progress"] = []tuiclient.Task{}
+	bucketed["review"] = []tuiclient.Task{}
+	bucketed["approved"] = []tuiclient.Task{}
+	bucketed["done"] = tasks
+	bucketed["blocked"] = []tuiclient.Task{}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Navigate to done column (5 right presses from in_progress at index 2)
+	for i := 0; i < 3; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+		model = m.(*BoardModel)
+	}
+
+	// Verify we're in the done column
+	if model.selectedColumn != 5 {
+		t.Fatalf("Expected selectedColumn 5 (done), got %d", model.selectedColumn)
+	}
+
+	// Verify getVisibleTaskHeight returns 4 (not 9).
+	visibleHeight := model.getVisibleTaskHeight()
+	if visibleHeight != 4 {
+		t.Errorf("Expected visibleHeight=4 (9 lines / 2 per task), got %d", visibleHeight)
+	}
+
+	// Verify initial selection is task-0 with scrollOffset=0
+	if model.selectedTaskID != "task-0" {
+		t.Errorf("Expected initial selection task-0, got %s", model.selectedTaskID)
+	}
+	if model.scrollOffset != 0 {
+		t.Errorf("Expected initial scrollOffset=0, got %d", model.scrollOffset)
+	}
+
+	// Verify initial render shows only tasks 0-3 (4 tasks, no overflow).
+	output := model.View()
+	if !strings.Contains(output, "task-0") {
+		t.Errorf("Expected task-0 in initial render, got:\n%s", output)
+	}
+	if !strings.Contains(output, "task-3") {
+		t.Errorf("Expected task-3 in initial render, got:\n%s", output)
+	}
+	// task-4 should NOT be in the render (it's below the fold).
+	if strings.Contains(output, "task-4") {
+		t.Errorf("Expected task-4 NOT in initial render (below fold), got:\n%s", output)
+	}
+
+	// Navigate down to task-1 (no scroll yet, still in the window).
+	m, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+	model = m.(*BoardModel)
+	if model.selectedTaskID != "task-1" {
+		t.Errorf("Expected selection task-1, got %s", model.selectedTaskID)
+	}
+	if model.scrollOffset != 0 {
+		t.Errorf("Expected scrollOffset=0 (task-1 in window), got %d", model.scrollOffset)
+	}
+
+	// Navigate down to task-4 (4 downs from task-0).
+	for i := 0; i < 3; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model = m.(*BoardModel)
+	}
+	if model.selectedTaskID != "task-4" {
+		t.Errorf("Expected selection task-4, got %s", model.selectedTaskID)
+	}
+
+	// Now scrollOffset should have advanced to show task-4 in the window.
+	// With visibleHeight=4 and selectedIndex=4, scrollOffset = 4 - 4 + 1 = 1.
+	if model.scrollOffset != 1 {
+		t.Errorf("Expected scrollOffset=1 (to show task-4), got %d", model.scrollOffset)
+	}
+
+	// Verify render now shows tasks 1-4 (window starts at scrollOffset=1).
+	output = model.View()
+	if !strings.Contains(output, "task-1") {
+		t.Errorf("Expected task-1 in scrolled render, got:\n%s", output)
+	}
+	if !strings.Contains(output, "task-4") {
+		t.Errorf("Expected task-4 in scrolled render, got:\n%s", output)
+	}
+	// task-0 should NOT be visible anymore (scrolled out of window).
+	if strings.Contains(output, "task-0") {
+		t.Errorf("Expected task-0 NOT in scrolled render (scrolled out), got:\n%s", output)
+	}
+	// task-5 should NOT be visible (still below the fold).
+	if strings.Contains(output, "task-5") {
+		t.Errorf("Expected task-5 NOT in scrolled render (below fold), got:\n%s", output)
+	}
+
+	// Continue navigating down to task-9 (the last task).
+	for i := 0; i < 5; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyDown})
+		model = m.(*BoardModel)
+	}
+	if model.selectedTaskID != "task-9" {
+		t.Errorf("Expected selection task-9, got %s", model.selectedTaskID)
+	}
+
+	// Verify the final scroll position shows the tail of the list (tasks 6-9).
+	// With 10 total tasks and visibleHeight=4, max scrollOffset = 10 - 4 = 6.
+	expectedScrollOffset := 6
+	if model.scrollOffset != expectedScrollOffset {
+		t.Errorf("Expected scrollOffset=%d at task-9, got %d", expectedScrollOffset, model.scrollOffset)
+	}
+
+	output = model.View()
+	if !strings.Contains(output, "task-6") {
+		t.Errorf("Expected task-6 in final render, got:\n%s", output)
+	}
+	if !strings.Contains(output, "task-9") {
+		t.Errorf("Expected task-9 in final render, got:\n%s", output)
+	}
+	// Earlier tasks should be out of view.
+	if strings.Contains(output, "task-5") {
+		t.Errorf("Expected task-5 NOT in final render (scrolled out), got:\n%s", output)
 	}
 }

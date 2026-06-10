@@ -1458,15 +1458,20 @@ func (m *BoardModel) getTasksInSelectedColumn() []tuiclient.Task {
 	return m.tasks[state]
 }
 
-// getVisibleTaskHeight returns the number of lines available for rendering tasks.
+// getVisibleTaskHeight returns the number of tasks that fit in the visible area.
+// Each task renders 1-2 lines (assignee-bearing columns show 2 lines).
 // Account for project name, tabs, separator, and help bar.
 func (m *BoardModel) getVisibleTaskHeight() int {
-	// Rough estimate: total height minus fixed UI elements (project name, tabs, separators, help bar)
-	// At least 1 line for tasks, at most height-5
+	// Convert line budget to task count: (height - 5) lines / 2 lines per task.
+	// At least 1 task visible, at most (height-5)/2 tasks.
 	if m.height < 6 {
 		return 1
 	}
-	return m.height - 5
+	tasksVisible := (m.height - 5) / 2
+	if tasksVisible < 1 {
+		return 1
+	}
+	return tasksVisible
 }
 
 // clampScrollToSelection ensures the scroll offset shows the selected task.
