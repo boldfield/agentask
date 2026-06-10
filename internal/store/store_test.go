@@ -7008,7 +7008,7 @@ func TestPruneEventsRemovesTerminalTaskEvents(t *testing.T) {
 	}
 
 	// Run prune with 0-day retention for terminal tasks (should delete all terminal task events)
-	pruned, err := store.PruneEvents(ctx, 7, 0)
+	pruned, err := store.PruneEvents(ctx, 0)
 	if err != nil {
 		t.Fatalf("failed to prune events: %v", err)
 	}
@@ -7079,7 +7079,7 @@ func TestPruneEventsKeepsActiveTaskEvents(t *testing.T) {
 	initialEventCount := len(events)
 
 	// Run prune with 0-day retention (should NOT delete active task events)
-	_, err = store.PruneEvents(ctx, 7, 0)
+	_, err = store.PruneEvents(ctx, 0)
 	if err != nil {
 		t.Fatalf("failed to prune events: %v", err)
 	}
@@ -7151,7 +7151,7 @@ func TestPruneEventsPreservesRecentTerminalTaskEvents(t *testing.T) {
 	initialEventCount := len(events)
 
 	// Run prune with high retention (7 days) - recent events should be kept
-	_, err = store.PruneEvents(ctx, 7, 7)
+	_, err = store.PruneEvents(ctx, 7)
 	if err != nil {
 		t.Fatalf("failed to prune events: %v", err)
 	}
@@ -7223,7 +7223,7 @@ func TestPruneEventsListEventsStillReturnsKeptEvents(t *testing.T) {
 	}
 
 	// Run prune
-	_, err = store.PruneEvents(ctx, 7, 0)
+	_, err = store.PruneEvents(ctx, 0)
 	if err != nil {
 		t.Fatalf("failed to prune events: %v", err)
 	}

@@ -149,15 +149,6 @@ func runServer() {
 	}
 
 	// Parse event retention configuration
-	eventRetentionDaysStr := os.Getenv("AGENTASK_EVENT_RETENTION_DAYS")
-	if eventRetentionDaysStr == "" {
-		eventRetentionDaysStr = "7"
-	}
-	eventRetentionDays, err := strconv.Atoi(eventRetentionDaysStr)
-	if err != nil {
-		log.Fatalf("failed to parse AGENTASK_EVENT_RETENTION_DAYS: %v", err)
-	}
-
 	eventTerminalRetentionDaysStr := os.Getenv("AGENTASK_EVENT_TERMINAL_RETENTION_DAYS")
 	if eventTerminalRetentionDaysStr == "" {
 		eventTerminalRetentionDaysStr = "1"
@@ -176,7 +167,7 @@ func runServer() {
 
 	// Prune old events on startup
 	ctx := context.Background()
-	deletedCount, err := s.PruneEvents(ctx, eventRetentionDays, eventTerminalRetentionDays)
+	deletedCount, err := s.PruneEvents(ctx, eventTerminalRetentionDays)
 	if err != nil {
 		log.Fatalf("failed to prune events: %v", err)
 	}

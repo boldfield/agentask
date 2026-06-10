@@ -28,7 +28,7 @@ type Store interface {
 	Conn() *sql.DB
 	AppendEvent(ctx context.Context, tx *sql.Tx, taskID, actor, kind string, verdict, note *string) (Event, error)
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
-	PruneEvents(ctx context.Context, retentionDays int, terminalRetentionDays int) (int64, error)
+	PruneEvents(ctx context.Context, terminalRetentionDays int) (int64, error)
 	CreateProject(ctx context.Context, name, repo string) (Project, error)
 	GetProject(ctx context.Context, id string) (Project, error)
 	ListProjects(ctx context.Context, filter ProjectListFilter) ([]Project, error)
@@ -2697,10 +2697,9 @@ func (s *sqliteStore) UpdateTaskDependsOn(ctx context.Context, taskID string, de
 // For tasks in terminal states (done/failed/archived), events older than terminalRetentionDays are deleted.
 // Events for active (non-terminal) tasks are never pruned.
 // Returns the number of rows deleted.
-// PruneEvents deletes events older than the retention window, keeping all events for active tasks.
-// - For terminal tasks (done/failed/archived): deletes events older than terminalRetentionDays
-// - For active (non-terminal) tasks: keeps all events regardless of age
-func (s *sqliteStore) PruneEvents(ctx context.Context, retentionDays int, terminalRetentionDays int) (int64, error) {
+// PruneEvents deletes events for terminal tasks older than terminalRetentionDays,
+// while preserving all events for active (non-terminal) tasks.
+func (s *sqliteStore) PruneEvents(ctx context.Context, terminalRetentionDays int) (int64, error) {
 	// Calculate cutoff timestamp for terminal task events
 	terminalCutoff := time.Now().UTC().AddDate(0, 0, -terminalRetentionDays).Format(timestampLayout)
 
