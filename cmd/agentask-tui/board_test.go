@@ -3729,7 +3729,7 @@ func TestBoardModel_ArchiveProjectFlow_ConfirmY(t *testing.T) {
 			capturedArchiveProjectID = id
 			return nil
 		},
-		ListProjectsFunc: func(ctx context.Context) ([]tuiclient.Project, error) {
+		ListProjectsFunc: func(ctx context.Context, options ...tuiclient.ProjectListOption) ([]tuiclient.Project, error) {
 			callLog = append(callLog, "refetch-projects")
 			// After archive, project-2 is gone
 			return []tuiclient.Project{
@@ -3812,7 +3812,7 @@ func TestBoardModel_ArchiveProjectFlow_CancelWithN(t *testing.T) {
 			archiveCalled = true
 			return nil
 		},
-		ListProjectsFunc: func(ctx context.Context) ([]tuiclient.Project, error) {
+		ListProjectsFunc: func(ctx context.Context, options ...tuiclient.ProjectListOption) ([]tuiclient.Project, error) {
 			return []tuiclient.Project{
 				{ID: "project-1", Name: "Project 1"},
 				{ID: "project-2", Name: "Project 2"},
