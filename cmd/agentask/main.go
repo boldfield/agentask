@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -18,6 +20,15 @@ import (
 )
 
 const version = "0.5.0"
+
+type claimError struct {
+	message string
+	code    int
+}
+
+func (e *claimError) Error() string {
+	return e.message
+}
 
 func main() {
 	isClient, verb := parseCommand(os.Args)
