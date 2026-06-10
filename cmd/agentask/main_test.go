@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -246,6 +247,222 @@ func TestDoNextMissingProject(t *testing.T) {
 	}
 	if !strings.Contains(result.stderr, "--project is required") {
 		t.Errorf("expected '--project is required' in stderr, got: %q", result.stderr)
+	}
+}
+
+func TestExecuteTransitionSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/transition") {
+			if r.Method != "POST" {
+				t.Errorf("expected POST, got %s", r.Method)
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	err := executeTransition(context.Background(), server.URL, "test-token", []string{"task-123", "--to", "blocked", "--note", "test note"})
+	if err != nil {
+		t.Fatalf("executeTransition failed: %v", err)
+	}
+}
+
+func TestExecuteTransitionMissingTo(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	err := executeTransition(context.Background(), server.URL, "test-token", []string{"task-123"})
+	if err == nil {
+		t.Fatal("expected error for missing --to, got nil")
+	}
+	if !strings.Contains(err.Error(), "--to") {
+		t.Errorf("expected error to mention --to, got: %v", err)
+	}
+}
+
+func TestExecuteTransitionFailure(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"error": map[string]string{
+				"code":    "internal_error",
+				"message": "server error",
+			},
+		})
+	}))
+	defer server.Close()
+
+	err := executeTransition(context.Background(), server.URL, "test-token", []string{"task-123", "--to", "blocked"})
+	if err == nil {
+		t.Fatal("expected error for failed transition, got nil")
+	}
+}
+
+func TestExecuteClaimSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/tasks/task123/claim" {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	oldModel := os.Getenv("AGENT_MODEL")
+	defer func() {
+		os.Setenv("AGENT_ID", oldAgent)
+		os.Setenv("AGENT_MODEL", oldModel)
+	}()
+
+	os.Setenv("AGENT_ID", "test-agent")
+	os.Setenv("AGENT_MODEL", "haiku")
+
+	err := executeClaim(context.Background(), server.URL, "test-token", []string{"task123"})
+	if err != nil {
+		t.Fatalf("executeClaim failed: %v", err)
+	}
+}
+
+func TestExecuteClaimAlreadyClaimed(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/tasks/task123/claim" {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]string{"error": "already claimed"})
+		}
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	oldModel := os.Getenv("AGENT_MODEL")
+	defer func() {
+		os.Setenv("AGENT_ID", oldAgent)
+		os.Setenv("AGENT_MODEL", oldModel)
+	}()
+
+	os.Setenv("AGENT_ID", "test-agent")
+	os.Setenv("AGENT_MODEL", "haiku")
+
+	err := executeClaim(context.Background(), server.URL, "test-token", []string{"task123"})
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+
+	var claimErr *claimError
+	if !errors.As(err, &claimErr) {
+		t.Fatalf("expected claimError, got %T: %v", err, err)
+	}
+
+	if claimErr.code != 3 {
+		t.Errorf("expected exit code 3, got %d", claimErr.code)
+	}
+
+	if !strings.Contains(claimErr.Error(), "already claimed") {
+		t.Errorf("expected error message to contain 'already claimed', got: %v", claimErr.Error())
+	}
+}
+
+func TestExecuteClaimMissingTaskID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	oldModel := os.Getenv("AGENT_MODEL")
+	defer func() {
+		os.Setenv("AGENT_ID", oldAgent)
+		os.Setenv("AGENT_MODEL", oldModel)
+	}()
+
+	os.Setenv("AGENT_ID", "test-agent")
+	os.Setenv("AGENT_MODEL", "haiku")
+
+	err := executeClaim(context.Background(), server.URL, "test-token", []string{})
+	if err == nil {
+		t.Fatal("expected error for missing task ID, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "task ID is required") {
+		t.Errorf("expected error to mention task ID, got: %v", err)
+	}
+}
+
+func TestExecuteClaimMissingAgent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	oldModel := os.Getenv("AGENT_MODEL")
+	defer func() {
+		os.Setenv("AGENT_ID", oldAgent)
+		os.Setenv("AGENT_MODEL", oldModel)
+	}()
+
+	os.Unsetenv("AGENT_ID")
+	os.Setenv("AGENT_MODEL", "haiku")
+
+	err := executeClaim(context.Background(), server.URL, "test-token", []string{"task123"})
+	if err == nil {
+		t.Fatal("expected error for missing agent ID, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "agent ID is required") {
+		t.Errorf("expected error to mention agent ID, got: %v", err)
+	}
+}
+
+func TestExecuteClaimMissingURL(t *testing.T) {
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	oldModel := os.Getenv("AGENT_MODEL")
+	defer func() {
+		os.Setenv("AGENT_ID", oldAgent)
+		os.Setenv("AGENT_MODEL", oldModel)
+	}()
+
+	os.Setenv("AGENT_ID", "test-agent")
+	os.Setenv("AGENT_MODEL", "haiku")
+
+	err := executeClaim(context.Background(), "", "test-token", []string{"task123"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "AGENTASK_URL") {
+		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	}
+}
+
+func TestExecuteClaimServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/tasks/task123/claim" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+		}
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	oldModel := os.Getenv("AGENT_MODEL")
+	defer func() {
+		os.Setenv("AGENT_ID", oldAgent)
+		os.Setenv("AGENT_MODEL", oldModel)
+	}()
+
+	os.Setenv("AGENT_ID", "test-agent")
+	os.Setenv("AGENT_MODEL", "haiku")
+
+	err := executeClaim(context.Background(), server.URL, "test-token", []string{"task123"})
+	if err == nil {
+		t.Fatal("expected error for server error, got nil")
 	}
 }
 
