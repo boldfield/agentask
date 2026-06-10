@@ -3631,6 +3631,87 @@ func TestTransitionBlockedToFailed(t *testing.T) {
 	}
 }
 
+// TestTransitionToSuperseded verifies that tasks can transition to the 'superseded' state
+// from active states but not from terminal states.
+func TestTransitionToSuperseded(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	// Create a document
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create tasks in various states
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 1 - Backlog", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 2 - Ready", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 3 - Failed", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	taskID1 := tasks[0].ID
+	taskID2 := tasks[1].ID
+	taskID3 := tasks[2].ID
+
+	// Test 1: backlog→superseded succeeds
+	supersededNote := "superseded by task 999"
+	superseded, err := store.TransitionTask(ctx, taskID1, "superseded", &supersededNote)
+	if err != nil {
+		t.Fatalf("failed to transition backlog→superseded: %v", err)
+	}
+	if superseded.State != "superseded" {
+		t.Errorf("expected task state='superseded', got '%s'", superseded.State)
+	}
+
+	// Test 2: ready→superseded succeeds
+	supersededNote2 := "replaced by newer task"
+	superseded2, err := store.TransitionTask(ctx, taskID2, "superseded", &supersededNote2)
+	if err != nil {
+		t.Fatalf("failed to transition ready→superseded: %v", err)
+	}
+	if superseded2.State != "superseded" {
+		t.Errorf("expected task state='superseded', got '%s'", superseded2.State)
+	}
+
+	// Test 3: superseded→superseded should fail (superseded is terminal)
+	_, err = store.TransitionTask(ctx, taskID1, "superseded", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected superseded→superseded to return ErrConflict, got %v", err)
+	}
+
+	// Test 4: failed→superseded should fail (terminal state)
+	// First transition task 3 to failed
+	_, err = store.TransitionTask(ctx, taskID3, "blocked", nil)
+	if err != nil {
+		t.Fatalf("failed to transition to blocked: %v", err)
+	}
+	_, err = store.TransitionTask(ctx, taskID3, "failed", nil)
+	if err != nil {
+		t.Fatalf("failed to transition to failed: %v", err)
+	}
+
+	// Verify task 3 cannot transition to superseded
+	_, err = store.TransitionTask(ctx, taskID3, "superseded", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected failed→superseded to return ErrConflict, got %v", err)
+	}
+}
+
 // TestListProjectsWithClaimableFilter verifies that ListProjects with filter.Claimable=true
 // returns only projects with at least one claimable task matching the model and kind.
 func TestListProjectsWithClaimableFilter(t *testing.T) {
