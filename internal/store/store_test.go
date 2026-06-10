@@ -5509,17 +5509,8 @@ func TestSubmitImplementTaskNoOpResolution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to get parent task: %v", err)
 	}
-	if parent.State != "approved" {
-		t.Fatalf("expected parent 'approved' after sole reviewer approves, got %q", parent.State)
-	}
-
-	// agent_merge parent reaches done via approved -> done with no PR/merge.
-	done, err := store.TransitionTask(ctx, taskID, "done", nil)
-	if err != nil {
-		t.Fatalf("approved->done should succeed without a PR/merge, got error: %v", err)
-	}
-	if done.State != "done" {
-		t.Errorf("expected parent 'done', got %q", done.State)
+	if parent.State != "done" {
+		t.Fatalf("expected parent 'done' after sole reviewer approves (agent_merge=true no-op auto-finalizes), got %q", parent.State)
 	}
 }
 
@@ -7315,5 +7306,247 @@ func TestHeartbeatTaskDoesNotCreateEvent(t *testing.T) {
 	// Verify we have at least the claim event
 	if countAfter < 1 {
 		t.Errorf("expected at least 1 event (claim), got %d", countAfter)
+	}
+}
+
+// TestAgentMergeNoOpAutoFinalizesToDone verifies that an approved agent_merge=true no-op
+// task automatically transitions to "done" instead of "approved".
+func TestAgentMergeNoOpAutoFinalizesToDone(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create project and doc
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create implement task with agent_merge=true
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+			AgentMerge:   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote, claim, and submit as no-op
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Submit as no-op (no PR link, only no_op marker)
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", "No changes needed", nil, []LinkInput{{Kind: "no_op", Value: "acceptance already satisfied"}}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit implement task as no-op: %v", err)
+	}
+
+	// Verify review task was created
+	if submitted.ReviewRound != 1 {
+		t.Errorf("expected review_round=1, got %d", submitted.ReviewRound)
+	}
+
+	// Find the review task
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("review task not found")
+	}
+
+	// Claim and submit review with approve
+	_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+
+	approve := "approve"
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit review task: %v", err)
+	}
+
+	// Verify parent task went to "done" (not "approved") because it's agent_merge=true no-op
+	parentTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "done" {
+		t.Errorf("expected parent task state='done' for agent_merge no-op, got '%s'", parentTask.State)
+	}
+
+	// Verify transition event was created with appropriate message (find the last transition event)
+	events, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+
+	var transitionEvent *Event
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == "transition" {
+			transitionEvent = &events[i]
+			break
+		}
+	}
+	if transitionEvent == nil {
+		t.Fatalf("transition event not found on parent task")
+	}
+	if transitionEvent.Note == nil {
+		t.Fatalf("transition event note is nil")
+	}
+	if !strings.Contains(*transitionEvent.Note, "auto-finalized") {
+		t.Errorf("expected transition event note to mention 'auto-finalized', got %q", *transitionEvent.Note)
+	}
+}
+
+// TestAgentMergePRStaysApproved verifies that an approved agent_merge=true PR task
+// stays in "approved" state (does not auto-finalize to "done").
+func TestAgentMergePRStaysApproved(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create project and doc
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create implement task with agent_merge=true
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+			AgentMerge:   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote, claim, and submit with PR link
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Submit with PR link (not a no-op)
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Verify review task was created
+	if submitted.ReviewRound != 1 {
+		t.Errorf("expected review_round=1, got %d", submitted.ReviewRound)
+	}
+
+	// Find the review task
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("review task not found")
+	}
+
+	// Claim and submit review with approve
+	_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+
+	approve := "approve"
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit review task: %v", err)
+	}
+
+	// Verify parent task stayed in "approved" (not "done") because it has a PR link
+	parentTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "approved" {
+		t.Errorf("expected parent task state='approved' for agent_merge PR, got '%s'", parentTask.State)
+	}
+
+	// Verify transition event was created with "Aggregation" message (not "auto-finalized") (find the last transition event)
+	events, err := store.ListEvents(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+
+	var transitionEvent *Event
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Kind == "transition" {
+			transitionEvent = &events[i]
+			break
+		}
+	}
+	if transitionEvent == nil {
+		t.Fatalf("transition event not found on parent task")
+	}
+	if transitionEvent.Note == nil {
+		t.Fatalf("transition event note is nil")
+	}
+	if !strings.Contains(*transitionEvent.Note, "Aggregation") {
+		t.Errorf("expected transition event note to mention 'Aggregation', got %q", *transitionEvent.Note)
 	}
 }
