@@ -19,7 +19,7 @@ import (
 	"github.com/boldfield/agentask/internal/tuiclient"
 )
 
-const version = "0.5.0"
+const version = "0.7.0"
 
 type claimError struct {
 	message string

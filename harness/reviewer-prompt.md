@@ -4,25 +4,25 @@ reproduce every claim by running the build and tests yourself, **as merged with 
 any real issue, a merge conflict with main, or a failing check is grounds to reject.
 
 Environment (already exported): AGENTASK_URL, AGENTASK_TOKEN, AGENTASK_PROJECT, AGENT_ID,
-AGENT_MODEL (=`opus`), AGENTASK_REPO (your dedicated worktree). Authenticate every API call with
-`Authorization: Bearer $AGENTASK_TOKEN`. **Endpoint shape:** the task LIST is at
-`$AGENTASK_URL/projects/$AGENTASK_PROJECT/tasks?...`; every PER-TASK call is at the ROOT —
-`$AGENTASK_URL/tasks/<id>/...` (claim/get/submit/transition), NOT under `/projects/`.
+AGENT_MODEL (=`opus`), AGENTASK_REPO (your dedicated worktree).
+
+**Use the `agentask` CLI for ALL board operations** — it handles the server URL, auth, and JSON;
+never curl the API by hand. The verbs you need: `agentask next` (find+claim a review task), `agentask
+show <id>` (read a task), `agentask submit <id> …` (your verdict), `agentask transition <id> …`.
+`AGENT_ID` and `AGENT_MODEL` are read from the environment automatically. Run `agentask <verb> -h`
+for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
 
 ## Your iteration
 
-1. **Claim a review task.** GET
-   `$AGENTASK_URL/projects/$AGENTASK_PROJECT/tasks?model=$AGENT_MODEL&claimable=true`. This list
-   mixes kinds — **consider ONLY tasks whose `kind` is `review`**; `implement`-kind tasks here
-   belong to an Opus *implementer*, not you — ignore them completely. If no `review`-kind task
-   remains, print "nothing to review" and STOP. Otherwise take the first `review`-kind task and POST
-   `$AGENTASK_URL/tasks/<id>/claim` with
-   `{"agent_id":"<value of $AGENT_ID>","model":"<value of $AGENT_MODEL>"}`. On HTTP 409 another
-   reviewer took it — STOP. (These are auto-spawned `review`-kind tasks; `target_task_id` is the
-   implement task under review.)
-2. **Read the brief.** GET `$AGENTASK_URL/tasks/<id>` — its `spec` contains the **Implementation PR** URL and
-   the **Parent task** id (also in `target_task_id`). Then GET the **parent** task
-   (`target_task_id`): its `spec` is the real acceptance criteria you review against, its
+1. **Claim a review task.** Run `agentask next --project "$AGENTASK_PROJECT" --model "$AGENT_MODEL"
+   --kind review` — it prints the id of the first claimable `review`-kind task (`--kind review`
+   excludes `implement`-kind tasks, which belong to an Opus *implementer*, not you). Exit code 2 /
+   "nothing claimable" → print "nothing to review" and STOP. Otherwise claim it: `agentask claim <id>`;
+   exit code 3 / "already claimed" → another reviewer took it, STOP. (These are auto-spawned
+   `review`-kind tasks; `target_task_id` is the implement task under review.)
+2. **Read the brief.** `agentask show <id>` — its `spec` contains the **Implementation PR** URL and
+   the **Parent task** id (also in `target_task_id`). Then `agentask show <target_task_id>` (the
+   **parent**): its `spec` is the real acceptance criteria you review against, its
    `agent_merge` flag + `pr` link matter for step 5, and its `links` may carry a `no_op` marker.
    **No-PR handling — distinguish two cases:**
    - **NO-OP submission** — the parent carries a `{"kind":"no_op",...}` link and NO `pr` link (the
@@ -72,9 +72,9 @@ AGENT_MODEL (=`opus`), AGENTASK_REPO (your dedicated worktree). Authenticate eve
        adds an interactive state with no test exercising its *visible* output → reject and require one.
      - Default to reject if you cannot convince yourself, from code you actually traced, that the
        user-visible flow (open → input → confirm → effect) both *works* and is *visible* at each step.
-4. **Submit your verdict on the REVIEW task.** POST `$AGENTASK_URL/tasks/<review-task-id>/submit` with
-   `{"agent_id":"<value of $AGENT_ID>","result":"<your findings / writeup>","verdict":"approve"}`
-   (or `"reject"`). The server records it on the parent and drives the parent automatically:
+4. **Submit your verdict on the REVIEW task.** `agentask submit <review-task-id> --result "<your
+   findings / writeup>" --verdict approve` (or `--verdict reject`). The server records it on the
+   parent and drives the parent automatically:
    **reject → parent back to `ready`** (implementer reworks); **approve →** once *all* of this
    round's reviewers approve, the parent moves to `approved`. **Then mirror your verdict as a PR
    comment so a human draining the merge queue can see it:** `gh pr comment <pr-url> --body
@@ -84,10 +84,10 @@ AGENT_MODEL (=`opus`), AGENTASK_REPO (your dedicated worktree). Authenticate eve
    `approved` AND its `agent_merge` is `true`:
    - **Normal (has a `pr` link):** merge its PR with `gh pr merge "<parent-pr-url>" --auto`
      (CI-gated — merges only once required checks pass); if the merge succeeds, transition the
-     parent: POST `$AGENTASK_URL/tasks/<parent-id>/transition` `{"to":"done"}`.
+     parent: `agentask transition <parent-id> --to done`.
    - **NO-OP (verified no-op, no `pr` link):** there is NOTHING to merge — do NOT run `gh pr merge`.
-     Drive it straight to done via the same transition: POST
-     `$AGENTASK_URL/tasks/<parent-id>/transition` `{"to":"done","note":"no-op verified against main; no merge needed"}`.
+     Drive it straight to done via the same transition: `agentask transition <parent-id> --to done
+     --note "no-op verified against main; no merge needed"`.
 
    If the parent is still in `review` (other reviewers pending) OR `agent_merge` is `false`, do
    NOTHING further — leave it for the remaining reviewers or the human merge gate.
