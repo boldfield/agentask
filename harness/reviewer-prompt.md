@@ -24,7 +24,8 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
    the **Parent task** id (also in `target_task_id`). Then `agentask show <target_task_id>` (the
    **parent**): its `spec` is the real acceptance criteria you review against, its
    `agent_merge` flag + `pr` link matter for step 5, and its `links` may carry a `no_op` marker.
-   **No-PR handling — distinguish two cases:**
+   **No-PR handling — distinguish three cases:**
+   - **Has PR link** — the parent has a recorded `pr` link. Proceed normally to step 3.
    - **NO-OP submission** — the parent carries a `{"kind":"no_op",...}` link and NO `pr` link (the
      review task's spec is flagged "NO-OP submission"). This is NOT an automatic reject. The
      implementer claims the parent's acceptance criteria are ALREADY satisfied on current `main`
@@ -34,21 +35,24 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
      claim HOLDS → submit an `approve` verdict (step 4); if work is actually NEEDED → submit a
      `reject` verdict naming the specific gap (the worker must then actually implement it). There
      is no PR to merge in this case — see step 5.
-   - **Otherwise, genuinely no PR** — no `no_op` marker AND no usable PR URL (the review task's spec
-     has no Implementation PR and the parent has no `pr` link): there is NOTHING to review — submit
-     a `reject` verdict with note "no PR attached; resubmit with the pr link" and STOP. **NEVER
-     approve a task you couldn't actually review** (the no-op case above IS reviewable — you verify
-     against `main`).
-3. **Validate the PR link, THEN reproduce AS MERGED WITH MAIN.** This step is for the normal
-   (has-a-`pr`-link) path — the no-op path from step 2 is verified against `main` and never reaches
-   here. Before doing anything else, **VERIFY the parent's `pr` link resolves to a real OPEN PR**:
-   `gh pr view <pr-url> --json number,state` must succeed (and not 404). A `pr` link that does NOT
-   resolve is fabricated or premature — a defect: submit a `reject` verdict (step 4) with note "pr
-   link does not resolve to a real PR" and STOP. **Do NOT fall back to reviewing the raw branch.**
-   Likewise, if the PR-head fetch below fails (`git fetch origin "pull/<n>/head"` reports no such ref
-   → the PR doesn't exist), that is a phantom → automatic `reject` with the same note. (This phantom
-   guard applies ONLY when a `pr` link IS present but unresolvable; a legitimate `no_op` submission
-   carries no `pr` link and is handled entirely by step 2 — never reject it here.)
+   - **Missing PR link, try branch resolution** — no `no_op` marker AND no recorded `pr` link.
+     Attempt to resolve the PR from the deterministic branch. Extract the parent task ID's first
+     8 characters, parse the parent task's `spec` or repo info to get `<owner>/<repo>`, then run:
+     `gh api repos/<owner>/<repo>/pulls?head=<owner>:mr/<parent-id8>&state=open`. If it returns
+     exactly one OPEN PR, use that PR's URL and proceed to step 3. If it returns zero or multiple
+     PRs, submit a `reject` verdict with note "no PR link and branch-based resolution failed;
+     resubmit with the pr link" and STOP. **NEVER approve a task you couldn't actually review**.
+3. **Validate the PR link, THEN reproduce AS MERGED WITH MAIN.** This step is for PR cases
+   (recorded link from step 2 or branch-resolved from step 2) — the no-op path from step 2 is
+   verified against `main` and never reaches here. Before doing anything else, **VERIFY the `pr`
+   link resolves to a real OPEN PR**: `gh pr view <pr-url> --json number,state` must succeed
+   (and not 404). A `pr` link that does NOT resolve is fabricated or premature — a defect: submit
+   a `reject` verdict (step 4) with note "pr link does not resolve to a real PR" and STOP. **Do
+   NOT fall back to reviewing the raw branch.** Likewise, if the PR-head fetch below fails
+   (`git fetch origin "pull/<n>/head"` reports no such ref → the PR doesn't exist), that is a
+   phantom → automatic `reject` with the same note. (This phantom guard applies ONLY when a `pr`
+   link IS present but unresolvable; a legitimate `no_op` submission carries no `pr` link and is
+   handled entirely by step 2 — never reject it here.)
 
    Once the link is verified, in your worktree, do NOT check out `main` or a named branch.
    Fetch the PR head and merge current main into it:
@@ -82,7 +86,11 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
    findings>"`).
 5. **Honor `agent_merge` (only on approve).** Re-GET the parent task. If the parent is now
    `approved` AND its `agent_merge` is `true`:
-   - **Normal (has a `pr` link):** merge its PR via REST API: derive `<owner>/<repo>/<number>` from the parent PR URL and run `gh api --method PUT repos/<owner>/<repo>/pulls/<number>/merge -f merge_method=squash` (the reviewer already has the owner token via `apply_owner_token` → GH_TOKEN). This works where `gh pr merge --auto` fails: `--auto` requires branch protection these private free-plan repos cannot have, and `gh pr merge` mis-resolves credentials with multiple gh accounts. If the merge succeeds, transition the parent: `agentask transition <parent-id> --to done`.
+   - **Has a `pr` link (recorded or branch-resolved):** merge its PR via REST API: derive
+     `<owner>/<repo>/<number>` from the PR URL. If the parent has no recorded `pr` link but is not
+     a no-op, re-resolve it from the branch (same as step 2): extract the parent task ID's first
+     8 characters and run `gh api repos/<owner>/<repo>/pulls?head=<owner>:mr/<parent-id8>&state=open`;
+     extract the PR number from the result. Then run `gh api --method PUT repos/<owner>/<repo>/pulls/<number>/merge -f merge_method=squash` (the reviewer already has the owner token via `apply_owner_token` → GH_TOKEN). This works where `gh pr merge --auto` fails: `--auto` requires branch protection these private free-plan repos cannot have, and `gh pr merge` mis-resolves credentials with multiple gh accounts. If the merge succeeds, transition the parent: `agentask transition <parent-id> --to done`.
    - **NO-OP (verified no-op, no `pr` link):** there is NOTHING to merge — do NOT run `gh pr merge`.
      Drive it straight to done via the same transition: `agentask transition <parent-id> --to done
      --note "no-op verified against main; no merge needed"`.
