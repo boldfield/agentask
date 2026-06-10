@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -118,6 +119,148 @@ func TestExecuteProjectsMissingToken(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
 		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
+func TestExecuteShowTable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:           "task-1",
+				State:        "in_progress",
+				Model:        "opus",
+				Kind:         "implement",
+				Title:        "Test Task",
+				Spec:         "Test spec",
+				TargetTaskID: nil,
+				Links: []tuiclient.TaskLink{
+					{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/102"},
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), server.URL, "test-token", false, []string{"task-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeShow failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "ID: task-1") {
+		t.Errorf("expected 'ID: task-1' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "State: in_progress") {
+		t.Errorf("expected 'State: in_progress' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Model: opus") {
+		t.Errorf("expected 'Model: opus' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Kind: implement") {
+		t.Errorf("expected 'Kind: implement' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Title: Test Task") {
+		t.Errorf("expected 'Title: Test Task' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Spec: Test spec") {
+		t.Errorf("expected 'Spec: Test spec' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "Links:") {
+		t.Errorf("expected 'Links:' in output, got: %s", output)
+	}
+	if !strings.Contains(output, "pr: https://github.com/boldfield/agentask/pull/102") {
+		t.Errorf("expected link in output, got: %s", output)
+	}
+}
+
+func TestExecuteShowJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-1",
+				State: "ready",
+				Model: "haiku",
+				Kind:  "implement",
+				Title: "Test Task",
+				Spec:  "Test spec",
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), server.URL, "test-token", true, []string{"--json", "task-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeShow failed: %v", err)
+	}
+
+	output := buf.String()
+	var result tuiclient.TaskDetail
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	if result.ID != "task-1" {
+		t.Errorf("expected task ID 'task-1', got %q", result.ID)
+	}
+	if result.Title != "Test Task" {
+		t.Errorf("expected title 'Test Task', got %q", result.Title)
+	}
+}
+
+func TestExecuteShowMissingID(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), "http://localhost:8080", "test-token", false, []string{}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing task ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "task id required") {
+		t.Errorf("expected error to mention 'task id required', got: %v", err)
+	}
+}
+
+func TestExecuteShowMissingURL(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), "", "test-token", false, []string{"task-1"}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_URL") {
+		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	}
+}
+
+func TestExecuteShowMissingToken(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), "http://localhost:8080", "", false, []string{"task-1"}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
+		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
+func TestExecuteShowServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.WriteHeader(http.StatusNotFound)
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"error": "task not found"}`)
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeShow(context.Background(), server.URL, "test-token", false, []string{"nonexistent-id"}, buf)
+	if err == nil {
+		t.Fatal("expected error for non-existent task, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to get task") {
+		t.Errorf("expected error to mention 'failed to get task', got: %v", err)
 	}
 }
 
@@ -334,131 +477,6 @@ func TestExecuteClaimServerError(t *testing.T) {
 	err := executeClaim(context.Background(), server.URL, "test-token", []string{"task123"})
 	if err == nil {
 		t.Fatal("expected error for server error, got nil")
-	}
-}
-
-func TestResolveAgentIdentity(t *testing.T) {
-	tests := []struct {
-		name          string
-		agentFlag     string
-		modelFlag     string
-		envAgent      string
-		envModel      string
-		expectedAgent string
-		expectedModel string
-		expectError   bool
-		errorContains string
-	}{
-		{
-			name:          "flag wins",
-			agentFlag:     "flag-agent",
-			modelFlag:     "flag-model",
-			envAgent:      "env-agent",
-			envModel:      "env-model",
-			expectedAgent: "flag-agent",
-			expectedModel: "flag-model",
-		},
-		{
-			name:          "agent flag wins over env",
-			agentFlag:     "flag-agent",
-			modelFlag:     "",
-			envAgent:      "env-agent",
-			envModel:      "env-model",
-			expectedAgent: "flag-agent",
-			expectedModel: "env-model",
-		},
-		{
-			name:          "model flag wins over env",
-			agentFlag:     "",
-			modelFlag:     "flag-model",
-			envAgent:      "env-agent",
-			envModel:      "env-model",
-			expectedAgent: "env-agent",
-			expectedModel: "flag-model",
-		},
-		{
-			name:          "fallback to env when flags empty",
-			agentFlag:     "",
-			modelFlag:     "",
-			envAgent:      "env-agent",
-			envModel:      "env-model",
-			expectedAgent: "env-agent",
-			expectedModel: "env-model",
-		},
-		{
-			name:          "error when agent ID missing",
-			agentFlag:     "",
-			modelFlag:     "flag-model",
-			envAgent:      "",
-			envModel:      "env-model",
-			expectError:   true,
-			errorContains: "agent ID is required",
-		},
-		{
-			name:          "error when model missing",
-			agentFlag:     "flag-agent",
-			modelFlag:     "",
-			envAgent:      "env-agent",
-			envModel:      "",
-			expectError:   true,
-			errorContains: "model is required",
-		},
-		{
-			name:          "error when both missing",
-			agentFlag:     "",
-			modelFlag:     "",
-			envAgent:      "",
-			envModel:      "",
-			expectError:   true,
-			errorContains: "agent ID is required",
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			// Save current env values
-			oldAgent := os.Getenv("AGENT_ID")
-			oldModel := os.Getenv("AGENT_MODEL")
-			defer func() {
-				os.Setenv("AGENT_ID", oldAgent)
-				os.Setenv("AGENT_MODEL", oldModel)
-			}()
-
-			// Set test env values
-			if tt.envAgent != "" {
-				os.Setenv("AGENT_ID", tt.envAgent)
-			} else {
-				os.Unsetenv("AGENT_ID")
-			}
-			if tt.envModel != "" {
-				os.Setenv("AGENT_MODEL", tt.envModel)
-			} else {
-				os.Unsetenv("AGENT_MODEL")
-			}
-
-			// Call function
-			agent, model, err := resolveAgentIdentity(tt.agentFlag, tt.modelFlag)
-
-			// Check error
-			if tt.expectError {
-				if err == nil {
-					t.Fatalf("expected error, got nil")
-				}
-				if !strings.Contains(err.Error(), tt.errorContains) {
-					t.Errorf("expected error to contain %q, got: %v", tt.errorContains, err)
-				}
-			} else {
-				if err != nil {
-					t.Fatalf("expected no error, got: %v", err)
-				}
-				if agent != tt.expectedAgent {
-					t.Errorf("expected agent %q, got %q", tt.expectedAgent, agent)
-				}
-				if model != tt.expectedModel {
-					t.Errorf("expected model %q, got %q", tt.expectedModel, model)
-				}
-			}
-		})
 	}
 }
 
@@ -712,5 +730,130 @@ func TestExecuteSubmitMissingAgent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "agent ID is required") {
 		t.Errorf("expected error to mention agent ID, got: %v", err)
+	}
+}
+
+func TestResolveAgentIdentity(t *testing.T) {
+	tests := []struct {
+		name          string
+		agentFlag     string
+		modelFlag     string
+		envAgent      string
+		envModel      string
+		expectedAgent string
+		expectedModel string
+		expectError   bool
+		errorContains string
+	}{
+		{
+			name:          "flag wins",
+			agentFlag:     "flag-agent",
+			modelFlag:     "flag-model",
+			envAgent:      "env-agent",
+			envModel:      "env-model",
+			expectedAgent: "flag-agent",
+			expectedModel: "flag-model",
+		},
+		{
+			name:          "agent flag wins over env",
+			agentFlag:     "flag-agent",
+			modelFlag:     "",
+			envAgent:      "env-agent",
+			envModel:      "env-model",
+			expectedAgent: "flag-agent",
+			expectedModel: "env-model",
+		},
+		{
+			name:          "model flag wins over env",
+			agentFlag:     "",
+			modelFlag:     "flag-model",
+			envAgent:      "env-agent",
+			envModel:      "env-model",
+			expectedAgent: "env-agent",
+			expectedModel: "flag-model",
+		},
+		{
+			name:          "fallback to env when flags empty",
+			agentFlag:     "",
+			modelFlag:     "",
+			envAgent:      "env-agent",
+			envModel:      "env-model",
+			expectedAgent: "env-agent",
+			expectedModel: "env-model",
+		},
+		{
+			name:          "error when agent ID missing",
+			agentFlag:     "",
+			modelFlag:     "flag-model",
+			envAgent:      "",
+			envModel:      "env-model",
+			expectError:   true,
+			errorContains: "agent ID is required",
+		},
+		{
+			name:          "error when model missing",
+			agentFlag:     "flag-agent",
+			modelFlag:     "",
+			envAgent:      "env-agent",
+			envModel:      "",
+			expectError:   true,
+			errorContains: "model is required",
+		},
+		{
+			name:          "error when both missing",
+			agentFlag:     "",
+			modelFlag:     "",
+			envAgent:      "",
+			envModel:      "",
+			expectError:   true,
+			errorContains: "agent ID is required",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// Save current env values
+			oldAgent := os.Getenv("AGENT_ID")
+			oldModel := os.Getenv("AGENT_MODEL")
+			defer func() {
+				os.Setenv("AGENT_ID", oldAgent)
+				os.Setenv("AGENT_MODEL", oldModel)
+			}()
+
+			// Set test env values
+			if tt.envAgent != "" {
+				os.Setenv("AGENT_ID", tt.envAgent)
+			} else {
+				os.Unsetenv("AGENT_ID")
+			}
+			if tt.envModel != "" {
+				os.Setenv("AGENT_MODEL", tt.envModel)
+			} else {
+				os.Unsetenv("AGENT_MODEL")
+			}
+
+			// Call function
+			agent, model, err := resolveAgentIdentity(tt.agentFlag, tt.modelFlag)
+
+			// Check error
+			if tt.expectError {
+				if err == nil {
+					t.Fatalf("expected error, got nil")
+				}
+				if !strings.Contains(err.Error(), tt.errorContains) {
+					t.Errorf("expected error to contain %q, got: %v", tt.errorContains, err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("expected no error, got: %v", err)
+				}
+				if agent != tt.expectedAgent {
+					t.Errorf("expected agent %q, got %q", tt.expectedAgent, agent)
+				}
+				if model != tt.expectedModel {
+					t.Errorf("expected model %q, got %q", tt.expectedModel, model)
+				}
+			}
+		})
 	}
 }

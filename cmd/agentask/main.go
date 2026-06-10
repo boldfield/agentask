@@ -129,6 +129,11 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "show":
+		if err := executeShow(ctx, baseURL, token, jsonOutput, args, os.Stdout); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	case "transition":
 		if err := executeTransition(ctx, baseURL, token, args); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
@@ -190,8 +195,7 @@ func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool
 	return nil
 }
 
-func executeTransition(ctx context.Context, baseURL, token string, args []string) error {
-	// Validate configuration
+func executeShow(ctx context.Context, baseURL, token string, jsonOutput bool, args []string, out io.Writer) error {
 	if baseURL == "" {
 		return fmt.Errorf("AGENTASK_URL environment variable not set")
 	}
@@ -199,7 +203,59 @@ func executeTransition(ctx context.Context, baseURL, token string, args []string
 		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
 	}
 
-	// Parse arguments: id, --to state, [--note text]
+	taskID := ""
+	for _, arg := range args {
+		if arg != "--json" {
+			taskID = arg
+			break
+		}
+	}
+
+	if taskID == "" {
+		return fmt.Errorf("task id required")
+	}
+
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	task, err := client.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to get task: %w", err)
+	}
+
+	if jsonOutput {
+		output, err := json.MarshalIndent(task, "", "  ")
+		if err != nil {
+			return fmt.Errorf("failed to marshal JSON: %w", err)
+		}
+		fmt.Fprintln(out, string(output))
+	} else {
+		fmt.Fprintf(out, "ID: %s\n", task.ID)
+		fmt.Fprintf(out, "State: %s\n", task.State)
+		fmt.Fprintf(out, "Model: %s\n", task.Model)
+		fmt.Fprintf(out, "Kind: %s\n", task.Kind)
+		fmt.Fprintf(out, "Title: %s\n", task.Title)
+		fmt.Fprintf(out, "Spec: %s\n", task.Spec)
+		if task.TargetTaskID != nil {
+			fmt.Fprintf(out, "Target Task ID: %s\n", *task.TargetTaskID)
+		}
+		if len(task.Links) > 0 {
+			fmt.Fprintf(out, "Links:\n")
+			for _, link := range task.Links {
+				fmt.Fprintf(out, "  - %s: %s\n", link.Kind, link.Value)
+			}
+		}
+	}
+
+	return nil
+}
+
+func executeTransition(ctx context.Context, baseURL, token string, args []string) error {
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
 	if len(args) < 1 {
 		return fmt.Errorf("missing task id")
 	}
@@ -209,7 +265,6 @@ func executeTransition(ctx context.Context, baseURL, token string, args []string
 	var note *string
 	var i int
 
-	// Parse remaining arguments for --to and --note
 	for i = 1; i < len(args); i++ {
 		switch args[i] {
 		case "--to":
@@ -225,18 +280,15 @@ func executeTransition(ctx context.Context, baseURL, token string, args []string
 			}
 			note = &args[i]
 		case "--json":
-			// Skip --json flag, already handled by runClient
 		default:
 			return fmt.Errorf("unknown flag: %s", args[i])
 		}
 	}
 
-	// Validate required --to flag
 	if toState == "" {
 		return fmt.Errorf("--to flag is required")
 	}
 
-	// Create client and transition task
 	client := tuiclient.NewHTTPClient(baseURL, token)
 	if err := client.TransitionTask(ctx, taskID, toState, note); err != nil {
 		return fmt.Errorf("failed to transition task: %w", err)
@@ -288,7 +340,6 @@ func executeClaim(ctx context.Context, baseURL, token string, args []string) err
 }
 
 func executeSubmit(ctx context.Context, baseURL, token string, args []string) error {
-	// Validate configuration
 	if baseURL == "" {
 		return fmt.Errorf("AGENTASK_URL environment variable not set")
 	}
@@ -296,7 +347,6 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
 	}
 
-	// Parse flags
 	fs := flag.NewFlagSet("submit", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	resultFlag := fs.String("result", "", "result/writeup")
@@ -309,18 +359,15 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 		return fmt.Errorf("failed to parse flags: %w", err)
 	}
 
-	// Get positional argument (task ID)
 	if fs.NArg() < 1 {
 		return fmt.Errorf("task ID is required")
 	}
 	taskID := fs.Arg(0)
 
-	// Validate required --result flag
 	if *resultFlag == "" {
 		return fmt.Errorf("--result flag is required")
 	}
 
-	// Resolve agent ID
 	agentID := *agentFlag
 	if agentID == "" {
 		agentID = os.Getenv("AGENT_ID")
@@ -329,19 +376,16 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 		return fmt.Errorf("agent ID is required (set --agent flag or AGENT_ID environment variable)")
 	}
 
-	// Validate conflicting flag combinations
 	if *noOpFlag && (*prFlag != "" || *branchFlag != "") {
 		return fmt.Errorf("--no-op cannot be combined with --pr or --branch")
 	}
 
-	// Build links
 	var links []tuiclient.LinkInput
 	if *noOpFlag {
 		links = []tuiclient.LinkInput{
 			{Kind: "no_op", Value: "already-satisfied"},
 		}
 	} else {
-		// PR and branch must be used together if used at all
 		if *prFlag != "" && *branchFlag != "" {
 			links = []tuiclient.LinkInput{
 				{Kind: "pr", Value: *prFlag},
@@ -352,17 +396,14 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 		}
 	}
 
-	// Convert verdict flag to pointer
 	var verdict *string
 	if *verdictFlag != "" {
-		// Validate verdict value
 		if *verdictFlag != "approve" && *verdictFlag != "reject" {
 			return fmt.Errorf("verdict must be 'approve' or 'reject', got %q", *verdictFlag)
 		}
 		verdict = verdictFlag
 	}
 
-	// Create client and submit task
 	client := tuiclient.NewHTTPClient(baseURL, token)
 	if err := client.SubmitTask(ctx, taskID, agentID, *resultFlag, verdict, links); err != nil {
 		return fmt.Errorf("failed to submit task: %w", err)
