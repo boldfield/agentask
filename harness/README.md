@@ -3,6 +3,13 @@
 The headless pull-worker fleet that drains an Agentask board: model-pinned agents claim their own
 work, run it via `claude -p`, and submit — Haiku implements, Opus reviews, the human merges.
 
+## Requirements
+
+- `agentask` CLI must be on `PATH` for board polling and work discovery
+- `gh` (GitHub CLI) for repo cloning and git authentication  
+- `jq` for JSON processing
+- Bash 3.2+ (macOS ships 3.2; Linux and others typically have 4+)
+
 ## One engine
 
 `agent.sh` is the whole loop, parameterized by `--model` + `--kind`. The wrappers are one-liners:

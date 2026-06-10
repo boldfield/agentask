@@ -19,6 +19,8 @@
 #
 # NOTE: assumes each repo's default branch is `main` (matches worker-prompt.md). master-default repos
 # need the prompt parameterized — not supported yet.
+#
+# NOTE: requires `agentask` CLI to be on PATH for board discovery and polling.
 set -uo pipefail
 set -m
 
@@ -142,11 +144,10 @@ dispatch() {
 }
 nap() { sleep "$1" & wait $! 2>/dev/null; }
 
-# Count claimable tasks of THIS agent's kind for a project (shared model tiers return both kinds).
-claimable_count() {
-  curl -s --max-time 15 -H "Authorization: Bearer $AGENTASK_TOKEN" \
-    "$AGENTASK_URL/projects/$1/tasks?model=$AGENT_MODEL&claimable=true" \
-    | jq --arg k "$KIND" '[.[] | select(.kind == $k)] | length' 2>/dev/null || echo 0
+# Check if a project has claimable tasks for THIS agent's (model, kind).
+# Returns 0 if claimable work exists, 1 if not.
+has_claimable_work() {
+  agentask next --project "$1" --model "$AGENT_MODEL" --kind "$KIND" >/dev/null 2>&1
 }
 
 # Cleanup: drop ALL of this slot's worktrees (single wt-$SLOT and multi wt-$SLOT-*), prune clones.
@@ -166,7 +167,7 @@ if [ "$MULTI" = 0 ]; then
   MAIN_REPO="${AGENTASK_MAIN_REPO:-$AGENTASK_REPO}"
   WT="$AGENTASK_HOME/wt-$SLOT"
   # Guard: refuse if MAIN_REPO doesn't match the pinned project's repo.
-  _proj_repo=$(curl -s --max-time 15 -H "Authorization: Bearer $AGENTASK_TOKEN" "$AGENTASK_URL/projects/$AGENTASK_PROJECT" | jq -r '.repo // ""')
+  _proj_repo=$(agentask project "$AGENTASK_PROJECT" --json | jq -r '.repo // ""')
   _origin=$(git -C "$MAIN_REPO" remote get-url origin 2>/dev/null || echo "")
   if [ -n "$_proj_repo" ] && [ "$(norm_repo "$_proj_repo")" != "$(norm_repo "$_origin")" ]; then
     echo "[$AGENT_ID] REFUSING: project $AGENTASK_PROJECT repo is '$(norm_repo "$_proj_repo")' but AGENTASK_REPO ($MAIN_REPO) points at '$(norm_repo "$_origin")'." >&2
@@ -182,7 +183,7 @@ if [ "$MULTI" = 0 ]; then
   echo "[$AGENT_ID] $ROLE ($MODEL/$KIND) SINGLE @ project $AGENTASK_PROJECT @ $WT; polling"
   while true; do
     [ "$STOP" -eq 1 ] && break
-    if [ "$(claimable_count "$AGENTASK_PROJECT")" -gt 0 ]; then
+    if has_claimable_work "$AGENTASK_PROJECT"; then
       echo "[$AGENT_ID] $(date '+%H:%M:%S') claimable $KIND; dispatching ($MODEL)…"
       dispatch
       git -C "$WT" fetch origin --quiet 2>/dev/null || true
@@ -205,8 +206,7 @@ while true; do
   # Discover projects holding my (model,kind) claimable work — one call (v0.4.0 filter).
   # (while-read, not mapfile: macOS ships bash 3.2.) sort -R shuffles so projects drain fairly.
   rows=()
-  while IFS= read -r _row; do rows+=("$_row"); done < <(curl -s --max-time 20 -H "Authorization: Bearer $AGENTASK_TOKEN" \
-      "$AGENTASK_URL/projects?claimable=true&model=$AGENT_MODEL&kind=$KIND" \
+  while IFS= read -r _row; do rows+=("$_row"); done < <(agentask projects --claimable --model "$AGENT_MODEL" --kind "$KIND" --json \
       | jq -r '.[] | select(.repo != null and .repo != "") | "\(.id)\t\(.repo)"' 2>/dev/null \
       | sort -R)
   if [ "${#rows[@]}" -eq 0 ]; then
@@ -220,7 +220,7 @@ while true; do
     [ -z "$pid" ] && continue
     in_allow "$pid" || continue
     # Re-check claimable (the listing can race another worker); skip if it emptied out.
-    [ "$(claimable_count "$pid")" -gt 0 ] || continue
+    has_claimable_work "$pid" || continue
     apply_owner_token "$(norm_repo "$prepo" | cut -d/ -f1)"   # auth as the repo's owner (default auth if unmapped)
     clone="$(ensure_clone "$prepo")" || continue
     wt="$(ensure_worktree "$clone")" || continue
