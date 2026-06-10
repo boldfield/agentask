@@ -159,6 +159,11 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "heartbeat":
+		if err := executeHeartbeat(ctx, baseURL, token, args); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command '%s'\n", verb)
 		os.Exit(1)
@@ -474,6 +479,43 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 	client := tuiclient.NewHTTPClient(baseURL, token)
 	if err := client.SubmitTask(ctx, taskID, agentID, *resultFlag, verdict, links); err != nil {
 		return fmt.Errorf("failed to submit task: %w", err)
+	}
+
+	return nil
+}
+
+func executeHeartbeat(ctx context.Context, baseURL, token string, args []string) error {
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	fs := flag.NewFlagSet("heartbeat", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	agentFlag := fs.String("agent", "", "agent ID")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
+	}
+
+	if fs.NArg() < 1 {
+		return fmt.Errorf("task ID is required")
+	}
+	taskID := fs.Arg(0)
+
+	// Resolve agent ID
+	agentID := *agentFlag
+	if agentID == "" {
+		agentID = os.Getenv("AGENT_ID")
+	}
+	if agentID == "" {
+		return fmt.Errorf("agent ID is required (set --agent flag or AGENT_ID environment variable)")
+	}
+
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	if err := client.HeartbeatTask(ctx, taskID, agentID); err != nil {
+		return fmt.Errorf("failed to heartbeat task: %w", err)
 	}
 
 	return nil
