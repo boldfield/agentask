@@ -98,9 +98,10 @@ rely on sensing elapsed time.
    "<full PR URL>" --branch "mr/<TASKID8>"`. **The `--pr` URL is REQUIRED, must be the full PR URL (not
    `#123`), and must be the VERIFIED-OPEN URL from step 7** — never fabricated or hand-built; `--pr` and
    `--branch` go together. Without a PR the reviewer has nothing to review and will reject — EXCEPT a
-   verified **no-op submit** (step 6), which uses `--no-op` instead (and no `--pr`/`--branch`). Attach
-   `--pr`+`--branch` on the FIRST submit. On a REWORK submit (continuing the SAME branch/PR), the links
-   are already attached — OMIT `--pr`/`--branch` and send only `--result`.
+   verified **no-op submit** (step 6), which uses `--no-op` instead (and no `--pr`/`--branch`). ALWAYS
+   pass `--pr <full PR URL> --branch mr/<TASKID8>` on EVERY non-no-op submit (including rework) — the
+   server dedups links, so re-sending is safe, and this prevents the case where round-1 forgot the link
+   and round-2 (rework) omitted it, leaving the task permanently link-less.
 9. STOP. Don't claim another task, don't merge, don't transition the task yourself.
 
 ## Rules
