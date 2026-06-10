@@ -37,6 +37,7 @@ type Store interface {
 	GetTask(ctx context.Context, id string) (TaskWithDepsAndLinks, error)
 	ListTasks(ctx context.Context, projectID string, filter TaskListFilter) ([]Task, error)
 	ListDependents(ctx context.Context, taskID string) ([]string, error)
+	UpdateTaskDependsOn(ctx context.Context, taskID string, depIDs []string) (Task, error)
 	ClaimTask(ctx context.Context, taskID, agentID, model string, leaseTTL time.Duration) (Task, error)
 	HeartbeatTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 	PromoteTask(ctx context.Context, taskID string) (Task, error)
@@ -2372,6 +2373,79 @@ func (s *sqliteStore) ReleaseTask(ctx context.Context, taskID string) (Task, err
 
 	if err := tx.Commit(); err != nil {
 		return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	return t, nil
+}
+
+// UpdateTaskDependsOn updates the depends_on edges for a task.
+// Returns ValidationError if self-dependency is detected.
+// Returns ConflictError if a cycle would be created.
+func (s *sqliteStore) UpdateTaskDependsOn(ctx context.Context, taskID string, depIDs []string) (Task, error) {
+	// Check for self-dependency
+	for _, depID := range depIDs {
+		if depID == taskID {
+			return Task{}, invalid("SELF_DEPENDENCY", "a task cannot depend on itself")
+		}
+	}
+
+	// Load the full dependency graph
+	rows, err := s.conn.QueryContext(ctx, `
+		SELECT task_id, depends_on_id FROM task_dep
+	`)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to query dependency graph: %w", err)
+	}
+	defer rows.Close()
+
+	edges := make(map[string][]string)
+	for rows.Next() {
+		var taskID, depID string
+		if err := rows.Scan(&taskID, &depID); err != nil {
+			return Task{}, fmt.Errorf("failed to scan dependency: %w", err)
+		}
+		edges[taskID] = append(edges[taskID], depID)
+	}
+	if err := rows.Err(); err != nil {
+		return Task{}, fmt.Errorf("error iterating dependency graph: %w", err)
+	}
+
+	// Check if the update would create a cycle
+	if wouldCreateCycle(edges, taskID, depIDs) {
+		return Task{}, conflict("CYCLE_DETECTED", "updating depends_on would create a cycle")
+	}
+
+	// Update the dependencies in a transaction
+	tx, err := s.conn.BeginTx(ctx, nil)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to begin transaction: %w", err)
+	}
+	defer tx.Rollback()
+
+	if err := s.setTaskDepends(ctx, tx, taskID, depIDs); err != nil {
+		return Task{}, err
+	}
+
+	if err := tx.Commit(); err != nil {
+		return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
+	}
+
+	// Return the updated task
+	var t Task
+	var reviewModelsJSON *string
+	err = s.conn.QueryRowContext(ctx, `
+		SELECT id, project_id, document_id, title, spec, state, assignee, lease_expires_at, result, model, kind, review_models, review_round, target_task_id, verdict, agent_merge, held, created_at, updated_at, archived_at, superseded_by
+		FROM task WHERE id = ?
+	`, taskID).Scan(&t.ID, &t.ProjectID, &t.DocumentID, &t.Title, &t.Spec, &t.State, &t.Assignee, &t.LeaseExpiresAt, &t.Result, &t.Model, &t.Kind, &reviewModelsJSON, &t.ReviewRound, &t.TargetTaskID, &t.Verdict, &t.AgentMerge, &t.Held, &t.CreatedAt, &t.UpdatedAt, &t.ArchivedAt, &t.SupersededBy)
+	if err != nil {
+		return Task{}, fmt.Errorf("failed to fetch updated task: %w", err)
+	}
+
+	t.ReviewModels = []string{}
+	if reviewModelsJSON != nil {
+		if err := json.Unmarshal([]byte(*reviewModelsJSON), &t.ReviewModels); err != nil {
+			return Task{}, fmt.Errorf("failed to unmarshal review_models: %w", err)
+		}
 	}
 
 	return t, nil
