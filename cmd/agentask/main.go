@@ -134,6 +134,11 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "transition":
+		if err := executeTransition(ctx, baseURL, token, args); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	case "claim":
 		if err := executeClaim(ctx, baseURL, token, args); err != nil {
 			var claimErr *claimError
@@ -141,6 +146,11 @@ func runClient(verb string, args []string) {
 				fmt.Fprintf(os.Stderr, "error: %v\n", claimErr.Error())
 				os.Exit(claimErr.code)
 			}
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
+	case "submit":
+		if err := executeSubmit(ctx, baseURL, token, args); err != nil {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
@@ -238,6 +248,55 @@ func executeShow(ctx context.Context, baseURL, token string, jsonOutput bool, ar
 	return nil
 }
 
+func executeTransition(ctx context.Context, baseURL, token string, args []string) error {
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	if len(args) < 1 {
+		return fmt.Errorf("missing task id")
+	}
+
+	taskID := args[0]
+	var toState string
+	var note *string
+	var i int
+
+	for i = 1; i < len(args); i++ {
+		switch args[i] {
+		case "--to":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--to requires a value")
+			}
+			toState = args[i]
+		case "--note":
+			i++
+			if i >= len(args) {
+				return fmt.Errorf("--note requires a value")
+			}
+			note = &args[i]
+		case "--json":
+		default:
+			return fmt.Errorf("unknown flag: %s", args[i])
+		}
+	}
+
+	if toState == "" {
+		return fmt.Errorf("--to flag is required")
+	}
+
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	if err := client.TransitionTask(ctx, taskID, toState, note); err != nil {
+		return fmt.Errorf("failed to transition task: %w", err)
+	}
+
+	return nil
+}
+
 func executeClaim(ctx context.Context, baseURL, token string, args []string) error {
 	// Validate configuration
 	if baseURL == "" {
@@ -275,6 +334,79 @@ func executeClaim(ctx context.Context, baseURL, token string, args []string) err
 			return &claimError{message: "already claimed", code: 3}
 		}
 		return err
+	}
+
+	return nil
+}
+
+func executeSubmit(ctx context.Context, baseURL, token string, args []string) error {
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	fs := flag.NewFlagSet("submit", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	resultFlag := fs.String("result", "", "result/writeup")
+	verdictFlag := fs.String("verdict", "", "verdict (approve or reject)")
+	prFlag := fs.String("pr", "", "PR URL")
+	branchFlag := fs.String("branch", "", "branch name")
+	noOpFlag := fs.Bool("no-op", false, "mark as already-satisfied (no-op)")
+	agentFlag := fs.String("agent", "", "agent ID")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
+	}
+
+	if fs.NArg() < 1 {
+		return fmt.Errorf("task ID is required")
+	}
+	taskID := fs.Arg(0)
+
+	if *resultFlag == "" {
+		return fmt.Errorf("--result flag is required")
+	}
+
+	agentID := *agentFlag
+	if agentID == "" {
+		agentID = os.Getenv("AGENT_ID")
+	}
+	if agentID == "" {
+		return fmt.Errorf("agent ID is required (set --agent flag or AGENT_ID environment variable)")
+	}
+
+	if *noOpFlag && (*prFlag != "" || *branchFlag != "") {
+		return fmt.Errorf("--no-op cannot be combined with --pr or --branch")
+	}
+
+	var links []tuiclient.LinkInput
+	if *noOpFlag {
+		links = []tuiclient.LinkInput{
+			{Kind: "no_op", Value: "already-satisfied"},
+		}
+	} else {
+		if *prFlag != "" && *branchFlag != "" {
+			links = []tuiclient.LinkInput{
+				{Kind: "pr", Value: *prFlag},
+				{Kind: "branch", Value: *branchFlag},
+			}
+		} else if *prFlag != "" || *branchFlag != "" {
+			return fmt.Errorf("--pr and --branch must be provided together")
+		}
+	}
+
+	var verdict *string
+	if *verdictFlag != "" {
+		if *verdictFlag != "approve" && *verdictFlag != "reject" {
+			return fmt.Errorf("verdict must be 'approve' or 'reject', got %q", *verdictFlag)
+		}
+		verdict = verdictFlag
+	}
+
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	if err := client.SubmitTask(ctx, taskID, agentID, *resultFlag, verdict, links); err != nil {
+		return fmt.Errorf("failed to submit task: %w", err)
 	}
 
 	return nil
