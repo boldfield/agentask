@@ -3498,3 +3498,237 @@ func TestCreateTaskSanitizesControlChars(t *testing.T) {
 		t.Errorf("title not sanitized: got %q", created[0].Title)
 	}
 }
+
+// TestUpdateTaskDependsOnSucceeds verifies that updating depends_on succeeds.
+func TestUpdateTaskDependsOnSucceeds(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create two tasks
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task 1",
+			Spec:       "First task",
+			DocumentID: docID,
+		},
+		{
+			Title:      "Task 2",
+			Spec:       "Second task",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	task1ID := createdTasks[0].ID
+	task2ID := createdTasks[1].ID
+
+	// Update task2 to depend on task1
+	updatePayload := map[string]interface{}{
+		"depends_on": []string{task1ID},
+	}
+	updateBody, _ := json.Marshal(updatePayload)
+	updateReq := httptest.NewRequest("PATCH", "/tasks/"+task2ID, bytes.NewReader(updateBody))
+	updateReq.Header.Set("Authorization", authHeader)
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateW := httptest.NewRecorder()
+	server.mux.ServeHTTP(updateW, updateReq)
+
+	if updateW.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d; body: %s", updateW.Code, updateW.Body.String())
+	}
+
+	var updatedTask store.Task
+	if err := json.NewDecoder(updateW.Body).Decode(&updatedTask); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if updatedTask.ID != task2ID {
+		t.Errorf("expected task id %q, got %q", task2ID, updatedTask.ID)
+	}
+}
+
+// TestUpdateTaskDependsOnSelfDependencyReturns400 verifies that self-dependency returns 400 with SELF_DEPENDENCY code.
+func TestUpdateTaskDependsOnSelfDependencyReturns400(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a task
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task 1",
+			Spec:       "First task",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Try to make task depend on itself
+	updatePayload := map[string]interface{}{
+		"depends_on": []string{taskID},
+	}
+	updateBody, _ := json.Marshal(updatePayload)
+	updateReq := httptest.NewRequest("PATCH", "/tasks/"+taskID, bytes.NewReader(updateBody))
+	updateReq.Header.Set("Authorization", authHeader)
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateW := httptest.NewRecorder()
+	server.mux.ServeHTTP(updateW, updateReq)
+
+	if updateW.Code != http.StatusBadRequest {
+		t.Fatalf("expected status 400, got %d; body: %s", updateW.Code, updateW.Body.String())
+	}
+
+	var errResp map[string]interface{}
+	json.NewDecoder(updateW.Body).Decode(&errResp)
+	errObj := errResp["error"].(map[string]interface{})
+	if errObj["code"] != "SELF_DEPENDENCY" {
+		t.Errorf("expected error code SELF_DEPENDENCY, got %q", errObj["code"])
+	}
+}
+
+// TestUpdateTaskDependsOnCycleReturns409 verifies that cycle detection returns 409 with CYCLE_DETECTED code.
+func TestUpdateTaskDependsOnCycleReturns409(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create three tasks
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task 1",
+			Spec:       "First task",
+			DocumentID: docID,
+		},
+		{
+			Title:      "Task 2",
+			Spec:       "Second task",
+			DocumentID: docID,
+		},
+		{
+			Title:      "Task 3",
+			Spec:       "Third task",
+			DocumentID: docID,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	task1ID := createdTasks[0].ID
+	task2ID := createdTasks[1].ID
+	task3ID := createdTasks[2].ID
+
+	// Set up: task1 -> task2 -> task3
+	// First, make task2 depend on task1
+	update1Payload := map[string]interface{}{
+		"depends_on": []string{task1ID},
+	}
+	update1Body, _ := json.Marshal(update1Payload)
+	update1Req := httptest.NewRequest("PATCH", "/tasks/"+task2ID, bytes.NewReader(update1Body))
+	update1Req.Header.Set("Authorization", authHeader)
+	update1Req.Header.Set("Content-Type", "application/json")
+	update1W := httptest.NewRecorder()
+	server.mux.ServeHTTP(update1W, update1Req)
+
+	// Make task3 depend on task2
+	update2Payload := map[string]interface{}{
+		"depends_on": []string{task2ID},
+	}
+	update2Body, _ := json.Marshal(update2Payload)
+	update2Req := httptest.NewRequest("PATCH", "/tasks/"+task3ID, bytes.NewReader(update2Body))
+	update2Req.Header.Set("Authorization", authHeader)
+	update2Req.Header.Set("Content-Type", "application/json")
+	update2W := httptest.NewRecorder()
+	server.mux.ServeHTTP(update2W, update2Req)
+
+	// Try to make task1 depend on task3, creating a cycle: task1 -> task3 -> task2 -> task1
+	cyclePayload := map[string]interface{}{
+		"depends_on": []string{task3ID},
+	}
+	cycleBody, _ := json.Marshal(cyclePayload)
+	cycleReq := httptest.NewRequest("PATCH", "/tasks/"+task1ID, bytes.NewReader(cycleBody))
+	cycleReq.Header.Set("Authorization", authHeader)
+	cycleReq.Header.Set("Content-Type", "application/json")
+	cycleW := httptest.NewRecorder()
+	server.mux.ServeHTTP(cycleW, cycleReq)
+
+	if cycleW.Code != http.StatusConflict {
+		t.Fatalf("expected status 409, got %d; body: %s", cycleW.Code, cycleW.Body.String())
+	}
+
+	var errResp map[string]interface{}
+	json.NewDecoder(cycleW.Body).Decode(&errResp)
+	errObj := errResp["error"].(map[string]interface{})
+	if errObj["code"] != "CYCLE_DETECTED" {
+		t.Errorf("expected error code CYCLE_DETECTED, got %q", errObj["code"])
+	}
+}
+
+// TestUpdateTaskDependsOnUnknownTaskReturns404 verifies that unknown task returns 404.
+func TestUpdateTaskDependsOnUnknownTaskReturns404(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	// Try to update a non-existent task
+	updatePayload := map[string]interface{}{
+		"depends_on": []string{},
+	}
+	updateBody, _ := json.Marshal(updatePayload)
+	updateReq := httptest.NewRequest("PATCH", "/tasks/unknown-task-id", bytes.NewReader(updateBody))
+	updateReq.Header.Set("Authorization", authHeader)
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateW := httptest.NewRecorder()
+	server.mux.ServeHTTP(updateW, updateReq)
+
+	if updateW.Code != http.StatusNotFound {
+		t.Fatalf("expected status 404, got %d; body: %s", updateW.Code, updateW.Body.String())
+	}
+
+	var errResp map[string]interface{}
+	json.NewDecoder(updateW.Body).Decode(&errResp)
+	errObj := errResp["error"].(map[string]interface{})
+	if errObj["code"] != "NOT_FOUND" {
+		t.Errorf("expected error code NOT_FOUND, got %q", errObj["code"])
+	}
+}
+
+// TestUpdateTaskDependsOnRequiresAuth verifies that update endpoint requires auth.
+func TestUpdateTaskDependsOnRequiresAuth(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+
+	// Try to update without auth
+	updatePayload := map[string]interface{}{
+		"depends_on": []string{},
+	}
+	updateBody, _ := json.Marshal(updatePayload)
+	updateReq := httptest.NewRequest("PATCH", "/tasks/some-task-id", bytes.NewReader(updateBody))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateW := httptest.NewRecorder()
+	server.mux.ServeHTTP(updateW, updateReq)
+
+	if updateW.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status 401, got %d", updateW.Code)
+	}
+}
