@@ -1820,6 +1820,21 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 									if err != nil {
 										return TaskWithDepsAndLinks{}, fmt.Errorf("failed to escalate task: %w", err)
 									}
+									// Promote the escalated task from backlog to ready so the higher-tier worker can claim it immediately
+									_, err = tx.ExecContext(ctx, `
+										UPDATE task
+										SET state='ready', updated_at=?
+										WHERE id=?
+									`, now, escalatedTaskID)
+									if err != nil {
+										return TaskWithDepsAndLinks{}, fmt.Errorf("failed to promote escalated task: %w", err)
+									}
+									// Append transition event for the escalated task
+									escalationNote := "backlog->ready (auto-promoted via escalation)"
+									_, err = s.AppendEvent(ctx, tx, escalatedTaskID, "system", "transition", nil, &escalationNote)
+									if err != nil {
+										return TaskWithDepsAndLinks{}, fmt.Errorf("failed to append escalation transition event: %w", err)
+									}
 									// Emit escalation event on the old (now superseded) task
 									eventNote := fmt.Sprintf("%s→%s round %d, superseded by %s", parentModel, nextModel, parentReviewRound, escalatedTaskID)
 									_, err = s.AppendEvent(ctx, tx, *targetTaskID, "system", "escalation", nil, &eventNote)
