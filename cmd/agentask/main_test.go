@@ -461,3 +461,256 @@ func TestResolveAgentIdentity(t *testing.T) {
 		})
 	}
 }
+
+func TestExecuteSubmitSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/tasks/task123/submit" {
+			var req struct {
+				AgentID string
+				Result  string
+				Verdict *string
+				Links   []struct {
+					Kind  string
+					Value string
+				}
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if req.Result != "implementation done" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if len(req.Links) != 2 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "implementation done",
+		"--pr", "https://github.com/example/repo/pull/1",
+		"--branch", "mr/a1b2c3d4",
+		"task123",
+	})
+	if err != nil {
+		t.Fatalf("executeSubmit failed: %v", err)
+	}
+}
+
+func TestExecuteSubmitNoOp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/tasks/task123/submit" {
+			var req struct {
+				AgentID string
+				Result  string
+				Links   []struct {
+					Kind  string
+					Value string
+				}
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if len(req.Links) != 1 || req.Links[0].Kind != "no_op" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "already satisfied",
+		"--no-op",
+		"task123",
+	})
+	if err != nil {
+		t.Fatalf("executeSubmit failed: %v", err)
+	}
+}
+
+func TestExecuteSubmitVerdict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/tasks/task123/submit" {
+			var req struct {
+				Verdict *string
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if req.Verdict == nil || *req.Verdict != "approve" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "looks good",
+		"--verdict", "approve",
+		"task123",
+	})
+	if err != nil {
+		t.Fatalf("executeSubmit failed: %v", err)
+	}
+}
+
+func TestExecuteSubmitNoOpWithPR(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "test",
+		"--no-op",
+		"--pr", "https://github.com/example/repo/pull/1",
+		"task123",
+	})
+	if err == nil {
+		t.Fatal("expected error for --no-op with --pr, got nil")
+	}
+	if !strings.Contains(err.Error(), "cannot be combined") {
+		t.Errorf("expected error to mention conflict, got: %v", err)
+	}
+}
+
+func TestExecuteSubmitMissingResult(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{"task123"})
+	if err == nil {
+		t.Fatal("expected error for missing --result, got nil")
+	}
+	if !strings.Contains(err.Error(), "--result") {
+		t.Errorf("expected error to mention --result, got: %v", err)
+	}
+}
+
+func TestExecuteSubmitMissingTaskID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "test",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing task ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "task ID is required") {
+		t.Errorf("expected error to mention task ID, got: %v", err)
+	}
+}
+
+func TestExecuteSubmitPRWithoutBranch(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "test",
+		"--pr", "https://github.com/example/repo/pull/1",
+		"task123",
+	})
+	if err == nil {
+		t.Fatal("expected error for --pr without --branch, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be provided together") {
+		t.Errorf("expected error to mention together, got: %v", err)
+	}
+}
+
+func TestExecuteSubmitInvalidVerdict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "test",
+		"--verdict", "invalid",
+		"task123",
+	})
+	if err == nil {
+		t.Fatal("expected error for invalid verdict, got nil")
+	}
+	if !strings.Contains(err.Error(), "must be 'approve' or 'reject'") {
+		t.Errorf("expected error to mention verdict values, got: %v", err)
+	}
+}
+
+func TestExecuteSubmitMissingAgent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer func() {
+		if oldAgent != "" {
+			os.Setenv("AGENT_ID", oldAgent)
+		} else {
+			os.Unsetenv("AGENT_ID")
+		}
+	}()
+	os.Unsetenv("AGENT_ID")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "test",
+		"task123",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing agent ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "agent ID is required") {
+		t.Errorf("expected error to mention agent ID, got: %v", err)
+	}
+}

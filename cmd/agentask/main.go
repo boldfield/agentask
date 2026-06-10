@@ -144,6 +144,11 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "submit":
+		if err := executeSubmit(ctx, baseURL, token, args); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command '%s'\n", verb)
 		os.Exit(1)
@@ -277,6 +282,90 @@ func executeClaim(ctx context.Context, baseURL, token string, args []string) err
 			return &claimError{message: "already claimed", code: 3}
 		}
 		return err
+	}
+
+	return nil
+}
+
+func executeSubmit(ctx context.Context, baseURL, token string, args []string) error {
+	// Validate configuration
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	// Parse flags
+	fs := flag.NewFlagSet("submit", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	resultFlag := fs.String("result", "", "result/writeup")
+	verdictFlag := fs.String("verdict", "", "verdict (approve or reject)")
+	prFlag := fs.String("pr", "", "PR URL")
+	branchFlag := fs.String("branch", "", "branch name")
+	noOpFlag := fs.Bool("no-op", false, "mark as already-satisfied (no-op)")
+	agentFlag := fs.String("agent", "", "agent ID")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
+	}
+
+	// Get positional argument (task ID)
+	if fs.NArg() < 1 {
+		return fmt.Errorf("task ID is required")
+	}
+	taskID := fs.Arg(0)
+
+	// Validate required --result flag
+	if *resultFlag == "" {
+		return fmt.Errorf("--result flag is required")
+	}
+
+	// Resolve agent ID
+	agentID := *agentFlag
+	if agentID == "" {
+		agentID = os.Getenv("AGENT_ID")
+	}
+	if agentID == "" {
+		return fmt.Errorf("agent ID is required (set --agent flag or AGENT_ID environment variable)")
+	}
+
+	// Validate conflicting flag combinations
+	if *noOpFlag && (*prFlag != "" || *branchFlag != "") {
+		return fmt.Errorf("--no-op cannot be combined with --pr or --branch")
+	}
+
+	// Build links
+	var links []tuiclient.LinkInput
+	if *noOpFlag {
+		links = []tuiclient.LinkInput{
+			{Kind: "no_op", Value: "already-satisfied"},
+		}
+	} else {
+		// PR and branch must be used together if used at all
+		if *prFlag != "" && *branchFlag != "" {
+			links = []tuiclient.LinkInput{
+				{Kind: "pr", Value: *prFlag},
+				{Kind: "branch", Value: *branchFlag},
+			}
+		} else if *prFlag != "" || *branchFlag != "" {
+			return fmt.Errorf("--pr and --branch must be provided together")
+		}
+	}
+
+	// Convert verdict flag to pointer
+	var verdict *string
+	if *verdictFlag != "" {
+		// Validate verdict value
+		if *verdictFlag != "approve" && *verdictFlag != "reject" {
+			return fmt.Errorf("verdict must be 'approve' or 'reject', got %q", *verdictFlag)
+		}
+		verdict = verdictFlag
+	}
+
+	// Create client and submit task
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	if err := client.SubmitTask(ctx, taskID, agentID, *resultFlag, verdict, links); err != nil {
+		return fmt.Errorf("failed to submit task: %w", err)
 	}
 
 	return nil
