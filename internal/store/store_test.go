@@ -2202,7 +2202,7 @@ func TestSubmitImplementTaskAutoSpawnsReviewTasks_MultiReviewer(t *testing.T) {
 	// Submit the task
 	result := "Implementation complete"
 	links := []LinkInput{{Kind: "pr", Value: "#123"}}
-	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", result, nil, links, 5)
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", result, nil, links, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit task: %v", err)
 	}
@@ -2317,7 +2317,7 @@ func TestSubmitImplementTaskAutoSpawnsReviewTasks_DefaultSingleOpus(t *testing.T
 	// Submit the task
 	result := "Implementation complete"
 	links := []LinkInput{{Kind: "pr", Value: "#456"}}
-	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", result, nil, links, 5)
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", result, nil, links, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit task: %v", err)
 	}
@@ -2394,7 +2394,7 @@ func TestSubmitImplementTaskResubmitAfterBounce(t *testing.T) {
 		t.Fatalf("first claim failed: %v", err)
 	}
 
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "First implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "First implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("first submit failed: %v", err)
 	}
@@ -2422,7 +2422,7 @@ func TestSubmitImplementTaskResubmitAfterBounce(t *testing.T) {
 		t.Fatalf("second claim failed: %v", err)
 	}
 
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Fixed implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Fixed implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("second submit failed: %v", err)
 	}
@@ -2520,7 +2520,7 @@ func TestSubmitTaskIdempotentLinks(t *testing.T) {
 		{Kind: "pr", Value: "https://github.com/test/repo/pull/123"},
 		{Kind: "branch", Value: "feature/test-branch"},
 	}
-	submittedTask, err := store.SubmitTask(ctx, task.ID, "agent-1", "result of work", nil, links, 5)
+	submittedTask, err := store.SubmitTask(ctx, task.ID, "agent-1", "result of work", nil, links, 5, nil)
 	if err != nil {
 		t.Fatalf("first submit failed: %v", err)
 	}
@@ -2556,7 +2556,7 @@ func TestSubmitTaskIdempotentLinks(t *testing.T) {
 	}
 
 	// Second submission with same links (testing idempotency)
-	submittedTask2, err := store.SubmitTask(ctx, task.ID, "agent-1", "updated result", nil, links, 5)
+	submittedTask2, err := store.SubmitTask(ctx, task.ID, "agent-1", "updated result", nil, links, 5, nil)
 	if err != nil {
 		t.Fatalf("second submit failed: %v", err)
 	}
@@ -2580,7 +2580,7 @@ func TestSubmitTaskIdempotentLinks(t *testing.T) {
 		{Kind: "branch", Value: "feature/test-branch"},
 		{Kind: "commit", Value: "abc123def456"},
 	}
-	submittedTask3, err := store.SubmitTask(ctx, task.ID, "agent-1", "result with commit", nil, linksWithCommit, 5)
+	submittedTask3, err := store.SubmitTask(ctx, task.ID, "agent-1", "result with commit", nil, linksWithCommit, 5, nil)
 	if err != nil {
 		t.Fatalf("third submit failed: %v", err)
 	}
@@ -2651,7 +2651,7 @@ func TestSubmitReviewTaskWithVerdictApprove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
-	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit implement task: %v", err)
 	}
@@ -2684,7 +2684,7 @@ func TestSubmitReviewTaskWithVerdictApprove(t *testing.T) {
 	}
 
 	approve := "approve"
-	reviewResult, err := store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5)
+	reviewResult, err := store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit review task with verdict: %v", err)
 	}
@@ -2770,7 +2770,7 @@ func TestSubmitReviewTaskWithVerdictReject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit implement task: %v", err)
 	}
@@ -2799,7 +2799,7 @@ func TestSubmitReviewTaskWithVerdictReject(t *testing.T) {
 	}
 
 	reject := "reject"
-	reviewResult, err := store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, 5)
+	reviewResult, err := store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit review task with verdict: %v", err)
 	}
@@ -2866,7 +2866,7 @@ func TestSubmitImplementTaskRejectsVerdict(t *testing.T) {
 
 	// Try to submit an implement task with a verdict - should be rejected
 	approve := "approve"
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", &approve, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", &approve, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err == nil {
 		t.Fatalf("expected error when submitting implement task with verdict")
 	}
@@ -2919,7 +2919,7 @@ func TestSubmitReviewTaskWithoutVerdictRejected(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit implement task: %v", err)
 	}
@@ -2948,7 +2948,7 @@ func TestSubmitReviewTaskWithoutVerdictRejected(t *testing.T) {
 	}
 
 	// Try to submit a review task without a verdict - should be rejected
-	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Reviewed", nil, []LinkInput{}, 5)
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Reviewed", nil, []LinkInput{}, 5, nil)
 	if err == nil {
 		t.Fatalf("expected error when submitting review task without verdict")
 	}
@@ -3015,7 +3015,7 @@ func TestReviewRoundCircuitBreaker(t *testing.T) {
 		}
 
 		// Submit implementation
-		_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, maxReviewRounds)
+		_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implementation", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, maxReviewRounds, nil)
 		if err != nil {
 			t.Fatalf("failed to submit implement task (round %d): %v", roundNum, err)
 		}
@@ -3044,17 +3044,18 @@ func TestReviewRoundCircuitBreaker(t *testing.T) {
 		}
 
 		reject := "reject"
-		_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, maxReviewRounds)
+		_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, maxReviewRounds, nil)
 		if err != nil {
 			t.Fatalf("failed to submit review task (round %d): %v", roundNum, err)
 		}
 	}
 
-	// Test with maxReviewRounds = 5
+	// Test with default thresholds. Since task model is haiku, threshold is 8.
+	// The circuit breaker should trigger when review_round > 8, i.e., at round 9.
 	maxReviewRounds := 5
 
-	// Rounds 1-5: should transition to ready
-	for i := 1; i <= 5; i++ {
+	// Rounds 1-8: should transition to ready
+	for i := 1; i <= 8; i++ {
 		submitAndReject(i, maxReviewRounds)
 
 		// Check parent state
@@ -3070,18 +3071,18 @@ func TestReviewRoundCircuitBreaker(t *testing.T) {
 		}
 	}
 
-	// Round 6: should transition to blocked (circuit breaker)
-	submitAndReject(6, maxReviewRounds)
+	// Round 9: should transition to blocked (circuit breaker, since threshold=8)
+	submitAndReject(9, maxReviewRounds)
 
 	parent, err := store.GetTask(ctx, taskID)
 	if err != nil {
-		t.Fatalf("failed to get task (round 6): %v", err)
+		t.Fatalf("failed to get task (round 9): %v", err)
 	}
 	if parent.State != "blocked" {
-		t.Errorf("round 6: expected parent state 'blocked', got '%s'", parent.State)
+		t.Errorf("round 9: expected parent state 'blocked', got '%s'", parent.State)
 	}
-	if parent.ReviewRound != 6 {
-		t.Errorf("round 6: expected review_round 6, got %d", parent.ReviewRound)
+	if parent.ReviewRound != 9 {
+		t.Errorf("round 9: expected review_round 9, got %d", parent.ReviewRound)
 	}
 
 	// Check that a transition event was appended with the correct note
@@ -3099,8 +3100,78 @@ func TestReviewRoundCircuitBreaker(t *testing.T) {
 	}
 	if blockedEvent == nil {
 		t.Errorf("expected auto-blocked transition event")
-	} else if !strings.Contains(*blockedEvent.Note, "6 consecutive review rounds") {
-		t.Errorf("expected event note about 6 rounds, got: %s", *blockedEvent.Note)
+	} else if !strings.Contains(*blockedEvent.Note, "9 consecutive review rounds") {
+		t.Errorf("expected event note about 9 rounds, got: %s", *blockedEvent.Note)
+	}
+}
+
+// TestThresholdFor tests the thresholdFor function for per-model escalation thresholds.
+func TestThresholdFor(t *testing.T) {
+	tests := []struct {
+		name                 string
+		model                string
+		escalationThresholds map[string]int
+		maxReviewRounds      int
+		expectedThreshold    int
+	}{
+		{
+			name:                 "haiku default threshold",
+			model:                "haiku",
+			escalationThresholds: nil,
+			maxReviewRounds:      5,
+			expectedThreshold:    8,
+		},
+		{
+			name:                 "sonnet default threshold",
+			model:                "sonnet",
+			escalationThresholds: nil,
+			maxReviewRounds:      5,
+			expectedThreshold:    6,
+		},
+		{
+			name:                 "opus default threshold",
+			model:                "opus",
+			escalationThresholds: nil,
+			maxReviewRounds:      5,
+			expectedThreshold:    4,
+		},
+		{
+			name:                 "unknown model falls back to maxReviewRounds",
+			model:                "claude",
+			escalationThresholds: nil,
+			maxReviewRounds:      5,
+			expectedThreshold:    5,
+		},
+		{
+			name:                 "override haiku default with custom threshold",
+			model:                "haiku",
+			escalationThresholds: map[string]int{"haiku": 3},
+			maxReviewRounds:      5,
+			expectedThreshold:    3,
+		},
+		{
+			name:                 "custom thresholds for all models",
+			model:                "sonnet",
+			escalationThresholds: map[string]int{"haiku": 10, "sonnet": 7, "opus": 5},
+			maxReviewRounds:      5,
+			expectedThreshold:    7,
+		},
+		{
+			name:                 "unknown model with custom thresholds falls back to maxReviewRounds",
+			model:                "claude",
+			escalationThresholds: map[string]int{"haiku": 10, "sonnet": 7},
+			maxReviewRounds:      5,
+			expectedThreshold:    5,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := thresholdFor(tt.model, tt.escalationThresholds, tt.maxReviewRounds)
+			if result != tt.expectedThreshold {
+				t.Errorf("expected threshold %d, got %d", tt.expectedThreshold, result)
+			}
+		})
 	}
 }
 
@@ -3150,7 +3221,7 @@ func TestWaitForAllAggregation_FirstApproveSecondApprove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit implement task: %v", err)
 	}
@@ -3190,7 +3261,7 @@ func TestWaitForAllAggregation_FirstApproveSecondApprove(t *testing.T) {
 		t.Fatalf("failed to claim first review task: %v", err)
 	}
 	approve := "approve"
-	_, err = store.SubmitTask(ctx, opusTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5)
+	_, err = store.SubmitTask(ctx, opusTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit first review task: %v", err)
 	}
@@ -3209,7 +3280,7 @@ func TestWaitForAllAggregation_FirstApproveSecondApprove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim second review task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, sonnetTask.ID, "sonnet-reviewer", "Looks good", &approve, []LinkInput{}, 5)
+	_, err = store.SubmitTask(ctx, sonnetTask.ID, "sonnet-reviewer", "Looks good", &approve, []LinkInput{}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit second review task: %v", err)
 	}
@@ -3270,7 +3341,7 @@ func TestWaitForAllAggregation_ApproveAndReject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit implement task: %v", err)
 	}
@@ -3310,7 +3381,7 @@ func TestWaitForAllAggregation_ApproveAndReject(t *testing.T) {
 		t.Fatalf("failed to claim first review task: %v", err)
 	}
 	approve := "approve"
-	_, err = store.SubmitTask(ctx, opusTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5)
+	_, err = store.SubmitTask(ctx, opusTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit first review task: %v", err)
 	}
@@ -3330,7 +3401,7 @@ func TestWaitForAllAggregation_ApproveAndReject(t *testing.T) {
 		t.Fatalf("failed to claim second review task: %v", err)
 	}
 	reject := "reject"
-	_, err = store.SubmitTask(ctx, sonnetTask.ID, "sonnet-reviewer", "Needs changes", &reject, []LinkInput{}, 5)
+	_, err = store.SubmitTask(ctx, sonnetTask.ID, "sonnet-reviewer", "Needs changes", &reject, []LinkInput{}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit second review task: %v", err)
 	}
@@ -4465,7 +4536,7 @@ func TestRejectVerdictOnHeldTaskDoesNotAutoTransition(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit implement task: %v", err)
 	}
@@ -4500,7 +4571,7 @@ func TestRejectVerdictOnHeldTaskDoesNotAutoTransition(t *testing.T) {
 	}
 
 	reject := "reject"
-	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, 5)
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit review task with verdict: %v", err)
 	}
@@ -4713,7 +4784,7 @@ func TestHoldFromDifferentStates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, task3ID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	_, err = store.SubmitTask(ctx, task3ID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit task: %v", err)
 	}
@@ -4775,7 +4846,7 @@ func TestRejectVerdictOnTerminalTaskDoesNotResurrect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5)
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit implement task: %v", err)
 	}
@@ -4810,7 +4881,7 @@ func TestRejectVerdictOnTerminalTaskDoesNotResurrect(t *testing.T) {
 	}
 
 	reject := "reject"
-	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, 5)
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Needs work", &reject, []LinkInput{}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit review task with reject verdict: %v", err)
 	}
@@ -4847,7 +4918,7 @@ func TestRejectVerdictOnTerminalTaskDoesNotResurrect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim second task: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, taskID2, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#101"}}, 5)
+	_, err = store.SubmitTask(ctx, taskID2, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#101"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit second implement task: %v", err)
 	}
@@ -4882,7 +4953,7 @@ func TestRejectVerdictOnTerminalTaskDoesNotResurrect(t *testing.T) {
 	}
 
 	approve := "approve"
-	_, err = store.SubmitTask(ctx, reviewTask2.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5)
+	_, err = store.SubmitTask(ctx, reviewTask2.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit second review task with approve verdict: %v", err)
 	}
@@ -4945,7 +5016,7 @@ func TestSubmitImplementTaskNoOpResolution(t *testing.T) {
 
 	// No-op submit: a no_op marker and NO pr link.
 	noOpLinks := []LinkInput{{Kind: "no_op", Value: "already-satisfied"}}
-	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", "acceptance already satisfied on main; no changes needed", nil, noOpLinks, 5)
+	submitted, err := store.SubmitTask(ctx, taskID, "agent-1", "acceptance already satisfied on main; no changes needed", nil, noOpLinks, 5, nil)
 	if err != nil {
 		t.Fatalf("no-op submit should be accepted, got error: %v", err)
 	}
@@ -4997,7 +5068,7 @@ func TestSubmitImplementTaskNoOpResolution(t *testing.T) {
 		t.Fatalf("failed to claim review task: %v", err)
 	}
 	approve := "approve"
-	if _, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "verified satisfied on main", &approve, nil, 5); err != nil {
+	if _, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "verified satisfied on main", &approve, []LinkInput{}, 5, nil); err != nil {
 		t.Fatalf("failed to submit review verdict: %v", err)
 	}
 
@@ -5050,7 +5121,7 @@ func TestSubmitNoOpLinkKindAccepted(t *testing.T) {
 	if _, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute); err != nil {
 		t.Fatalf("failed to claim: %v", err)
 	}
-	if _, err = store.SubmitTask(ctx, taskID, "agent-1", "noop", nil, []LinkInput{{Kind: "no_op", Value: "already-satisfied"}}, 5); err != nil {
+	if _, err = store.SubmitTask(ctx, taskID, "agent-1", "noop", nil, []LinkInput{{Kind: "no_op", Value: "already-satisfied"}}, 5, nil); err != nil {
 		t.Fatalf("expected no_op link kind to be accepted, got: %v", err)
 	}
 }
@@ -6299,7 +6370,7 @@ func TestEscalateRoundTrip(t *testing.T) {
 	}
 
 	// Test SubmitTask preserves escalate
-	submittedTask, err := store.SubmitTask(ctx, taskID, "agent-1", "implementation result", nil, []LinkInput{{Kind: "pr", Value: "https://github.com/test/test/pull/1"}}, 5)
+	submittedTask, err := store.SubmitTask(ctx, taskID, "agent-1", "implementation result", nil, []LinkInput{{Kind: "pr", Value: "https://github.com/test/test/pull/1"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit task: %v", err)
 	}
@@ -6374,7 +6445,7 @@ func TestEscalateRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to claim task 4: %v", err)
 	}
-	_, err = store.SubmitTask(ctx, task4ID, "agent-2", "result", nil, []LinkInput{{Kind: "pr", Value: "https://github.com/test/test/pull/2"}}, 5)
+	_, err = store.SubmitTask(ctx, task4ID, "agent-2", "result", nil, []LinkInput{{Kind: "pr", Value: "https://github.com/test/test/pull/2"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit task 4: %v", err)
 	}
@@ -6428,7 +6499,7 @@ func TestEscalateRoundTrip(t *testing.T) {
 		t.Errorf("claimed task 5 should have escalate=false, got %v", claimedTask5.Escalate)
 	}
 
-	_, err = store.SubmitTask(ctx, task5ID, "agent-3", "result", nil, []LinkInput{{Kind: "pr", Value: "https://github.com/test/test/pull/3"}}, 5)
+	_, err = store.SubmitTask(ctx, task5ID, "agent-3", "result", nil, []LinkInput{{Kind: "pr", Value: "https://github.com/test/test/pull/3"}}, 5, nil)
 	if err != nil {
 		t.Fatalf("failed to submit task 5: %v", err)
 	}

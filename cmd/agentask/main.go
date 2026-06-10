@@ -139,6 +139,9 @@ func runServer() {
 		log.Fatalf("failed to parse AGENTASK_MAX_REVIEW_ROUNDS: %v", err)
 	}
 
+	// Parse escalation thresholds
+	escalationThresholds := parseEscalationThresholds(os.Getenv("AGENTASK_ESCALATION_THRESHOLDS"))
+
 	// Parse model allowlist
 	allowedModels := parseAllowedModels(os.Getenv("AGENTASK_MODELS"))
 	if len(allowedModels) == 0 {
@@ -153,7 +156,7 @@ func runServer() {
 	defer s.Close()
 
 	// Create API server
-	apiServer := api.New(s, authToken, leaseTTL, maxReviewRounds)
+	apiServer := api.New(s, authToken, leaseTTL, maxReviewRounds, escalationThresholds)
 
 	// Start HTTP server
 	log.Printf("listening on %s", addr)
@@ -652,6 +655,32 @@ func parseAllowedModels(modelsStr string) []string {
 			seen[model] = true
 			result = append(result, model)
 		}
+	}
+	return result
+}
+
+func parseEscalationThresholds(thresholdsStr string) map[string]int {
+	defaults := map[string]int{"haiku": 8, "sonnet": 6, "opus": 4}
+	if thresholdsStr == "" {
+		return defaults
+	}
+
+	result := make(map[string]int)
+	for _, pair := range strings.Split(thresholdsStr, ",") {
+		pair = strings.TrimSpace(pair)
+		parts := strings.SplitN(pair, "=", 2)
+		if len(parts) != 2 {
+			log.Printf("warning: invalid threshold format %q, using defaults", pair)
+			return defaults
+		}
+		model := strings.TrimSpace(parts[0])
+		thresholdStr := strings.TrimSpace(parts[1])
+		threshold, err := strconv.Atoi(thresholdStr)
+		if err != nil {
+			log.Printf("warning: invalid threshold value %q, using defaults", thresholdStr)
+			return defaults
+		}
+		result[model] = threshold
 	}
 	return result
 }
