@@ -41,7 +41,7 @@ type Store interface {
 	ClaimTask(ctx context.Context, taskID, agentID, model string, leaseTTL time.Duration) (Task, error)
 	HeartbeatTask(ctx context.Context, taskID, agentID string, leaseTTL time.Duration) (Task, error)
 	PromoteTask(ctx context.Context, taskID string) (Task, error)
-	SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput, maxReviewRounds int) (TaskWithDepsAndLinks, error)
+	SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput, maxReviewRounds int, escalationThresholds map[string]int) (TaskWithDepsAndLinks, error)
 	AddReview(ctx context.Context, taskID, actor, verdict string, note *string) (Event, error)
 	TransitionTask(ctx context.Context, taskID, to string, note *string) (Task, error)
 	SupersedeTask(ctx context.Context, taskID string, modelOverride *string) (Task, error)
@@ -1495,13 +1495,29 @@ func (s *sqliteStore) PromoteTask(ctx context.Context, taskID string) (Task, err
 // appends a submit event, and returns the updated task with all links, all within one transaction.
 // For review tasks, verdict is required and moves the task to done, appending a review event on the parent.
 // For implement tasks, verdict is forbidden.
-// When all reviews are done and at least one rejected, the parent transitions to ready if review_round <= maxReviewRounds,
-// or to blocked if review_round > maxReviewRounds (circuit breaker).
+// thresholdFor determines the review round threshold for a given model.
+// It uses escalationThresholds if provided, otherwise falls back to the default maxReviewRounds.
+// For known models without overrides, use built-in defaults: haiku=8, sonnet=6, opus=4.
+func thresholdFor(model string, escalationThresholds map[string]int, maxReviewRounds int) int {
+	defaults := map[string]int{"haiku": 8, "sonnet": 6, "opus": 4}
+	if escalationThresholds != nil && len(escalationThresholds) > 0 {
+		if threshold, ok := escalationThresholds[model]; ok {
+			return threshold
+		}
+	}
+	if threshold, ok := defaults[model]; ok {
+		return threshold
+	}
+	return maxReviewRounds
+}
+
+// When all reviews are done and at least one rejected, the parent transitions to ready if review_round <= threshold,
+// or to blocked if review_round > threshold (circuit breaker).
 // Returns the updated TaskWithDepsAndLinks on success.
 // Returns ValidationError if a link kind is invalid or verdict is missing/invalid.
 // Returns ErrNotFound if the task doesn't exist.
 // Returns ErrConflict if the task is not in_progress or not assigned to the given agentID.
-func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput, maxReviewRounds int) (TaskWithDepsAndLinks, error) {
+func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result string, verdict *string, links []LinkInput, maxReviewRounds int, escalationThresholds map[string]int) (TaskWithDepsAndLinks, error) {
 	// Validate link kinds first (before mutating anything).
 	// "no_op" marks a review-verified no-op resolution: a worker that finds the
 	// acceptance criteria already satisfied on main with no diff submits with a
@@ -1728,9 +1744,10 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			var parentReviewRound int
 			var parentState string
 			var parentHeld bool
+			var parentModel string
 			err = tx.QueryRowContext(ctx, `
-				SELECT review_round, state, held FROM task WHERE id = ?
-			`, *targetTaskID).Scan(&parentReviewRound, &parentState, &parentHeld)
+				SELECT review_round, state, held, model FROM task WHERE id = ?
+			`, *targetTaskID).Scan(&parentReviewRound, &parentState, &parentHeld, &parentModel)
 			if err != nil {
 				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to fetch parent task review_round: %w", err)
 			}
@@ -1767,8 +1784,9 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 						newParentState = "approved"
 					} else if doneReviewTasks == totalReviewTasks && approveReviewTasks < totalReviewTasks {
 						// All done but at least one rejected
-						// Circuit breaker: if review_round > maxReviewRounds, auto-block instead of ready for rework
-						if parentReviewRound > maxReviewRounds {
+						// Circuit breaker: if review_round > threshold, auto-block instead of ready for rework
+						threshold := thresholdFor(parentModel, escalationThresholds, maxReviewRounds)
+						if parentReviewRound > threshold {
 							newParentState = "blocked"
 						} else {
 							newParentState = "ready"
