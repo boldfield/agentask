@@ -3732,3 +3732,167 @@ func TestUpdateTaskDependsOnRequiresAuth(t *testing.T) {
 		t.Fatalf("expected status 401, got %d", updateW.Code)
 	}
 }
+
+// TestSupersedTaskCreatesNewTask verifies that superseding a task creates a new task with copied fields.
+func TestSupersedTaskCreatesNewTask(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a task to supersede
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Original Task",
+			Spec:       "Original specification",
+			DocumentID: docID,
+			Model:      "haiku",
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	originalTaskID := createdTasks[0].ID
+	originalModel := createdTasks[0].Model
+
+	// Supersede the task without model override
+	supersedePayload := map[string]interface{}{}
+	supersedeBody, _ := json.Marshal(supersedePayload)
+	supersedeReq := httptest.NewRequest("POST", "/tasks/"+originalTaskID+"/supersede", bytes.NewReader(supersedeBody))
+	supersedeReq.Header.Set("Authorization", authHeader)
+	supersedeReq.Header.Set("Content-Type", "application/json")
+	supersedeW := httptest.NewRecorder()
+	server.mux.ServeHTTP(supersedeW, supersedeReq)
+
+	if supersedeW.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d; body: %s", supersedeW.Code, supersedeW.Body.String())
+	}
+
+	var newTask store.Task
+	if err := json.NewDecoder(supersedeW.Body).Decode(&newTask); err != nil {
+		t.Fatalf("failed to decode supersede response: %v", err)
+	}
+
+	// Verify new task has different ID
+	if newTask.ID == originalTaskID {
+		t.Errorf("expected new task ID to be different from original, got same ID %q", newTask.ID)
+	}
+
+	// Verify new task has same title and spec
+	if newTask.Title != "Original Task" {
+		t.Errorf("expected title 'Original Task', got %q", newTask.Title)
+	}
+	if newTask.Spec != "Original specification" {
+		t.Errorf("expected spec 'Original specification', got %q", newTask.Spec)
+	}
+
+	// Verify model is preserved
+	if newTask.Model != originalModel {
+		t.Errorf("expected model %q, got %q", originalModel, newTask.Model)
+	}
+
+	// Verify new task is in backlog state
+	if newTask.State != "backlog" {
+		t.Errorf("expected state 'backlog', got %q", newTask.State)
+	}
+}
+
+// TestSupersedTaskWithModelOverride verifies that superseding a task with model override uses the new model.
+func TestSupersedTaskWithModelOverride(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a task with haiku model
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Task with Haiku",
+			Spec:       "Test specification",
+			DocumentID: docID,
+			Model:      "haiku",
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	originalTaskID := createdTasks[0].ID
+
+	// Supersede with model override to sonnet
+	supersedePayload := map[string]interface{}{
+		"model": "sonnet",
+	}
+	supersedeBody, _ := json.Marshal(supersedePayload)
+	supersedeReq := httptest.NewRequest("POST", "/tasks/"+originalTaskID+"/supersede", bytes.NewReader(supersedeBody))
+	supersedeReq.Header.Set("Authorization", authHeader)
+	supersedeReq.Header.Set("Content-Type", "application/json")
+	supersedeW := httptest.NewRecorder()
+	server.mux.ServeHTTP(supersedeW, supersedeReq)
+
+	if supersedeW.Code != http.StatusCreated {
+		t.Errorf("expected status 201, got %d", supersedeW.Code)
+	}
+
+	var newTask store.Task
+	if err := json.NewDecoder(supersedeW.Body).Decode(&newTask); err != nil {
+		t.Fatalf("failed to decode supersede response: %v", err)
+	}
+
+	// Verify new task has the overridden model
+	if newTask.Model != "sonnet" {
+		t.Errorf("expected model 'sonnet', got %q", newTask.Model)
+	}
+}
+
+// TestSupersedTaskUnknownIDReturns404 verifies that superseding an unknown task returns 404.
+func TestSupersedTaskUnknownIDReturns404(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+	authHeader := "Bearer test-token"
+
+	supersedePayload := map[string]interface{}{}
+	supersedeBody, _ := json.Marshal(supersedePayload)
+	supersedeReq := httptest.NewRequest("POST", "/tasks/nonexistent-id/supersede", bytes.NewReader(supersedeBody))
+	supersedeReq.Header.Set("Authorization", authHeader)
+	supersedeReq.Header.Set("Content-Type", "application/json")
+	supersedeW := httptest.NewRecorder()
+	server.mux.ServeHTTP(supersedeW, supersedeReq)
+
+	if supersedeW.Code != http.StatusNotFound {
+		t.Errorf("expected status 404, got %d", supersedeW.Code)
+	}
+
+	var errResp map[string]interface{}
+	json.NewDecoder(supersedeW.Body).Decode(&errResp)
+	errObj := errResp["error"].(map[string]interface{})
+	if errObj["code"] != "NOT_FOUND" {
+		t.Errorf("expected error code 'NOT_FOUND', got %q", errObj["code"])
+	}
+}
+
+// TestSupersedTaskRequiresAuth verifies that supersede endpoint requires auth.
+func TestSupersedTaskRequiresAuth(t *testing.T) {
+	server := setupTestServer(t, "test-token")
+
+	supersedePayload := map[string]interface{}{}
+	supersedeBody, _ := json.Marshal(supersedePayload)
+	supersedeReq := httptest.NewRequest("POST", "/tasks/some-id/supersede", bytes.NewReader(supersedeBody))
+	// No Authorization header
+	supersedeW := httptest.NewRecorder()
+	server.mux.ServeHTTP(supersedeW, supersedeReq)
+
+	if supersedeW.Code != http.StatusUnauthorized {
+		t.Errorf("expected status 401, got %d", supersedeW.Code)
+	}
+}
