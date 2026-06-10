@@ -881,6 +881,145 @@ func TestExecuteTasksMissingToken(t *testing.T) {
 	}
 }
 
+func TestExecuteHeartbeatSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/tasks/task123/heartbeat" {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeHeartbeat(context.Background(), server.URL, "test-token", []string{"task123"})
+	if err != nil {
+		t.Fatalf("executeHeartbeat failed: %v", err)
+	}
+}
+
+func TestExecuteHeartbeatWithAgentFlag(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/tasks/task123/heartbeat" {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	err := executeHeartbeat(context.Background(), server.URL, "test-token", []string{"--agent", "flag-agent", "task123"})
+	if err != nil {
+		t.Fatalf("executeHeartbeat failed: %v", err)
+	}
+}
+
+func TestExecuteHeartbeatMissingTaskID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeHeartbeat(context.Background(), server.URL, "test-token", []string{})
+	if err == nil {
+		t.Fatal("expected error for missing task ID, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "task ID is required") {
+		t.Errorf("expected error to mention task ID, got: %v", err)
+	}
+}
+
+func TestExecuteHeartbeatMissingAgent(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	defer func() {
+		if oldAgent != "" {
+			os.Setenv("AGENT_ID", oldAgent)
+		} else {
+			os.Unsetenv("AGENT_ID")
+		}
+	}()
+
+	os.Unsetenv("AGENT_ID")
+
+	err := executeHeartbeat(context.Background(), server.URL, "test-token", []string{"task123"})
+	if err == nil {
+		t.Fatal("expected error for missing agent ID, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "agent ID is required") {
+		t.Errorf("expected error to mention agent ID, got: %v", err)
+	}
+}
+
+func TestExecuteHeartbeatMissingURL(t *testing.T) {
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeHeartbeat(context.Background(), "", "test-token", []string{"task123"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "AGENTASK_URL") {
+		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	}
+}
+
+func TestExecuteHeartbeatMissingToken(t *testing.T) {
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeHeartbeat(context.Background(), "http://localhost:8080", "", []string{"task123"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
+		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
+func TestExecuteHeartbeatServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "POST" && r.URL.Path == "/tasks/task123/heartbeat" {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]string{"error": "internal error"})
+		}
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeHeartbeat(context.Background(), server.URL, "test-token", []string{"task123"})
+	if err == nil {
+		t.Fatal("expected error for server error, got nil")
+	}
+}
+
 func TestResolveAgentIdentity(t *testing.T) {
 	tests := []struct {
 		name          string
