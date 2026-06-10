@@ -1063,6 +1063,8 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLi
 		Held:           t.Held,
 		CreatedAt:      t.CreatedAt,
 		UpdatedAt:      t.UpdatedAt,
+		ArchivedAt:     t.ArchivedAt,
+		SupersededBy:   t.SupersededBy,
 		DependsOn:      dependsOn,
 		Links:          links,
 	}, nil
@@ -1792,6 +1794,8 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			Held:           t.Held,
 			CreatedAt:      t.CreatedAt,
 			UpdatedAt:      t.UpdatedAt,
+			ArchivedAt:     t.ArchivedAt,
+			SupersededBy:   t.SupersededBy,
 			DependsOn:      dependsOn,
 			Links:          fetchedLinks,
 		}, nil
