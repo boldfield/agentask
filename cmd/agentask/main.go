@@ -31,19 +31,56 @@ func (e *claimError) Error() string {
 }
 
 func main() {
-	isClient, verb := parseCommand(os.Args)
-	if isClient {
-		runClient(verb, os.Args[2:])
-	} else {
-		runServer()
+	if err := run(os.Args); err != nil {
+		var claimErr *claimError
+		if errors.As(err, &claimErr) {
+			fmt.Fprintf(os.Stderr, "error: %v\n", claimErr.Error())
+			os.Exit(claimErr.code)
+		}
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
-func parseCommand(args []string) (isClient bool, verb string) {
-	if len(args) > 1 && args[1] != "server" {
-		return true, args[1]
+func run(args []string) error {
+	if len(args) < 2 {
+		printUsage()
+		return nil
 	}
-	return false, ""
+
+	switch args[1] {
+	case "server":
+		runServer()
+		return nil
+	case "-h", "--help", "help":
+		printUsage()
+		return nil
+	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition":
+		return runClient(args[1], args[2:])
+	default:
+		fmt.Fprintf(os.Stderr, "error: unknown command %q\n", args[1])
+		return fmt.Errorf("unknown command")
+	}
+}
+
+func printUsage() {
+	fmt.Printf(`agentask version %s
+
+usage: agentask <command> [options]
+
+Commands:
+  server                 Start the agentask server
+  projects               List all projects
+  tasks                  List tasks for a project
+  show                   Show task details
+  claim                  Claim a task
+  submit                 Submit a task for review
+  heartbeat              Extend task lease
+  next                   Find and optionally claim next claimable task
+  promote                Promote a task from backlog to ready
+  transition             Transition a task to a new state
+  help, -h, --help       Show this help message
+`, version)
 }
 
 func runServer() {
@@ -107,7 +144,7 @@ func runServer() {
 	}
 }
 
-func runClient(verb string, args []string) {
+func runClient(verb string, args []string) error {
 	// Parse --json flag
 	var jsonOutput bool
 	for _, arg := range args {
@@ -125,63 +162,41 @@ func runClient(verb string, args []string) {
 	// Dispatch to verb handler
 	switch verb {
 	case "projects":
-		if err := executeProjects(ctx, baseURL, token, jsonOutput, os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
+		return executeProjects(ctx, baseURL, token, jsonOutput, os.Stdout)
 	case "tasks":
-		if err := executeTasks(ctx, baseURL, token, jsonOutput, args, os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
+		return executeTasks(ctx, baseURL, token, jsonOutput, args, os.Stdout)
 	case "show":
-		if err := executeShow(ctx, baseURL, token, jsonOutput, args, os.Stdout); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
+		return executeShow(ctx, baseURL, token, jsonOutput, args, os.Stdout)
 	case "transition":
-		if err := executeTransition(ctx, baseURL, token, args); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
+		return executeTransition(ctx, baseURL, token, args)
 	case "claim":
-		if err := executeClaim(ctx, baseURL, token, args); err != nil {
+		err := executeClaim(ctx, baseURL, token, args)
+		if err != nil {
 			var claimErr *claimError
 			if errors.As(err, &claimErr) {
-				fmt.Fprintf(os.Stderr, "error: %v\n", claimErr.Error())
-				os.Exit(claimErr.code)
+				return claimErr
 			}
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
+		return nil
 	case "submit":
-		if err := executeSubmit(ctx, baseURL, token, args); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
+		return executeSubmit(ctx, baseURL, token, args)
 	case "heartbeat":
-		if err := executeHeartbeat(ctx, baseURL, token, args); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
+		return executeHeartbeat(ctx, baseURL, token, args)
 	case "next":
-		if err := executeNext(ctx, baseURL, token, jsonOutput, args); err != nil {
+		err := executeNext(ctx, baseURL, token, jsonOutput, args)
+		if err != nil {
 			var claimErr *claimError
 			if errors.As(err, &claimErr) {
-				fmt.Fprintf(os.Stderr, "error: %v\n", claimErr.Error())
-				os.Exit(claimErr.code)
+				return claimErr
 			}
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
+			return err
 		}
+		return nil
 	case "promote":
-		if err := executePromote(ctx, baseURL, token, args); err != nil {
-			fmt.Fprintf(os.Stderr, "error: %v\n", err)
-			os.Exit(1)
-		}
+		return executePromote(ctx, baseURL, token, args)
 	default:
-		fmt.Fprintf(os.Stderr, "error: unknown command '%s'\n", verb)
-		os.Exit(1)
+		return fmt.Errorf("unknown command %q", verb)
 	}
 }
 
