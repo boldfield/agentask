@@ -1,8 +1,10 @@
 .PHONY: build run test tidy tui check
 
+VERSION ?= $(shell git describe --tags --always --dirty)
+
 build:
 	mkdir -p bin
-	go build -o bin/agentask ./cmd/agentask
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/agentask ./cmd/agentask
 
 tui:
 	mkdir -p bin
