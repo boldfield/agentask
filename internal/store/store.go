@@ -2697,26 +2697,24 @@ func (s *sqliteStore) UpdateTaskDependsOn(ctx context.Context, taskID string, de
 // For tasks in terminal states (done/failed/archived), events older than terminalRetentionDays are deleted.
 // Events for active (non-terminal) tasks are never pruned.
 // Returns the number of rows deleted.
+// PruneEvents deletes events older than the retention window, keeping all events for active tasks.
+// - For terminal tasks (done/failed/archived): deletes events older than terminalRetentionDays
+// - For active (non-terminal) tasks: keeps all events regardless of age
 func (s *sqliteStore) PruneEvents(ctx context.Context, retentionDays int, terminalRetentionDays int) (int64, error) {
-	// Calculate cutoff timestamps
-	retentionCutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format(timestampLayout)
+	// Calculate cutoff timestamp for terminal task events
 	terminalCutoff := time.Now().UTC().AddDate(0, 0, -terminalRetentionDays).Format(timestampLayout)
 
-	// Delete events in two groups:
-	// 1. All events older than retentionCutoff
-	// 2. Events for terminal tasks older than terminalCutoff
+	// Delete events for terminal tasks older than terminalCutoff.
+	// Active-task events are never deleted (constraint: do NOT prune events for active tasks).
 	result, err := s.conn.ExecContext(ctx, `
 		DELETE FROM event
 		WHERE
-			created_at < ?
-			OR (
-				created_at < ?
-				AND task_id IN (
-					SELECT id FROM task
-					WHERE state IN ('done', 'failed', 'archived')
-				)
+			task_id IN (
+				SELECT id FROM task
+				WHERE state IN ('done', 'failed', 'archived')
 			)
-	`, retentionCutoff, terminalCutoff)
+			AND created_at < ?
+	`, terminalCutoff)
 	if err != nil {
 		return 0, fmt.Errorf("failed to prune events: %w", err)
 	}
