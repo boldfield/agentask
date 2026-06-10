@@ -38,7 +38,7 @@ spec:
         # Push with: docker push ghcr.io/boldfield/agentask:latest
         # Or load into kind/minikube: kind load docker-image ghcr.io/boldfield/agentask:latest
         # Pinned to a released version tag for reproducible deploys. Bump on each release.
-        image: ghcr.io/boldfield/agentask:v0.6.0
+        image: ghcr.io/boldfield/agentask:v0.7.0
         imagePullPolicy: IfNotPresent
         # Container-level securityContext (also required by 'restricted').
         securityContext:
