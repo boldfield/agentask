@@ -5484,3 +5484,205 @@ func TestUpdateTaskDependsOn(t *testing.T) {
 		t.Errorf("expected D to have 0 dependencies, got %d: %v", len(taskDCleared.DependsOn), taskDCleared.DependsOn)
 	}
 }
+
+func TestSupersededTask(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create tasks: oldTask (to be superseded), upstreamDep, dependent (depends on oldTask)
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Upstream Dep", Spec: "Spec", DocumentID: doc.ID},
+		{Title: "Old Task", Spec: "Spec", DocumentID: doc.ID, DependsOn: []string{} /* will be set */},
+		{Title: "Dependent Task", Spec: "Spec", DocumentID: doc.ID, DependsOn: []string{} /* will be set */},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	upstreamDep := tasks[0]
+	oldTask := tasks[1]
+	dependent := tasks[2]
+
+	// Set oldTask -> upstreamDep
+	_, err = store.UpdateTaskDependsOn(ctx, oldTask.ID, []string{upstreamDep.ID})
+	if err != nil {
+		t.Fatalf("failed to set oldTask dependency: %v", err)
+	}
+
+	// Set dependent -> oldTask
+	_, err = store.UpdateTaskDependsOn(ctx, dependent.ID, []string{oldTask.ID})
+	if err != nil {
+		t.Fatalf("failed to set dependent: %v", err)
+	}
+
+	// Verify setup
+	oldTaskBefore, err := store.GetTask(ctx, oldTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get oldTask before supersede: %v", err)
+	}
+	if len(oldTaskBefore.DependsOn) != 1 || oldTaskBefore.DependsOn[0] != upstreamDep.ID {
+		t.Errorf("expected oldTask to depend on upstreamDep, got %v", oldTaskBefore.DependsOn)
+	}
+
+	dependentBefore, err := store.GetTask(ctx, dependent.ID)
+	if err != nil {
+		t.Fatalf("failed to get dependent before supersede: %v", err)
+	}
+	if len(dependentBefore.DependsOn) != 1 || dependentBefore.DependsOn[0] != oldTask.ID {
+		t.Errorf("expected dependent to depend on oldTask, got %v", dependentBefore.DependsOn)
+	}
+
+	// Supersede oldTask
+	newTask, err := store.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+
+	// Verify new task
+	if newTask.ID == oldTask.ID {
+		t.Errorf("expected new task ID to be different from old task ID")
+	}
+	if newTask.Title != oldTask.Title {
+		t.Errorf("expected new task title to match old task, got %q", newTask.Title)
+	}
+	if newTask.Spec != oldTask.Spec {
+		t.Errorf("expected new task spec to match old task, got %q", newTask.Spec)
+	}
+	if newTask.Model != oldTask.Model {
+		t.Errorf("expected new task model to match old task, got %q", newTask.Model)
+	}
+	if newTask.Kind != oldTask.Kind {
+		t.Errorf("expected new task kind to match old task, got %q", newTask.Kind)
+	}
+	if newTask.AgentMerge != oldTask.AgentMerge {
+		t.Errorf("expected new task agent_merge to match old task")
+	}
+	if newTask.State != "backlog" {
+		t.Errorf("expected new task state to be backlog, got %q", newTask.State)
+	}
+	if newTask.ReviewRound != 0 {
+		t.Errorf("expected new task review_round to be 0, got %d", newTask.ReviewRound)
+	}
+
+	// Verify new task has upstream dependencies copied
+	newTaskFull, err := store.GetTask(ctx, newTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get new task: %v", err)
+	}
+	if len(newTaskFull.DependsOn) != 1 || newTaskFull.DependsOn[0] != upstreamDep.ID {
+		t.Errorf("expected new task to have copied dependencies, got %v", newTaskFull.DependsOn)
+	}
+
+	// Verify old task is superseded
+	oldTaskAfter, err := store.GetTask(ctx, oldTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get oldTask after supersede: %v", err)
+	}
+	if oldTaskAfter.State != "superseded" {
+		t.Errorf("expected oldTask state to be superseded, got %q", oldTaskAfter.State)
+	}
+	if oldTaskAfter.SupersededBy == nil || *oldTaskAfter.SupersededBy != newTask.ID {
+		t.Errorf("expected oldTask.SupersededBy to be %s, got %v", newTask.ID, oldTaskAfter.SupersededBy)
+	}
+
+	// Verify dependent has been re-pointed to new task
+	dependentAfter, err := store.GetTask(ctx, dependent.ID)
+	if err != nil {
+		t.Fatalf("failed to get dependent after supersede: %v", err)
+	}
+	if len(dependentAfter.DependsOn) != 1 || dependentAfter.DependsOn[0] != newTask.ID {
+		t.Errorf("expected dependent to now depend on newTask, got %v", dependentAfter.DependsOn)
+	}
+
+	// Verify task_superseded event was emitted
+	events, err := store.ListEvents(ctx, oldTask.ID)
+	if err != nil {
+		t.Fatalf("failed to list events: %v", err)
+	}
+	found := false
+	for _, e := range events {
+		if e.Kind == "task_superseded" {
+			found = true
+			if e.Actor != "system" {
+				t.Errorf("expected event actor to be system, got %q", e.Actor)
+			}
+			if e.Note == nil || *e.Note != fmt.Sprintf("Superseded by %s", newTask.ID) {
+				t.Errorf("expected event note to mention new task, got %v", e.Note)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("expected task_superseded event to be emitted")
+	}
+}
+
+func TestSupersededTaskWithModelOverride(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create a task with default model
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Old Task", Spec: "Spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	oldTask := tasks[0]
+
+	if oldTask.Model != "haiku" {
+		t.Errorf("expected oldTask model to be haiku, got %q", oldTask.Model)
+	}
+
+	// Supersede with model override to sonnet
+	newTaskModel := "sonnet"
+	newTask, err := store.SupersedeTask(ctx, oldTask.ID, &newTaskModel)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+
+	if newTask.Model != "sonnet" {
+		t.Errorf("expected new task model to be sonnet, got %q", newTask.Model)
+	}
+}
+
+func TestSupersededTaskNotFound(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	_, err = store.SupersedeTask(ctx, "nonexistent-task-id", nil)
+	if !errors.Is(err, ErrNotFound) {
+		t.Errorf("expected ErrNotFound, got %v", err)
+	}
+}
