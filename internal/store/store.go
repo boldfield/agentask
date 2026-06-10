@@ -28,6 +28,7 @@ type Store interface {
 	Conn() *sql.DB
 	AppendEvent(ctx context.Context, tx *sql.Tx, taskID, actor, kind string, verdict, note *string) (Event, error)
 	ListEvents(ctx context.Context, taskID string) ([]Event, error)
+	PruneEvents(ctx context.Context, retentionDays int, terminalRetentionDays int) (int64, error)
 	CreateProject(ctx context.Context, name, repo string) (Project, error)
 	GetProject(ctx context.Context, id string) (Project, error)
 	ListProjects(ctx context.Context, filter ProjectListFilter) ([]Project, error)
@@ -1358,12 +1359,6 @@ func (s *sqliteStore) HeartbeatTask(ctx context.Context, taskID, agentID string,
 	}
 
 	if rowsAffected == 1 {
-		// Heartbeat succeeded. Append event in the same transaction.
-		_, err := s.AppendEvent(ctx, tx, taskID, agentID, "heartbeat", nil, nil)
-		if err != nil {
-			return Task{}, fmt.Errorf("failed to append heartbeat event: %w", err)
-		}
-
 		// SELECT the updated task within the same transaction
 		var t Task
 		var reviewModelsJSON *string
@@ -2655,4 +2650,41 @@ func (s *sqliteStore) UpdateTaskDependsOn(ctx context.Context, taskID string, de
 	}
 
 	return t, nil
+}
+
+// PruneEvents removes old events according to retention policy.
+// Events older than retentionDays are deleted unconditionally.
+// For tasks in terminal states (done/failed/archived), events older than terminalRetentionDays are deleted.
+// Events for active (non-terminal) tasks are never pruned.
+// Returns the number of rows deleted.
+func (s *sqliteStore) PruneEvents(ctx context.Context, retentionDays int, terminalRetentionDays int) (int64, error) {
+	// Calculate cutoff timestamps
+	retentionCutoff := time.Now().UTC().AddDate(0, 0, -retentionDays).Format(timestampLayout)
+	terminalCutoff := time.Now().UTC().AddDate(0, 0, -terminalRetentionDays).Format(timestampLayout)
+
+	// Delete events in two groups:
+	// 1. All events older than retentionCutoff
+	// 2. Events for terminal tasks older than terminalCutoff
+	result, err := s.conn.ExecContext(ctx, `
+		DELETE FROM event
+		WHERE
+			created_at < ?
+			OR (
+				created_at < ?
+				AND task_id IN (
+					SELECT id FROM task
+					WHERE state IN ('done', 'failed', 'archived')
+				)
+			)
+	`, retentionCutoff, terminalCutoff)
+	if err != nil {
+		return 0, fmt.Errorf("failed to prune events: %w", err)
+	}
+
+	rowsAffected, err := result.RowsAffected()
+	if err != nil {
+		return 0, fmt.Errorf("failed to get rows affected: %w", err)
+	}
+
+	return rowsAffected, nil
 }
