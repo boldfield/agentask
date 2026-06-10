@@ -1,4 +1,4 @@
-.PHONY: build run test tidy tui check release
+.PHONY: build run test tidy tui check release deploy
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 
@@ -35,3 +35,12 @@ release:
 	git tag $(VERSION)
 	git push origin $(VERSION)
 	@echo "CI is building ghcr.io/boldfield/agentask:$(VERSION); when green, run: make deploy VERSION=$(VERSION)"
+
+deploy:
+	@echo "Resolving image digest for ghcr.io/boldfield/agentask:$(VERSION)..."
+	@DIGEST=$$(docker buildx imagetools inspect "ghcr.io/boldfield/agentask:$(VERSION)" 2>/dev/null | awk '/^Digest:/{print $$2; exit}' || echo ""); \
+	if [ -z "$$DIGEST" ]; then echo "ERROR: Image tag $(VERSION) not found in registry"; exit 1; fi; \
+	if ! echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then echo "ERROR: Invalid digest format: $$DIGEST"; exit 1; fi; \
+	echo "Deploying ghcr.io/boldfield/agentask@$$DIGEST"; \
+	kubectl -n agentask set image deploy/agentask agentask="ghcr.io/boldfield/agentask@$$DIGEST"; \
+	kubectl -n agentask rollout status deploy/agentask --timeout=180s
