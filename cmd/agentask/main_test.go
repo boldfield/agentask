@@ -1250,6 +1250,81 @@ func TestExecuteNextMissingKind(t *testing.T) {
 	}
 }
 
+func TestExecutePromoteSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/promote") {
+			if r.Method != "POST" {
+				t.Errorf("expected POST, got %s", r.Method)
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	err := executePromote(context.Background(), server.URL, "test-token", []string{"task-123"})
+	if err != nil {
+		t.Fatalf("executePromote failed: %v", err)
+	}
+}
+
+func TestExecutePromoteMissingTaskID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	err := executePromote(context.Background(), server.URL, "test-token", []string{})
+	if err == nil {
+		t.Fatal("expected error for missing task ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "task ID is required") {
+		t.Errorf("expected error to mention 'task ID is required', got: %v", err)
+	}
+}
+
+func TestExecutePromoteMissingURL(t *testing.T) {
+	err := executePromote(context.Background(), "", "test-token", []string{"task-123"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_URL") {
+		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	}
+}
+
+func TestExecutePromoteMissingToken(t *testing.T) {
+	err := executePromote(context.Background(), "http://localhost:8080", "", []string{"task-123"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
+		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
+func TestExecutePromoteServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/promote") {
+			w.WriteHeader(http.StatusInternalServerError)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]string{
+					"code":    "internal_error",
+					"message": "server error",
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	err := executePromote(context.Background(), server.URL, "test-token", []string{"task-123"})
+	if err == nil {
+		t.Fatal("expected error for failed promote, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to promote task") {
+		t.Errorf("expected error to mention 'failed to promote task', got: %v", err)
+	}
+}
+
 func TestResolveAgentIdentity(t *testing.T) {
 	tests := []struct {
 		name          string

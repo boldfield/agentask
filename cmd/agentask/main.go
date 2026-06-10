@@ -174,6 +174,11 @@ func runClient(verb string, args []string) {
 			fmt.Fprintf(os.Stderr, "error: %v\n", err)
 			os.Exit(1)
 		}
+	case "promote":
+		if err := executePromote(ctx, baseURL, token, args); err != nil {
+			fmt.Fprintf(os.Stderr, "error: %v\n", err)
+			os.Exit(1)
+		}
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command '%s'\n", verb)
 		os.Exit(1)
@@ -630,6 +635,28 @@ func executeNext(ctx context.Context, baseURL, token string, jsonOutput bool, ar
 		} else {
 			fmt.Println(task.ID)
 		}
+	}
+
+	return nil
+}
+
+func executePromote(ctx context.Context, baseURL, token string, args []string) error {
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	if len(args) < 1 {
+		return fmt.Errorf("task ID is required")
+	}
+
+	taskID := args[0]
+
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	if err := client.PromoteTask(ctx, taskID); err != nil {
+		return fmt.Errorf("failed to promote task: %w", err)
 	}
 
 	return nil
