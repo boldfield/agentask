@@ -3230,8 +3230,8 @@ func TestEscalateHaikuToSonnet(t *testing.T) {
 		if newTask.Model != "sonnet" {
 			t.Errorf("expected escalated task model 'sonnet', got '%s'", newTask.Model)
 		}
-		if newTask.State != "backlog" {
-			t.Errorf("expected escalated task state 'backlog', got '%s'", newTask.State)
+		if newTask.State != "ready" {
+			t.Errorf("expected escalated task state 'ready', got '%s'", newTask.State)
 		}
 		if newTask.ReviewRound != 0 {
 			t.Errorf("expected escalated task review_round 0, got %d", newTask.ReviewRound)
@@ -3379,8 +3379,8 @@ func TestEscalateSonnetToOpus(t *testing.T) {
 		if newTask.Model != "opus" {
 			t.Errorf("expected escalated task model 'opus', got '%s'", newTask.Model)
 		}
-		if newTask.State != "backlog" {
-			t.Errorf("expected escalated task state 'backlog', got '%s'", newTask.State)
+		if newTask.State != "ready" {
+			t.Errorf("expected escalated task state 'ready', got '%s'", newTask.State)
 		}
 		if newTask.ReviewRound != 0 {
 			t.Errorf("expected escalated task review_round 0, got %d", newTask.ReviewRound)

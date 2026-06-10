@@ -4084,14 +4084,25 @@ func TestEndToEndEscalationLadder(t *testing.T) {
 	promoteW := httptest.NewRecorder()
 	server.mux.ServeHTTP(promoteW, promoteReq)
 
-	// Helper to promote a backlog task to ready
+	// Helper to promote a backlog task to ready (skip if already ready)
 	promoteTask := func(taskID string) {
-		promReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
-		promReq.Header.Set("Authorization", authHeader)
-		promW := httptest.NewRecorder()
-		server.mux.ServeHTTP(promW, promReq)
-		if promW.Code != http.StatusOK {
-			t.Fatalf("failed to promote task: got status %d", promW.Code)
+		// Check current state first
+		getReq := httptest.NewRequest("GET", "/tasks/"+taskID, nil)
+		getReq.Header.Set("Authorization", authHeader)
+		getW := httptest.NewRecorder()
+		server.mux.ServeHTTP(getW, getReq)
+		var task store.TaskWithDepsAndLinks
+		json.NewDecoder(getW.Body).Decode(&task)
+
+		// Only promote if in backlog state
+		if task.State == "backlog" {
+			promReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+			promReq.Header.Set("Authorization", authHeader)
+			promW := httptest.NewRecorder()
+			server.mux.ServeHTTP(promW, promReq)
+			if promW.Code != http.StatusOK {
+				t.Fatalf("failed to promote task: got status %d", promW.Code)
+			}
 		}
 	}
 
