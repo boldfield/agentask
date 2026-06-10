@@ -2,6 +2,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: agentask
+  namespace: agentask
 spec:
   # CRITICAL: replicas must be 1. Do not scale beyond 1.
   # Reason: SQLite is a single-writer database, and the PersistentVolume uses local-path
