@@ -1020,6 +1020,236 @@ func TestExecuteHeartbeatServerError(t *testing.T) {
 	}
 }
 
+func TestExecuteNextSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" && r.URL.Query().Get("claimable") == "true" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-1", State: "ready", Model: "haiku", Kind: "implement", Title: "Task 1"},
+				{ID: "task-2", State: "ready", Model: "haiku", Kind: "implement", Title: "Task 2"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	err := executeNext(context.Background(), server.URL, "test-token", false, []string{
+		"--project", "proj-1",
+		"--model", "haiku",
+		"--kind", "implement",
+	})
+	if err != nil {
+		t.Fatalf("executeNext failed: %v", err)
+	}
+}
+
+func TestExecuteNextWithClaim(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" && r.URL.Query().Get("claimable") == "true" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-1", State: "ready", Model: "haiku", Kind: "implement", Title: "Task 1"},
+			})
+		} else if r.URL.Path == "/tasks/task-1/claim" {
+			w.WriteHeader(http.StatusOK)
+		} else if r.URL.Path == "/tasks/task-1" && r.Method == "GET" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-1",
+				State: "in_progress",
+				Model: "haiku",
+				Kind:  "implement",
+				Title: "Task 1",
+			})
+		}
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	oldModel := os.Getenv("AGENT_MODEL")
+	defer func() {
+		os.Setenv("AGENT_ID", oldAgent)
+		os.Setenv("AGENT_MODEL", oldModel)
+	}()
+
+	os.Setenv("AGENT_ID", "test-agent")
+	os.Setenv("AGENT_MODEL", "haiku")
+
+	err := executeNext(context.Background(), server.URL, "test-token", false, []string{
+		"--project", "proj-1",
+		"--model", "haiku",
+		"--kind", "implement",
+		"--claim",
+	})
+	if err != nil {
+		t.Fatalf("executeNext with claim failed: %v", err)
+	}
+}
+
+func TestExecuteNextRaced(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" && r.URL.Query().Get("claimable") == "true" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-1", State: "ready", Model: "haiku", Kind: "implement", Title: "Task 1"},
+			})
+		} else if r.URL.Path == "/tasks/task-1/claim" {
+			w.WriteHeader(http.StatusConflict)
+			json.NewEncoder(w).Encode(map[string]interface{}{
+				"error": map[string]string{
+					"code":    "already_claimed",
+					"message": "already claimed",
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	// Save current env values
+	oldAgent := os.Getenv("AGENT_ID")
+	oldModel := os.Getenv("AGENT_MODEL")
+	defer func() {
+		os.Setenv("AGENT_ID", oldAgent)
+		os.Setenv("AGENT_MODEL", oldModel)
+	}()
+
+	os.Setenv("AGENT_ID", "test-agent")
+	os.Setenv("AGENT_MODEL", "haiku")
+
+	err := executeNext(context.Background(), server.URL, "test-token", false, []string{
+		"--project", "proj-1",
+		"--model", "haiku",
+		"--kind", "implement",
+		"--claim",
+	})
+	if err == nil {
+		t.Fatal("expected error for raced claim, got nil")
+	}
+
+	var claimErr *claimError
+	if !errors.As(err, &claimErr) {
+		t.Fatalf("expected claimError, got %T: %v", err, err)
+	}
+
+	if claimErr.code != 2 {
+		t.Errorf("expected exit code 2, got %d", claimErr.code)
+	}
+
+	if !strings.Contains(claimErr.Error(), "raced") {
+		t.Errorf("expected error message to contain 'raced', got: %v", claimErr.Error())
+	}
+}
+
+func TestExecuteNextNothingClaimable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" && r.URL.Query().Get("claimable") == "true" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{})
+		}
+	}))
+	defer server.Close()
+
+	err := executeNext(context.Background(), server.URL, "test-token", false, []string{
+		"--project", "proj-1",
+		"--model", "haiku",
+		"--kind", "implement",
+	})
+	if err == nil {
+		t.Fatal("expected error for nothing claimable, got nil")
+	}
+
+	var claimErr *claimError
+	if !errors.As(err, &claimErr) {
+		t.Fatalf("expected claimError, got %T: %v", err, err)
+	}
+
+	if claimErr.code != 2 {
+		t.Errorf("expected exit code 2, got %d", claimErr.code)
+	}
+
+	if !strings.Contains(claimErr.Error(), "nothing claimable") {
+		t.Errorf("expected error message to contain 'nothing claimable', got: %v", claimErr.Error())
+	}
+}
+
+func TestExecuteNextJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" && r.URL.Query().Get("claimable") == "true" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-1", State: "ready", Model: "haiku", Kind: "implement", Title: "Task 1"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	err := executeNext(context.Background(), server.URL, "test-token", true, []string{
+		"--project", "proj-1",
+		"--model", "haiku",
+		"--kind", "implement",
+	})
+	if err != nil {
+		t.Fatalf("executeNext failed: %v", err)
+	}
+}
+
+func TestExecuteNextMissingProject(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	err := executeNext(context.Background(), server.URL, "test-token", false, []string{
+		"--model", "haiku",
+		"--kind", "implement",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing --project, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "--project") {
+		t.Errorf("expected error to mention --project, got: %v", err)
+	}
+}
+
+func TestExecuteNextMissingModel(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	err := executeNext(context.Background(), server.URL, "test-token", false, []string{
+		"--project", "proj-1",
+		"--kind", "implement",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing --model, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "--model") {
+		t.Errorf("expected error to mention --model, got: %v", err)
+	}
+}
+
+func TestExecuteNextMissingKind(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	err := executeNext(context.Background(), server.URL, "test-token", false, []string{
+		"--project", "proj-1",
+		"--model", "haiku",
+	})
+	if err == nil {
+		t.Fatal("expected error for missing --kind, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "--kind") {
+		t.Errorf("expected error to mention --kind, got: %v", err)
+	}
+}
+
 func TestResolveAgentIdentity(t *testing.T) {
 	tests := []struct {
 		name          string
