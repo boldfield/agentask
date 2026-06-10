@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/boldfield/agentask/internal/tuiclient"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -178,9 +179,11 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 
 	// Header: title, state, and project
 	if m.project.Name != "" {
-		b.WriteString(fmt.Sprintf("Project: %s\n", m.project.Name))
+		wrappedProject := wrapText(m.project.Name, m.width-9)
+		b.WriteString(fmt.Sprintf("Project: %s\n", wrappedProject))
 	}
-	b.WriteString(fmt.Sprintf("Task: %s\n", task.Title))
+	wrappedTitle := wrapText(task.Title, m.width-6)
+	b.WriteString(fmt.Sprintf("Task: %s\n", wrappedTitle))
 	stateStr := fmt.Sprintf("State: %s", task.State)
 	if task.Held {
 		stateStr += "  [HELD]"
@@ -211,7 +214,9 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 			if len(shortID) > 8 {
 				shortID = shortID[:8]
 			}
-			b.WriteString(fmt.Sprintf("  - %s (%s)\n", title, shortID))
+			// Account for "  - " prefix (4 chars) and " (shortID)" suffix (max 11 chars)
+			wrappedTitle := wrapText(title, m.width-15)
+			b.WriteString(fmt.Sprintf("  - %s (%s)\n", wrappedTitle, shortID))
 		}
 	}
 
@@ -219,7 +224,10 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 	if len(task.Links) > 0 {
 		b.WriteString("Links:\n")
 		for _, link := range task.Links {
-			b.WriteString(fmt.Sprintf("  [%s] %s\n", link.Kind, link.Value))
+			prefix := fmt.Sprintf("  [%s] ", link.Kind)
+			wrappedValue := wrapText(link.Value, m.width-len(prefix))
+			formattedLink := prefix + wrappedValue
+			b.WriteString(formattedLink + "\n")
 		}
 	}
 
@@ -249,8 +257,8 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 	b.WriteString(strings.Repeat("─", m.width))
 	b.WriteString("\n")
 
-	// Spec content
-	b.WriteString(task.Spec)
+	// Spec content (wrapped to avoid horizontal overflow)
+	b.WriteString(wrapText(task.Spec, m.width))
 
 	return b.String()
 }
@@ -272,6 +280,7 @@ func (m *BoardModel) renderDetailView() string {
 }
 
 // wrapText wraps s to the given width on word boundaries, preserving existing newlines.
+// Long words that exceed the width are hard-broken into width-sized chunks.
 // Used for free-text fields (like a task result) that would otherwise overrun the terminal.
 func wrapText(s string, width int) string {
 	if width <= 0 {
@@ -284,7 +293,7 @@ func wrapText(s string, width int) string {
 		}
 		col := 0
 		for j, word := range strings.Fields(line) {
-			wlen := len(word)
+			wlen := utf8.RuneCountInString(word)
 			if j > 0 {
 				if col+1+wlen > width {
 					out.WriteByte('\n')
@@ -294,8 +303,28 @@ func wrapText(s string, width int) string {
 					col++
 				}
 			}
-			out.WriteString(word)
-			col += wlen
+			// If word exceeds width, hard-break it into chunks
+			if wlen > width {
+				for col < width && len(word) > 0 {
+					// Take up to (width - col) runes from word
+					remaSpace := width - col
+					var chunk string
+					for len(word) > 0 && utf8.RuneCountInString(chunk) < remaSpace {
+						r, sz := utf8.DecodeRuneInString(word)
+						chunk += string(r)
+						word = word[sz:]
+					}
+					out.WriteString(chunk)
+					col += utf8.RuneCountInString(chunk)
+					if len(word) > 0 {
+						out.WriteByte('\n')
+						col = 0
+					}
+				}
+			} else {
+				out.WriteString(word)
+				col += wlen
+			}
 		}
 	}
 	return out.String()
