@@ -25,6 +25,15 @@ func setupTestServer(t *testing.T, authToken string) *Server {
 	return New(s, authToken, 5*time.Minute, 5, nil)
 }
 
+func setupTestServerWithThresholds(t *testing.T, authToken string, thresholds map[string]int) *Server {
+	// Use in-memory database for testing
+	s, err := store.Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test store: %v", err)
+	}
+	return New(s, authToken, 5*time.Minute, 5, thresholds)
+}
+
 // TestHealthzWithoutAuth verifies GET /healthz returns 200 without auth.
 func TestHealthzWithoutAuth(t *testing.T) {
 	server := setupTestServer(t, "test-token")
@@ -4008,5 +4017,440 @@ func TestListTasksWithIncludeSupersededFilter(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected oldTask to appear in list with include_superseded=true")
+	}
+}
+
+// Helper to submit a review verdict from a review task.
+func submitReviewVerdict(t *testing.T, server *Server, authHeader string, reviewTaskID string, verdict string, note string) {
+	claimPayload := map[string]string{"agent_id": "reviewer-agent", "model": "opus"}
+	claimBody, _ := json.Marshal(claimPayload)
+	claimReq := httptest.NewRequest("POST", "/tasks/"+reviewTaskID+"/claim", bytes.NewReader(claimBody))
+	claimReq.Header.Set("Authorization", authHeader)
+	claimReq.Header.Set("Content-Type", "application/json")
+	claimW := httptest.NewRecorder()
+	server.mux.ServeHTTP(claimW, claimReq)
+	if claimW.Code != http.StatusOK {
+		t.Fatalf("failed to claim review task: got status %d", claimW.Code)
+	}
+
+	submitPayload := map[string]interface{}{
+		"agent_id": "reviewer-agent",
+		"result":   note,
+		"verdict":  verdict,
+		"links":    []map[string]string{},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/"+reviewTaskID+"/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+	if submitW.Code != http.StatusOK {
+		t.Fatalf("failed to submit review verdict: got status %d; body: %s", submitW.Code, submitW.Body.String())
+	}
+}
+
+// TestEndToEndEscalationLadder verifies the escalation ladder: haiku → sonnet → opus, then blocks.
+func TestEndToEndEscalationLadder(t *testing.T) {
+	// Use custom thresholds for testing: haiku=2, sonnet=2, opus=2
+	thresholds := map[string]int{"haiku": 2, "sonnet": 2, "opus": 2}
+	server := setupTestServerWithThresholds(t, "test-token", thresholds)
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create an implement task with haiku model
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "Escalation Test Task",
+			Spec:       "Test task for escalation ladder",
+			DocumentID: docID,
+			Model:      "haiku",
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Verify initial model is haiku
+	if createdTasks[0].Model != "haiku" {
+		t.Fatalf("expected model 'haiku', got %q", createdTasks[0].Model)
+	}
+
+	// Promote to ready
+	promoteReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	// Helper to promote a backlog task to ready
+	promoteTask := func(taskID string) {
+		promReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+		promReq.Header.Set("Authorization", authHeader)
+		promW := httptest.NewRecorder()
+		server.mux.ServeHTTP(promW, promReq)
+		if promW.Code != http.StatusOK {
+			t.Fatalf("failed to promote task: got status %d", promW.Code)
+		}
+	}
+
+	// Helper to claim, submit, and get review tasks for rejecting
+	rejectAndEscalate := func(currentTaskID string, expectedModel string, expectedReviewRound int) (string, *string) {
+		// Claim as the current model
+		claimPayload := map[string]string{"agent_id": "impl-agent", "model": expectedModel}
+		claimBody, _ := json.Marshal(claimPayload)
+		claimReq := httptest.NewRequest("POST", "/tasks/"+currentTaskID+"/claim", bytes.NewReader(claimBody))
+		claimReq.Header.Set("Authorization", authHeader)
+		claimReq.Header.Set("Content-Type", "application/json")
+		claimW := httptest.NewRecorder()
+		server.mux.ServeHTTP(claimW, claimReq)
+		if claimW.Code != http.StatusOK {
+			t.Fatalf("failed to claim task as %s: got status %d", expectedModel, claimW.Code)
+		}
+
+		// Submit to move to review (spawns review tasks)
+		submitPayload := map[string]interface{}{
+			"agent_id": "impl-agent",
+			"result":   "Work in progress",
+			"links":    []map[string]string{},
+		}
+		submitBody, _ := json.Marshal(submitPayload)
+		submitReq := httptest.NewRequest("POST", "/tasks/"+currentTaskID+"/submit", bytes.NewReader(submitBody))
+		submitReq.Header.Set("Authorization", authHeader)
+		submitReq.Header.Set("Content-Type", "application/json")
+		submitW := httptest.NewRecorder()
+		server.mux.ServeHTTP(submitW, submitReq)
+		if submitW.Code != http.StatusOK {
+			t.Fatalf("failed to submit task: got status %d; body: %s", submitW.Code, submitW.Body.String())
+		}
+
+		var submittedTask store.TaskWithDepsAndLinks
+		json.NewDecoder(submitW.Body).Decode(&submittedTask)
+		if submittedTask.ReviewRound != expectedReviewRound {
+			t.Errorf("expected review_round %d, got %d", expectedReviewRound, submittedTask.ReviewRound)
+		}
+
+		// Get the review tasks for the current round (list all review tasks for project, then filter)
+		listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?kind=review&state=ready", nil)
+		listReq.Header.Set("Authorization", authHeader)
+		listW := httptest.NewRecorder()
+		server.mux.ServeHTTP(listW, listReq)
+
+		var allReviewTasks []store.Task
+		json.NewDecoder(listW.Body).Decode(&allReviewTasks)
+
+		// Find the review task for this parent
+		var reviewTaskID string
+		for _, task := range allReviewTasks {
+			if task.TargetTaskID != nil && *task.TargetTaskID == currentTaskID {
+				reviewTaskID = task.ID
+				break
+			}
+		}
+		if reviewTaskID == "" {
+			t.Fatalf("expected 1 ready review task for %s, got none", currentTaskID)
+		}
+
+		// Submit reject verdict
+		submitReviewVerdict(t, server, authHeader, reviewTaskID, "reject", "Needs improvement")
+
+		// Get the parent task to see if it escalated
+		getReq := httptest.NewRequest("GET", "/tasks/"+currentTaskID, nil)
+		getReq.Header.Set("Authorization", authHeader)
+		getW := httptest.NewRecorder()
+		server.mux.ServeHTTP(getW, getReq)
+
+		var parentTask store.TaskWithDepsAndLinks
+		json.NewDecoder(getW.Body).Decode(&parentTask)
+
+		return currentTaskID, parentTask.SupersededBy
+	}
+
+	// Rounds 1-2: haiku task, submit and reject (no escalation yet)
+	currentTaskID := taskID
+	currentModel := "haiku"
+	for round := 1; round <= 2; round++ {
+		_, supersededBy := rejectAndEscalate(currentTaskID, currentModel, round)
+		if supersededBy != nil {
+			t.Fatalf("expected no escalation at round %d, but task was superseded by %s", round, *supersededBy)
+		}
+	}
+
+	// Round 3: haiku task should escalate to sonnet
+	_, supersededBy := rejectAndEscalate(currentTaskID, currentModel, 3)
+	if supersededBy == nil {
+		t.Fatalf("expected task to escalate at round 3, but SupersededBy is nil")
+	}
+	escalatedTaskID := *supersededBy
+
+	// Promote the escalated task to ready
+	promoteTask(escalatedTaskID)
+
+	// Verify the escalated task is sonnet
+	getReq := httptest.NewRequest("GET", "/tasks/"+escalatedTaskID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW := httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+	var escalatedTask store.TaskWithDepsAndLinks
+	json.NewDecoder(getW.Body).Decode(&escalatedTask)
+
+	if escalatedTask.Model != "sonnet" {
+		t.Errorf("expected escalated model 'sonnet', got %q", escalatedTask.Model)
+	}
+	if escalatedTask.ReviewRound != 0 {
+		t.Errorf("expected escalated task to start at review_round 0, got %d", escalatedTask.ReviewRound)
+	}
+
+	// Continue with sonnet: rounds 1-2 before escalating to opus
+	currentTaskID = escalatedTaskID
+	currentModel = "sonnet"
+	for round := 1; round <= 2; round++ {
+		_, supersededBy := rejectAndEscalate(currentTaskID, currentModel, round)
+		if supersededBy != nil {
+			t.Fatalf("expected no escalation for sonnet at round %d, but task was superseded", round)
+		}
+	}
+
+	// Round 3: sonnet task should escalate to opus
+	_, supersededBy = rejectAndEscalate(currentTaskID, currentModel, 3)
+	if supersededBy == nil {
+		t.Fatalf("expected sonnet task to escalate to opus at round 3, but SupersededBy is nil")
+	}
+	opusTaskID := *supersededBy
+
+	// Promote the escalated task to ready
+	promoteTask(opusTaskID)
+
+	// Verify the escalated task is opus
+	getReq = httptest.NewRequest("GET", "/tasks/"+opusTaskID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW = httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+	json.NewDecoder(getW.Body).Decode(&escalatedTask)
+
+	if escalatedTask.Model != "opus" {
+		t.Errorf("expected final escalated model 'opus', got %q", escalatedTask.Model)
+	}
+
+	// Opus at rounds 1-2: should not block yet
+	currentTaskID = opusTaskID
+	currentModel = "opus"
+	for round := 1; round <= 2; round++ {
+		_, supersededBy := rejectAndEscalate(currentTaskID, currentModel, round)
+		if supersededBy != nil {
+			t.Fatalf("expected no escalation for opus at round %d, but task was superseded", round)
+		}
+	}
+
+	// At round 3, opus should block (no escalation since it's the top tier)
+	claimPayload := map[string]string{"agent_id": "impl-agent", "model": "opus"}
+	claimBody, _ := json.Marshal(claimPayload)
+	claimReq := httptest.NewRequest("POST", "/tasks/"+currentTaskID+"/claim", bytes.NewReader(claimBody))
+	claimReq.Header.Set("Authorization", authHeader)
+	claimReq.Header.Set("Content-Type", "application/json")
+	claimW := httptest.NewRecorder()
+	server.mux.ServeHTTP(claimW, claimReq)
+
+	submitPayload := map[string]interface{}{
+		"agent_id": "impl-agent",
+		"result":   "Work in progress",
+		"links":    []map[string]string{},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/"+currentTaskID+"/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+
+	var submittedTask store.TaskWithDepsAndLinks
+	json.NewDecoder(submitW.Body).Decode(&submittedTask)
+
+	// Get and reject via review task
+	listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?kind=review&state=ready", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	var allReviewTasks []store.Task
+	json.NewDecoder(listW.Body).Decode(&allReviewTasks)
+
+	var reviewTaskID string
+	for _, task := range allReviewTasks {
+		if task.TargetTaskID != nil && *task.TargetTaskID == currentTaskID {
+			reviewTaskID = task.ID
+			break
+		}
+	}
+	if reviewTaskID == "" {
+		t.Fatalf("expected 1 ready review task for final round, got none")
+	}
+
+	submitReviewVerdict(t, server, authHeader, reviewTaskID, "reject", "Final rejection")
+
+	// Check that opus task is now blocked
+	getReq = httptest.NewRequest("GET", "/tasks/"+currentTaskID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW = httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+
+	var finalTask store.TaskWithDepsAndLinks
+	json.NewDecoder(getW.Body).Decode(&finalTask)
+
+	if finalTask.State != "blocked" {
+		t.Errorf("expected opus task to be 'blocked' at threshold, got %q", finalTask.State)
+	}
+	if finalTask.SupersededBy != nil {
+		t.Errorf("expected no supersession for top-tier opus, but SupersededBy is %v", finalTask.SupersededBy)
+	}
+}
+
+// TestEscalateOptOutBlocksAtFirstThreshold verifies that escalate=false blocks at first threshold.
+func TestEscalateOptOutBlocksAtFirstThreshold(t *testing.T) {
+	// Use custom thresholds for testing: haiku=2
+	thresholds := map[string]int{"haiku": 2}
+	server := setupTestServerWithThresholds(t, "test-token", thresholds)
+	authHeader := "Bearer test-token"
+
+	projectID, docID := setupProjectAndDocument(t, server, authHeader)
+
+	// Create a haiku task with escalate=false
+	escalateDisabled := false
+	taskPayload := []store.TaskInput{
+		{
+			Title:      "No Escalation Task",
+			Spec:       "Task with escalation disabled",
+			DocumentID: docID,
+			Model:      "haiku",
+			Escalate:   &escalateDisabled,
+		},
+	}
+	taskBody, _ := json.Marshal(taskPayload)
+	createReq := httptest.NewRequest("POST", "/projects/"+projectID+"/tasks", bytes.NewReader(taskBody))
+	createReq.Header.Set("Authorization", authHeader)
+	createReq.Header.Set("Content-Type", "application/json")
+	createW := httptest.NewRecorder()
+	server.mux.ServeHTTP(createW, createReq)
+
+	var createdTasks []store.Task
+	json.NewDecoder(createW.Body).Decode(&createdTasks)
+	taskID := createdTasks[0].ID
+
+	// Promote to ready
+	promoteReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/promote", nil)
+	promoteReq.Header.Set("Authorization", authHeader)
+	promoteW := httptest.NewRecorder()
+	server.mux.ServeHTTP(promoteW, promoteReq)
+
+	// Claim and submit at threshold (round 5) with a reject
+	claimPayload := map[string]string{"agent_id": "impl-agent", "model": "haiku"}
+	claimBody, _ := json.Marshal(claimPayload)
+	claimReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
+	claimReq.Header.Set("Authorization", authHeader)
+	claimReq.Header.Set("Content-Type", "application/json")
+	claimW := httptest.NewRecorder()
+	server.mux.ServeHTTP(claimW, claimReq)
+
+	// Cycle through rejection loops until at threshold (2 rounds)
+	for round := 0; round < 2; round++ {
+		submitPayload := map[string]interface{}{
+			"agent_id": "impl-agent",
+			"result":   "Work in progress",
+			"links":    []map[string]string{},
+		}
+		submitBody, _ := json.Marshal(submitPayload)
+		submitReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/submit", bytes.NewReader(submitBody))
+		submitReq.Header.Set("Authorization", authHeader)
+		submitReq.Header.Set("Content-Type", "application/json")
+		submitW := httptest.NewRecorder()
+		server.mux.ServeHTTP(submitW, submitReq)
+
+		// Get review task
+		listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?kind=review&state=ready", nil)
+		listReq.Header.Set("Authorization", authHeader)
+		listW := httptest.NewRecorder()
+		server.mux.ServeHTTP(listW, listReq)
+
+		var allReviewTasks []store.Task
+		json.NewDecoder(listW.Body).Decode(&allReviewTasks)
+
+		var reviewTaskID string
+		for _, task := range allReviewTasks {
+			if task.TargetTaskID != nil && *task.TargetTaskID == taskID {
+				reviewTaskID = task.ID
+				break
+			}
+		}
+		if reviewTaskID == "" {
+			t.Fatalf("round %d: expected 1 review task, got none", round)
+		}
+
+		// Reject
+		submitReviewVerdict(t, server, authHeader, reviewTaskID, "reject", "Needs work")
+
+		// Re-claim for next round
+		if round <= 5 {
+			claimReq = httptest.NewRequest("POST", "/tasks/"+taskID+"/claim", bytes.NewReader(claimBody))
+			claimReq.Header.Set("Authorization", authHeader)
+			claimReq.Header.Set("Content-Type", "application/json")
+			claimW = httptest.NewRecorder()
+			server.mux.ServeHTTP(claimW, claimReq)
+		}
+	}
+
+	// At round 3 (threshold exceeded), it should block instead of escalate
+	submitPayload := map[string]interface{}{
+		"agent_id": "impl-agent",
+		"result":   "Final attempt",
+		"links":    []map[string]string{},
+	}
+	submitBody, _ := json.Marshal(submitPayload)
+	submitReq := httptest.NewRequest("POST", "/tasks/"+taskID+"/submit", bytes.NewReader(submitBody))
+	submitReq.Header.Set("Authorization", authHeader)
+	submitReq.Header.Set("Content-Type", "application/json")
+	submitW := httptest.NewRecorder()
+	server.mux.ServeHTTP(submitW, submitReq)
+
+	// Get review task
+	listReq := httptest.NewRequest("GET", "/projects/"+projectID+"/tasks?kind=review&state=ready", nil)
+	listReq.Header.Set("Authorization", authHeader)
+	listW := httptest.NewRecorder()
+	server.mux.ServeHTTP(listW, listReq)
+
+	var allReviewTasks []store.Task
+	json.NewDecoder(listW.Body).Decode(&allReviewTasks)
+
+	var reviewTaskID string
+	for _, task := range allReviewTasks {
+		if task.TargetTaskID != nil && *task.TargetTaskID == taskID {
+			reviewTaskID = task.ID
+			break
+		}
+	}
+
+	// Reject at threshold
+	submitReviewVerdict(t, server, authHeader, reviewTaskID, "reject", "Still needs work")
+
+	// Verify task is blocked (not escalated)
+	getReq := httptest.NewRequest("GET", "/tasks/"+taskID, nil)
+	getReq.Header.Set("Authorization", authHeader)
+	getW := httptest.NewRecorder()
+	server.mux.ServeHTTP(getW, getReq)
+
+	var finalTask store.TaskWithDepsAndLinks
+	json.NewDecoder(getW.Body).Decode(&finalTask)
+
+	if finalTask.State != "blocked" {
+		t.Errorf("expected task with escalate=false to be 'blocked' at threshold, got %q", finalTask.State)
+	}
+	if finalTask.SupersededBy != nil {
+		t.Errorf("expected no supersession for escalate=false task, but SupersededBy is %v", finalTask.SupersededBy)
 	}
 }
