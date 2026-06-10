@@ -56,6 +56,7 @@ func New(s store.Store, authToken string, leaseTTL time.Duration, maxReviewRound
 	mux.HandleFunc("POST /tasks/{id}/submit", server.authMiddleware(server.handleSubmit))
 	mux.HandleFunc("POST /tasks/{id}/review", server.authMiddleware(server.handleReview))
 	mux.HandleFunc("POST /tasks/{id}/transition", server.authMiddleware(server.handleTransition))
+	mux.HandleFunc("POST /tasks/{id}/supersede", server.authMiddleware(server.handleSupersede))
 	mux.HandleFunc("PATCH /tasks/{id}", server.authMiddleware(server.handleUpdateTask))
 	mux.HandleFunc("POST /tasks/{id}/hold", server.authMiddleware(server.handleHold))
 	mux.HandleFunc("POST /tasks/{id}/release", server.authMiddleware(server.handleRelease))
@@ -637,6 +638,42 @@ func (s *Server) handleTransition(w http.ResponseWriter, r *http.Request) {
 	}
 
 	s.encodeJSON(w, http.StatusOK, task)
+}
+
+// handleSupersede handles POST /tasks/{id}/supersede to create a new task with the same spec.
+func (s *Server) handleSupersede(w http.ResponseWriter, r *http.Request) {
+	taskID := r.PathValue("id")
+
+	var payload struct {
+		Model *string `json:"model"`
+	}
+
+	if err := s.decodeJSON(w, r, &payload); err != nil {
+		return // decodeJSON already wrote error response
+	}
+
+	// Supersede the task
+	task, err := s.store.SupersedeTask(r.Context(), taskID, payload.Model)
+	if err != nil {
+		// Check if it's a ValidationError
+		var validationErr *store.ValidationError
+		if errors.As(err, &validationErr) {
+			s.errorResponse(w, http.StatusBadRequest, validationErr.Code, validationErr.Message)
+			return
+		}
+		if errors.Is(err, store.ErrNotFound) {
+			s.errorResponse(w, http.StatusNotFound, "NOT_FOUND", "Task not found")
+			return
+		}
+		if errors.Is(err, store.ErrConflict) {
+			s.errorResponse(w, http.StatusConflict, "CONFLICT", "Task cannot be superseded")
+			return
+		}
+		s.errorResponse(w, http.StatusInternalServerError, "SUPERSEDE_ERROR", "Failed to supersede task")
+		return
+	}
+
+	s.encodeJSON(w, http.StatusCreated, task)
 }
 
 // handleUpdateTask handles PATCH /tasks/{id} to update a task's dependencies.
