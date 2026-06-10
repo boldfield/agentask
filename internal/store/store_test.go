@@ -2980,6 +2980,7 @@ func TestReviewRoundCircuitBreaker(t *testing.T) {
 		t.Fatalf("failed to create document: %v", err)
 	}
 
+	escalateFalse := false
 	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
 		{
 			Title:        "Implement feature",
@@ -2987,6 +2988,7 @@ func TestReviewRoundCircuitBreaker(t *testing.T) {
 			DocumentID:   doc.ID,
 			Model:        "haiku",
 			ReviewModels: []string{"opus"},
+			Escalate:     &escalateFalse,
 		},
 	})
 	if err != nil {
