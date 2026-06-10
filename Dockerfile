@@ -13,8 +13,11 @@ RUN go mod download
 # Copy source code
 COPY . .
 
+# Build argument for version (can be overridden with --build-arg VERSION=vX.Y.Z)
+ARG VERSION=dev
+
 # Build static binary with CGO disabled for pure-Go SQLite
-RUN CGO_ENABLED=0 GOOS=linux go build -o /agentask ./cmd/agentask
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.version=$VERSION" -o /agentask ./cmd/agentask
 
 # Final stage: distroless static image
 FROM gcr.io/distroless/static:nonroot
