@@ -112,3 +112,36 @@ func TestBuildDetailContentWrapping(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildDetailContentWithLongURL(t *testing.T) {
+	now := time.Now().Format(time.RFC3339Nano)
+	longURL := "https://github.com/boldfield/agentask/pull/144"
+
+	task := tuiclient.TaskDetail{
+		ID:        "task-123",
+		Title:     "Test Task",
+		State:     "in_progress",
+		Spec:      "Test spec",
+		CreatedAt: now,
+		UpdatedAt: now,
+		Links: []tuiclient.TaskLink{
+			{Kind: "pr", Value: longURL},
+		},
+	}
+
+	width := 40
+	model := &BoardModel{
+		width: width,
+	}
+	model.detailEvents = nil
+
+	content := model.buildDetailContent(task)
+
+	// Verify that no line exceeds the viewport width, including the PR URL line
+	for i, line := range strings.Split(content, "\n") {
+		lineWidth := utf8.RuneCountInString(line)
+		if lineWidth > width {
+			t.Errorf("line %d exceeds width %d (got %d): %q", i, width, lineWidth, line)
+		}
+	}
+}

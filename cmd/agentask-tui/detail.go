@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/boldfield/agentask/internal/tuiclient"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -222,8 +223,9 @@ func (m *BoardModel) buildDetailContent(task tuiclient.TaskDetail) string {
 	if len(task.Links) > 0 {
 		b.WriteString("Links:\n")
 		for _, link := range task.Links {
-			wrappedValue := wrapText(link.Value, m.width-4)
-			formattedLink := fmt.Sprintf("  [%s] %s", link.Kind, wrappedValue)
+			prefix := fmt.Sprintf("  [%s] ", link.Kind)
+			wrappedValue := wrapText(link.Value, m.width-len(prefix))
+			formattedLink := prefix + wrappedValue
 			b.WriteString(formattedLink + "\n")
 		}
 	}
@@ -277,6 +279,7 @@ func (m *BoardModel) renderDetailView() string {
 }
 
 // wrapText wraps s to the given width on word boundaries, preserving existing newlines.
+// Long words that exceed the width are hard-broken into width-sized chunks.
 // Used for free-text fields (like a task result) that would otherwise overrun the terminal.
 func wrapText(s string, width int) string {
 	if width <= 0 {
@@ -289,7 +292,7 @@ func wrapText(s string, width int) string {
 		}
 		col := 0
 		for j, word := range strings.Fields(line) {
-			wlen := len(word)
+			wlen := utf8.RuneCountInString(word)
 			if j > 0 {
 				if col+1+wlen > width {
 					out.WriteByte('\n')
@@ -299,8 +302,28 @@ func wrapText(s string, width int) string {
 					col++
 				}
 			}
-			out.WriteString(word)
-			col += wlen
+			// If word exceeds width, hard-break it into chunks
+			if wlen > width {
+				for col < width && len(word) > 0 {
+					// Take up to (width - col) runes from word
+					remaSpace := width - col
+					var chunk string
+					for len(word) > 0 && utf8.RuneCountInString(chunk) < remaSpace {
+						r, sz := utf8.DecodeRuneInString(word)
+						chunk += string(r)
+						word = word[sz:]
+					}
+					out.WriteString(chunk)
+					col += utf8.RuneCountInString(chunk)
+					if len(word) > 0 {
+						out.WriteByte('\n')
+						col = 0
+					}
+				}
+			} else {
+				out.WriteString(word)
+				col += wlen
+			}
 		}
 	}
 	return out.String()
