@@ -5377,3 +5377,110 @@ func TestSetTaskDepends(t *testing.T) {
 		t.Errorf("expected B to have 0 dependencies, got %d: %v", len(taskBEmpty.DependsOn), taskBEmpty.DependsOn)
 	}
 }
+
+func TestUpdateTaskDependsOn(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create tasks: A, B, C, D
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Key: "task-a", Title: "Task A", Spec: "Spec A", DocumentID: doc.ID},
+		{Title: "Task B", Spec: "Spec B", DocumentID: doc.ID},
+		{Key: "task-c", Title: "Task C", Spec: "Spec C", DocumentID: doc.ID},
+		{Key: "task-d", Title: "Task D", Spec: "Spec D", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	taskA := tasks[0]
+	taskB := tasks[1]
+	taskC := tasks[2]
+	taskD := tasks[3]
+
+	// Test 1: Successfully update task B to depend on C
+	updatedTask, err := store.UpdateTaskDependsOn(ctx, taskB.ID, []string{taskC.ID})
+	if err != nil {
+		t.Errorf("UpdateTaskDependsOn should succeed for valid deps, got error: %v", err)
+	}
+	if updatedTask.ID != taskB.ID {
+		t.Errorf("expected updated task ID to be %s, got %s", taskB.ID, updatedTask.ID)
+	}
+
+	// Verify the update took effect
+	taskBAfter, err := store.GetTask(ctx, taskB.ID)
+	if err != nil {
+		t.Fatalf("failed to get task B after update: %v", err)
+	}
+	if len(taskBAfter.DependsOn) != 1 || taskBAfter.DependsOn[0] != taskC.ID {
+		t.Errorf("expected B to depend on C, got %v", taskBAfter.DependsOn)
+	}
+
+	// Test 2: Reject self-dependency
+	_, err = store.UpdateTaskDependsOn(ctx, taskA.ID, []string{taskA.ID})
+	if err == nil {
+		t.Error("UpdateTaskDependsOn should reject self-dependency")
+	}
+	var valErr *ValidationError
+	if !errors.As(err, &valErr) || valErr.Code != "SELF_DEPENDENCY" {
+		t.Errorf("expected ValidationError with code SELF_DEPENDENCY, got %v (type %T)", err, err)
+	}
+
+	// Test 3: Reject cycle creation
+	// First set A -> B
+	_, err = store.UpdateTaskDependsOn(ctx, taskA.ID, []string{taskB.ID})
+	if err != nil {
+		t.Fatalf("failed to set A depends on B: %v", err)
+	}
+	// Now try to make B -> A (would create cycle since A -> B -> A)
+	_, err = store.UpdateTaskDependsOn(ctx, taskB.ID, []string{taskA.ID})
+	if err == nil {
+		t.Error("UpdateTaskDependsOn should reject cycle creation")
+	}
+	var confErr *ConflictError
+	if !errors.As(err, &confErr) || confErr.Code != "CYCLE_DETECTED" {
+		t.Errorf("expected ConflictError with code CYCLE_DETECTED, got %v (type %T)", err, err)
+	}
+
+	// Test 4: Update to multiple dependencies
+	_, err = store.UpdateTaskDependsOn(ctx, taskD.ID, []string{taskA.ID, taskB.ID, taskC.ID})
+	if err != nil {
+		t.Errorf("UpdateTaskDependsOn should succeed for multiple valid deps, got error: %v", err)
+	}
+
+	taskDAfter, err := store.GetTask(ctx, taskD.ID)
+	if err != nil {
+		t.Fatalf("failed to get task D after update: %v", err)
+	}
+	if len(taskDAfter.DependsOn) != 3 {
+		t.Errorf("expected D to have 3 dependencies, got %d", len(taskDAfter.DependsOn))
+	}
+
+	// Test 5: Clear dependencies (update with empty list)
+	_, err = store.UpdateTaskDependsOn(ctx, taskD.ID, []string{})
+	if err != nil {
+		t.Errorf("UpdateTaskDependsOn should succeed for empty deps, got error: %v", err)
+	}
+
+	taskDCleared, err := store.GetTask(ctx, taskD.ID)
+	if err != nil {
+		t.Fatalf("failed to get task D after clearing: %v", err)
+	}
+	if len(taskDCleared.DependsOn) != 0 {
+		t.Errorf("expected D to have 0 dependencies, got %d: %v", len(taskDCleared.DependsOn), taskDCleared.DependsOn)
+	}
+}
