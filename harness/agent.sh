@@ -189,7 +189,7 @@ if [ "$MULTI" = 0 ]; then
       if [ -z "$task_id" ]; then
         echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable ($KIND); sleeping 30s"; nap 30; continue
       fi
-      task_model=$(agentask show "$task_id" --json 2>/dev/null | jq -r '.Model // ""')
+      task_model=$(agentask show "$task_id" --json 2>/dev/null | jq -r '.model // ""')
       if [ -z "$task_model" ]; then
         echo "[$AGENT_ID] $(date '+%H:%M:%S') failed to read task model for $task_id; sleeping 30s"; nap 30; continue
       fi
@@ -242,7 +242,7 @@ while true; do
     if [ -z "$task_id" ]; then
       continue   # task raced away, try next project
     fi
-    task_model=$(agentask show "$task_id" --json 2>/dev/null | jq -r '.Model // ""')
+    task_model=$(agentask show "$task_id" --json 2>/dev/null | jq -r '.model // ""')
     if [ -z "$task_model" ]; then
       continue   # couldn't read task model, try next project
     fi
