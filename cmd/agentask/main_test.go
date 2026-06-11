@@ -1401,7 +1401,9 @@ func TestExecuteNextMissingProject(t *testing.T) {
 
 func TestExecuteNextMissingModel(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// With --model now optional, return empty task list (nothing claimable)
 		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("[]"))
 	}))
 	defer server.Close()
 
@@ -1410,11 +1412,11 @@ func TestExecuteNextMissingModel(t *testing.T) {
 		"--kind", "implement",
 	})
 	if err == nil {
-		t.Fatal("expected error for missing --model, got nil")
+		t.Fatal("expected error for nothing claimable, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "--model") {
-		t.Errorf("expected error to mention --model, got: %v", err)
+	if !strings.Contains(err.Error(), "nothing claimable") {
+		t.Errorf("expected error to mention nothing claimable, got: %v", err)
 	}
 }
 

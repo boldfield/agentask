@@ -737,19 +737,19 @@ func executeNext(ctx context.Context, baseURL, token string, jsonOutput bool, ar
 	if *projectFlag == "" {
 		return fmt.Errorf("--project flag is required")
 	}
-	if *modelFlag == "" {
-		return fmt.Errorf("--model flag is required")
-	}
 	if *kindFlag == "" {
 		return fmt.Errorf("--kind flag is required")
 	}
 
 	client := tuiclient.NewHTTPClient(baseURL, token)
-	tasks, err := client.ListTasks(ctx, *projectFlag,
-		tuiclient.WithModel(*modelFlag),
+	opts := []tuiclient.TaskListOption{
 		tuiclient.WithKind(*kindFlag),
 		tuiclient.WithClaimable(true),
-	)
+	}
+	if *modelFlag != "" {
+		opts = append(opts, tuiclient.WithModel(*modelFlag))
+	}
+	tasks, err := client.ListTasks(ctx, *projectFlag, opts...)
 	if err != nil {
 		return fmt.Errorf("failed to list tasks: %w", err)
 	}
@@ -761,7 +761,13 @@ func executeNext(ctx context.Context, baseURL, token string, jsonOutput bool, ar
 	task := tasks[0]
 
 	if *claimFlag {
-		agentID, model, err := resolveAgentIdentity(*agentFlag, *modelFlag)
+		// Use provided model, or fall back to task's model, or environment variable
+		model := *modelFlag
+		if model == "" {
+			model = task.Model
+		}
+
+		agentID, _, err := resolveAgentIdentity(*agentFlag, model)
 		if err != nil {
 			return err
 		}
