@@ -50,11 +50,18 @@ case "${KIND:?--kind required}" in implement|review) ;; *) echo "kind must be im
 
 export AGENT_MODEL="$MODEL"
 if [ "$KIND" = "review" ]; then
-  ROLE="reviewer"; PROMPT_FILE="$HARNESS_DIR/prompts/build/review.md"; SLOT="${SLOT:-${AGENT_SLOT:-${MODEL}-rev-1}}"
+  ROLE="reviewer"; SLOT="${SLOT:-${AGENT_SLOT:-${MODEL}-rev-1}}"
 else
-  ROLE="worker";   PROMPT_FILE="$HARNESS_DIR/prompts/build/implement.md";   SLOT="${SLOT:-${AGENT_SLOT:-${MODEL}-1}}"
+  ROLE="worker";   SLOT="${SLOT:-${AGENT_SLOT:-${MODEL}-1}}"
 fi
-[ -f "$PROMPT_FILE" ] || { echo "prompt not found: $PROMPT_FILE" >&2; exit 1; }
+
+# Prompt file is determined by task track (dynamically, see dispatch).
+# Helper to get prompt file path from track and kind.
+get_prompt_file() {
+  local track="${1:-build}"
+  local kind="$2"
+  echo "$HARNESS_DIR/prompts/$track/$kind.md"
+}
 
 ID_DIR="$AGENTASK_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
 REPOS_DIR="$AGENTASK_HOME/repos"     # per-repo clones (multi-mode); intentional unbounded cache — prune by hand if it grows
@@ -189,11 +196,18 @@ if [ "$MULTI" = 0 ]; then
       if [ -z "$task_id" ]; then
         echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable ($KIND); sleeping 30s"; nap 30; continue
       fi
-      task_model=$(agentask show "$task_id" --json 2>/dev/null | jq -r '.model // ""')
+      task_json=$(agentask show "$task_id" --json 2>/dev/null)
+      task_model=$(echo "$task_json" | jq -r '.model // ""')
       if [ -z "$task_model" ]; then
         echo "[$AGENT_ID] $(date '+%H:%M:%S') failed to read task model for $task_id; sleeping 30s"; nap 30; continue
       fi
-      echo "[$AGENT_ID] $(date '+%H:%M:%S') claimable $KIND; dispatching ($task_model)…"
+      # Read track from task, default to 'build' if absent
+      task_track=$(echo "$task_json" | jq -r '.track // "build"')
+      PROMPT_FILE="$(get_prompt_file "$task_track" "$KIND")"
+      if [ ! -f "$PROMPT_FILE" ]; then
+        echo "[$AGENT_ID] $(date '+%H:%M:%S') prompt not found: $PROMPT_FILE; skipping task $task_id"; continue
+      fi
+      echo "[$AGENT_ID] $(date '+%H:%M:%S') claimable $KIND; dispatching ($task_model/$task_track)…"
       export AGENT_MODEL="$task_model"
       dispatch
       export AGENT_MODEL="$MODEL"   # restore original model for slot identity
@@ -242,11 +256,18 @@ while true; do
     if [ -z "$task_id" ]; then
       continue   # task raced away, try next project
     fi
-    task_model=$(agentask show "$task_id" --json 2>/dev/null | jq -r '.model // ""')
+    task_json=$(agentask show "$task_id" --json 2>/dev/null)
+    task_model=$(echo "$task_json" | jq -r '.model // ""')
     if [ -z "$task_model" ]; then
       continue   # couldn't read task model, try next project
     fi
-    echo "[$AGENT_ID] $(date '+%H:%M:%S') dispatching ($task_model/$KIND) on $(norm_repo "$prepo") [${pid:0:8}]…"
+    # Read track from task, default to 'build' if absent
+    task_track=$(echo "$task_json" | jq -r '.track // "build"')
+    PROMPT_FILE="$(get_prompt_file "$task_track" "$KIND")"
+    if [ ! -f "$PROMPT_FILE" ]; then
+      continue   # prompt file not found, try next project
+    fi
+    echo "[$AGENT_ID] $(date '+%H:%M:%S') dispatching ($task_model/$task_track/$KIND) on $(norm_repo "$prepo") [${pid:0:8}]…"
     export AGENT_MODEL="$task_model"
     dispatch
     export AGENT_MODEL="$MODEL"   # restore original model for slot identity
