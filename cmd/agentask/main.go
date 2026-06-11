@@ -519,6 +519,26 @@ func executeTransition(ctx context.Context, baseURL, token string, args []string
 	return nil
 }
 
+// parseFlagsWithPositionals parses args allowing flags and positional arguments
+// to appear in ANY order. Go's flag package stops at the first positional, so
+// `submit <id> --result x` would leave --result unparsed (then fail with
+// "--result flag is required"). This re-runs fs.Parse over the args following
+// each positional so flags are honored wherever they appear. Returns the
+// positionals in order; flag values are populated on fs as usual.
+func parseFlagsWithPositionals(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positionals []string
+	for {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		if fs.NArg() == 0 {
+			return positionals, nil
+		}
+		positionals = append(positionals, fs.Arg(0))
+		args = fs.Args()[1:]
+	}
+}
+
 func executeClaim(ctx context.Context, baseURL, token string, args []string) error {
 	// Validate configuration
 	if baseURL == "" {
@@ -533,15 +553,16 @@ func executeClaim(ctx context.Context, baseURL, token string, args []string) err
 	fs.SetOutput(io.Discard)
 	agentFlag := fs.String("agent", "", "agent ID")
 	modelFlag := fs.String("model", "", "model")
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseFlagsWithPositionals(fs, args)
+	if err != nil {
 		return fmt.Errorf("failed to parse flags: %w", err)
 	}
 
 	// Get positional argument (task ID)
-	if fs.NArg() < 1 {
+	if len(positionals) < 1 {
 		return fmt.Errorf("task ID is required")
 	}
-	taskID := fs.Arg(0)
+	taskID := positionals[0]
 
 	// Resolve identity
 	agentID, model, err := resolveAgentIdentity(*agentFlag, *modelFlag)
@@ -577,14 +598,15 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 	branchFlag := fs.String("branch", "", "branch name")
 	noOpFlag := fs.Bool("no-op", false, "mark as already-satisfied (no-op)")
 	agentFlag := fs.String("agent", "", "agent ID")
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseFlagsWithPositionals(fs, args)
+	if err != nil {
 		return fmt.Errorf("failed to parse flags: %w", err)
 	}
 
-	if fs.NArg() < 1 {
+	if len(positionals) < 1 {
 		return fmt.Errorf("task ID is required")
 	}
-	taskID := fs.Arg(0)
+	taskID := positionals[0]
 
 	if *resultFlag == "" {
 		return fmt.Errorf("--result flag is required")
@@ -645,14 +667,15 @@ func executeHeartbeat(ctx context.Context, baseURL, token string, args []string)
 	fs := flag.NewFlagSet("heartbeat", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	agentFlag := fs.String("agent", "", "agent ID")
-	if err := fs.Parse(args); err != nil {
+	positionals, err := parseFlagsWithPositionals(fs, args)
+	if err != nil {
 		return fmt.Errorf("failed to parse flags: %w", err)
 	}
 
-	if fs.NArg() < 1 {
+	if len(positionals) < 1 {
 		return fmt.Errorf("task ID is required")
 	}
-	taskID := fs.Arg(0)
+	taskID := positionals[0]
 
 	// Resolve agent ID
 	agentID := *agentFlag
