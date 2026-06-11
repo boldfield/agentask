@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/boldfield/agentask/internal/api"
+	"github.com/boldfield/agentask/internal/forge"
 	"github.com/boldfield/agentask/internal/store"
 	"github.com/boldfield/agentask/internal/tuiclient"
 )
@@ -67,7 +69,7 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
-	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition", "project":
+	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition", "project", "merge":
 		return runClient(args[1], args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n\n", args[1])
@@ -97,6 +99,7 @@ Commands:
   next                   Find and optionally claim next claimable task
   promote                Promote a task from backlog to ready
   transition             Transition a task to a new state
+  merge                  Merge a pull request and transition tasks
   help, -h, --help       Show this help message
 `, version)
 }
@@ -248,6 +251,8 @@ func runClient(verb string, args []string) error {
 		return nil
 	case "promote":
 		return executePromote(ctx, baseURL, token, args)
+	case "merge":
+		return executeMerge(ctx, baseURL, token, args)
 	default:
 		return fmt.Errorf("unknown command %q", verb)
 	}
@@ -850,6 +855,114 @@ func executePromote(ctx context.Context, baseURL, token string, args []string) e
 	}
 
 	return nil
+}
+
+func executeMerge(ctx context.Context, baseURL, token string, args []string) error {
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	if len(args) < 1 {
+		return fmt.Errorf("merge task ID is required")
+	}
+
+	mergeTaskID := args[0]
+
+	client := tuiclient.NewHTTPClient(baseURL, token)
+
+	mergeTask, err := client.GetTask(ctx, mergeTaskID)
+	if err != nil {
+		return fmt.Errorf("failed to get merge task: %w", err)
+	}
+
+	if mergeTask.TargetTaskID == nil {
+		return fmt.Errorf("merge task has no target_task_id")
+	}
+
+	parentTaskID := *mergeTask.TargetTaskID
+
+	parentTask, err := client.GetTask(ctx, parentTaskID)
+	if err != nil {
+		return fmt.Errorf("failed to get parent task: %w", err)
+	}
+
+	if parentTask.State != "approved" {
+		return fmt.Errorf("parent task state is %q, expected approved", parentTask.State)
+	}
+
+	if !parentTask.AgentMerge {
+		return fmt.Errorf("parent task has agent_merge=false")
+	}
+
+	var prURL string
+	for _, link := range parentTask.Links {
+		if link.Kind == "pr" {
+			prURL = link.Value
+			break
+		}
+	}
+
+	if prURL == "" {
+		return fmt.Errorf("parent task has no pr link")
+	}
+
+	owner, repo, prNumber, err := parsePRURL(prURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse PR URL: %w", err)
+	}
+
+	forgeToken, err := forge.OwnerToken(owner)
+	if err != nil {
+		return fmt.Errorf("failed to get forge token: %w", err)
+	}
+
+	if err := forge.SquashMerge(ctx, owner, repo, prNumber, forgeToken); err != nil {
+		return fmt.Errorf("failed to squash merge PR: %w", err)
+	}
+
+	if err := client.TransitionTask(ctx, parentTaskID, "done", nil); err != nil {
+		return fmt.Errorf("failed to transition parent task to done: %w", err)
+	}
+
+	if err := client.TransitionTask(ctx, mergeTaskID, "done", nil); err != nil {
+		return fmt.Errorf("failed to transition merge task to done: %w", err)
+	}
+
+	return nil
+}
+
+// parsePRURL parses a GitHub PR URL into its components.
+// Expected format: https://github.com/<owner>/<repo>/pull/<number>
+func parsePRURL(prURL string) (owner, repo string, number int, err error) {
+	prURL = strings.TrimSuffix(prURL, "/")
+
+	u, err := url.Parse(prURL)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("invalid URL: %w", err)
+	}
+
+	if u.Host != "github.com" {
+		return "", "", 0, fmt.Errorf("not a github.com URL")
+	}
+
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+
+	if len(parts) != 4 || parts[2] != "pull" {
+		return "", "", 0, fmt.Errorf("not a pull request URL")
+	}
+
+	owner = parts[0]
+	repo = parts[1]
+
+	number, err = strconv.Atoi(parts[3])
+	if err != nil {
+		return "", "", 0, fmt.Errorf("invalid pull request number: %w", err)
+	}
+
+	return owner, repo, number, nil
 }
 
 func resolveAgentIdentity(agentFlag, modelFlag string) (agentID, model string, err error) {
