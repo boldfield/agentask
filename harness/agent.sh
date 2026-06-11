@@ -48,6 +48,98 @@ done
 case "${KIND:?--kind required}" in implement|review|merge) ;; *) echo "kind must be implement|review|merge" >&2; exit 1 ;; esac
 
 export AGENT_MODEL="$MODEL"
+
+# ============================== MERGE-KIND (REPO-LESS) ==============================
+# Merge tasks are handled via REST API (internal/forge) and need NO local repo, NO worktree.
+# Run as a separate early loop before any clone/worktree setup, then exit.
+if [ "$KIND" = "merge" ]; then
+  ROLE="merger"
+  DEFAULT_SLOT="merger-1"
+  SLOT="${SLOT:-${AGENT_SLOT:-$DEFAULT_SLOT}}"
+
+  ID_DIR="$AGENTASK_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
+  mkdir -p "$ID_DIR"
+  [ -s "$ID_FILE" ] || echo "$SLOT-$(hostname -s)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' ')" > "$ID_FILE"
+  export AGENT_ID="$(cat "$ID_FILE")"
+
+  MULTI=0
+  case "${AGENTASK_PROJECT:-}" in ""|all|ALL) MULTI=1 ;; esac
+
+  STOP=0
+  request_stop() {
+    [ "$STOP" -eq 1 ] && return
+    STOP=1
+    echo "[$AGENT_ID] stop requested — finishing the current $ROLE task, then exiting. Ctrl-C again to force-quit."
+    trap - INT TERM
+  }
+  trap request_stop INT TERM
+
+  nap() { sleep "$1" & wait $! 2>/dev/null; }
+
+  has_claimable_work() {
+    agentask next --project "$1" --kind "$KIND" >/dev/null 2>&1
+  }
+
+  merge_one() {
+    local task_id="$1"
+    agentask claim "$task_id" || return 1
+    agentask merge "$task_id"
+  }
+
+  # ---- SINGLE-PROJECT MERGE MODE ----
+  if [ "$MULTI" = 0 ]; then
+    echo "[$AGENT_ID] merger (merge/SINGLE) @ project $AGENTASK_PROJECT; polling"
+    while true; do
+      [ "$STOP" -eq 1 ] && break
+      if has_claimable_work "$AGENTASK_PROJECT"; then
+        task_id=$(agentask next --project "$AGENTASK_PROJECT" --kind merge 2>/dev/null)
+        if [ -n "$task_id" ]; then
+          echo "[$AGENT_ID] $(date '+%H:%M:%S') merging…"
+          merge_one "$task_id"
+        else
+          echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable (merge); sleeping 30s"; nap 30
+        fi
+      else
+        echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable (merge); sleeping 30s"; nap 30
+      fi
+    done
+  else
+    # ---- MULTI-PROJECT MERGE MODE ----
+    ALLOW="${AGENTASK_PROJECTS:-}"
+    in_allow() { [ -z "$ALLOW" ] && return 0; case ",$ALLOW," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
+    echo "[$AGENT_ID] merger (merge/MULTI) @ $AGENTASK_URL${ALLOW:+ (allow: $ALLOW)}; discovering work across projects"
+    while true; do
+      [ "$STOP" -eq 1 ] && break
+      # Discover projects holding claimable merge work
+      rows=()
+      while IFS= read -r _row; do rows+=("$_row"); done < <(agentask projects --claimable --kind merge --json \
+          | jq -r '.[] | .id' 2>/dev/null | sort -R)
+      if [ "${#rows[@]}" -eq 0 ]; then
+        echo "[$AGENT_ID] $(date '+%H:%M:%S') no claimable merge work in any project; sleeping 30s"; nap 30; continue
+      fi
+
+      worked=0
+      for pid in "${rows[@]}"; do
+        [ "$STOP" -eq 1 ] && break
+        in_allow "$pid" || continue
+        has_claimable_work "$pid" || continue
+        task_id=$(agentask next --project "$pid" --kind merge 2>/dev/null)
+        if [ -n "$task_id" ]; then
+          echo "[$AGENT_ID] $(date '+%H:%M:%S') merging on project [${pid:0:8}]…"
+          agentask claim "$task_id" 2>/dev/null && agentask merge "$task_id"
+          worked=1
+          break
+        fi
+      done
+      [ "$STOP" -eq 1 ] && break
+      [ "$worked" -eq 0 ] && { echo "[$AGENT_ID] $(date '+%H:%M:%S') candidate projects raced away; sleeping 10s"; nap 10; }
+    done
+  fi
+  exit 0
+fi
+
+# ============================== IMPLEMENT/REVIEW KIND (WORKTREE-DEPENDENT) ==============================
 if [ "$KIND" = "review" ]; then
   ROLE="reviewer"
   if [ -n "$MODEL" ]; then
@@ -55,10 +147,6 @@ if [ "$KIND" = "review" ]; then
   else
     DEFAULT_SLOT="reviewer-1"
   fi
-  SLOT="${SLOT:-${AGENT_SLOT:-$DEFAULT_SLOT}}"
-elif [ "$KIND" = "merge" ]; then
-  ROLE="merger"
-  DEFAULT_SLOT="${SLOT:-merger-1}"
   SLOT="${SLOT:-${AGENT_SLOT:-$DEFAULT_SLOT}}"
 else
   ROLE="worker"
@@ -225,28 +313,19 @@ if [ "$MULTI" = 0 ]; then
       if [ -z "$task_model" ]; then
         echo "[$AGENT_ID] $(date '+%H:%M:%S') failed to read task model for $task_id; sleeping 30s"; nap 30; continue
       fi
-      # For merge kind, run merge directly (no claude dispatch)
-      if [ "$KIND" = "merge" ]; then
-        echo "[$AGENT_ID] $(date '+%H:%M:%S') claimable $KIND; merging…"
-        merge_one "$task_id"
-        git -C "$WT" fetch origin --quiet 2>/dev/null || true
-        git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
-        [ "$STOP" -eq 1 ] && break
-      else
-        # Read track from task, default to 'build' if absent
-        task_track=$(echo "$task_json" | jq -r '.track // "build"')
-        PROMPT_FILE="$(get_prompt_file "$task_track" "$KIND")"
-        if [ ! -f "$PROMPT_FILE" ]; then
-          echo "[$AGENT_ID] $(date '+%H:%M:%S') prompt not found: $PROMPT_FILE; skipping task $task_id"; continue
-        fi
-        echo "[$AGENT_ID] $(date '+%H:%M:%S') claimable $KIND; dispatching ($task_model/$task_track)…"
-        export AGENT_MODEL="$task_model"
-        dispatch
-        [ -n "$MODEL" ] && export AGENT_MODEL="$MODEL"   # restore original model for slot identity (if initially provided)
-        git -C "$WT" fetch origin --quiet 2>/dev/null || true
-        git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
-        [ "$STOP" -eq 1 ] && break
+      # Read track from task, default to 'build' if absent
+      task_track=$(echo "$task_json" | jq -r '.track // "build"')
+      PROMPT_FILE="$(get_prompt_file "$task_track" "$KIND")"
+      if [ ! -f "$PROMPT_FILE" ]; then
+        echo "[$AGENT_ID] $(date '+%H:%M:%S') prompt not found: $PROMPT_FILE; skipping task $task_id"; continue
       fi
+      echo "[$AGENT_ID] $(date '+%H:%M:%S') claimable $KIND; dispatching ($task_model/$task_track)…"
+      export AGENT_MODEL="$task_model"
+      dispatch
+      [ -n "$MODEL" ] && export AGENT_MODEL="$MODEL"   # restore original model for slot identity (if initially provided)
+      git -C "$WT" fetch origin --quiet 2>/dev/null || true
+      git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
+      [ "$STOP" -eq 1 ] && break
     else
       echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable ($KIND); sleeping 30s"; nap 30
     fi
@@ -295,28 +374,19 @@ while true; do
     if [ -z "$task_model" ]; then
       continue   # couldn't read task model, try next project
     fi
-    # For merge kind, run merge directly (no claude dispatch)
-    if [ "$KIND" = "merge" ]; then
-      echo "[$AGENT_ID] $(date '+%H:%M:%S') merging ($KIND) on $(norm_repo "$prepo") [${pid:0:8}]…"
-      merge_one "$task_id"
-      git -C "$wt" checkout --detach --force origin/main --quiet 2>/dev/null || true
-      worked=1
-      break   # one task per discovery pass, then re-poll fresh (keeps the shuffle honest)
-    else
-      # Read track from task, default to 'build' if absent
-      task_track=$(echo "$task_json" | jq -r '.track // "build"')
-      PROMPT_FILE="$(get_prompt_file "$task_track" "$KIND")"
-      if [ ! -f "$PROMPT_FILE" ]; then
-        continue   # prompt file not found, try next project
-      fi
-      echo "[$AGENT_ID] $(date '+%H:%M:%S') dispatching ($task_model/$task_track/$KIND) on $(norm_repo "$prepo") [${pid:0:8}]…"
-      export AGENT_MODEL="$task_model"
-      dispatch
-      [ -n "$MODEL" ] && export AGENT_MODEL="$MODEL"   # restore original model for slot identity (if initially provided)
-      git -C "$wt" checkout --detach --force origin/main --quiet 2>/dev/null || true
-      worked=1
-      break   # one task per discovery pass, then re-poll fresh (keeps the shuffle honest)
+    # Read track from task, default to 'build' if absent
+    task_track=$(echo "$task_json" | jq -r '.track // "build"')
+    PROMPT_FILE="$(get_prompt_file "$task_track" "$KIND")"
+    if [ ! -f "$PROMPT_FILE" ]; then
+      continue   # prompt file not found, try next project
     fi
+    echo "[$AGENT_ID] $(date '+%H:%M:%S') dispatching ($task_model/$task_track/$KIND) on $(norm_repo "$prepo") [${pid:0:8}]…"
+    export AGENT_MODEL="$task_model"
+    dispatch
+    [ -n "$MODEL" ] && export AGENT_MODEL="$MODEL"   # restore original model for slot identity (if initially provided)
+    git -C "$wt" checkout --detach --force origin/main --quiet 2>/dev/null || true
+    worked=1
+    break   # one task per discovery pass, then re-poll fresh (keeps the shuffle honest)
   done
   [ "$STOP" -eq 1 ] && break
   # rows existed but every candidate raced away / failed setup — brief sleep, then re-poll.
