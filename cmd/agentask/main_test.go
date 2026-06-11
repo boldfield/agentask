@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -1634,6 +1635,47 @@ func TestResolveAgentIdentity(t *testing.T) {
 				if model != tt.expectedModel {
 					t.Errorf("expected model %q, got %q", tt.expectedModel, model)
 				}
+			}
+		})
+	}
+}
+
+// TestParseFlagsWithPositionals_OrderIndependent pins the submit arg-order bug:
+// `submit <id> --result x` (id first) must parse --result, not silently drop it.
+func TestParseFlagsWithPositionals_OrderIndependent(t *testing.T) {
+	cases := []struct {
+		name       string
+		args       []string
+		wantID     string
+		wantResult string
+		wantErr    bool
+	}{
+		{"flags-first", []string{"--result", "ok", "TASK1"}, "TASK1", "ok", false},
+		{"id-first (the bug)", []string{"TASK1", "--result", "ok"}, "TASK1", "ok", false},
+		{"interspersed", []string{"--result", "ok", "TASK1", "--pr", "u"}, "TASK1", "ok", false},
+		{"id-only", []string{"TASK1"}, "TASK1", "", false},
+		{"no positional", []string{"--result", "ok"}, "", "ok", false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fs := flag.NewFlagSet("submit", flag.ContinueOnError)
+			fs.SetOutput(&bytes.Buffer{})
+			result := fs.String("result", "", "")
+			fs.String("pr", "", "")
+
+			pos, err := parseFlagsWithPositionals(fs, tc.args)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
+			}
+			gotID := ""
+			if len(pos) > 0 {
+				gotID = pos[0]
+			}
+			if gotID != tc.wantID {
+				t.Errorf("task id = %q, want %q", gotID, tc.wantID)
+			}
+			if *result != tc.wantResult {
+				t.Errorf("--result = %q, want %q", *result, tc.wantResult)
 			}
 		})
 	}
