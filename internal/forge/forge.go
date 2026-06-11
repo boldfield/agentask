@@ -15,6 +15,9 @@ import (
 // userHomeDirFunc is the function used to get the home directory (made mockable for testing).
 var userHomeDirFunc func() (string, error) = os.UserHomeDir
 
+// githubBaseURL is the base URL for GitHub API calls (made mockable for testing).
+var githubBaseURL = "https://api.github.com"
+
 // OwnerToken reads ~/.agentask/forge-tokens and returns the token for the given owner.
 // The file format is owner=token per line, with support for:
 //   - Case-insensitive owner matching
@@ -26,7 +29,7 @@ var userHomeDirFunc func() (string, error) = os.UserHomeDir
 func OwnerToken(owner string) (string, error) {
 	home, err := userHomeDirFunc()
 	if err != nil {
-		return "", nil
+		return "", err
 	}
 
 	filePath := filepath.Join(home, ".agentask", "forge-tokens")
@@ -90,7 +93,7 @@ func stripSurroundingQuotes(s string) string {
 // SquashMerge performs a squash merge of a GitHub PR using the GitHub REST API.
 // It makes a PUT request to /repos/{owner}/{repo}/pulls/{prNumber}/merge with merge_method=squash.
 func SquashMerge(ctx context.Context, owner, repo string, prNumber int, token string) error {
-	url := fmt.Sprintf("https://api.github.com/repos/%s/%s/pulls/%d/merge", owner, repo, prNumber)
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/merge", githubBaseURL, owner, repo, prNumber)
 
 	payload := map[string]string{
 		"merge_method": "squash",

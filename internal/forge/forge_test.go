@@ -1,15 +1,14 @@
 package forge
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -145,6 +144,21 @@ func TestOwnerToken_MissingFile(t *testing.T) {
 	}
 }
 
+func TestOwnerToken_UserHomeDirError(t *testing.T) {
+	oldUserHomeDir := userHomeDirFunc
+	userHomeDirFunc = func() (string, error) {
+		return "", fmt.Errorf("home dir lookup failed")
+	}
+	defer func() {
+		userHomeDirFunc = oldUserHomeDir
+	}()
+
+	_, err := OwnerToken("alice")
+	if err == nil {
+		t.Errorf("OwnerToken() error = nil, want error")
+	}
+}
+
 func TestSquashMerge(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -235,7 +249,7 @@ func TestSquashMerge(t *testing.T) {
 
 				// Verify request body contains merge_method=squash
 				body, _ := io.ReadAll(r.Body)
-				if !contains(string(body), "squash") {
+				if !strings.Contains(string(body), "squash") {
 					t.Errorf("expected request body to contain 'squash', got %s", string(body))
 				}
 
@@ -244,38 +258,21 @@ func TestSquashMerge(t *testing.T) {
 			}))
 			defer server.Close()
 
+			// Mock githubBaseURL to use our test server
+			oldBaseURL := githubBaseURL
+			githubBaseURL = server.URL
+			defer func() {
+				githubBaseURL = oldBaseURL
+			}()
+
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 			defer cancel()
 
-			// Create a custom SquashMerge that uses our mock server
-			testURL := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/merge", server.URL, tt.owner, tt.repo, tt.prNumber)
+			// Call the real SquashMerge function with mocked base URL
+			err := SquashMerge(ctx, tt.owner, tt.repo, tt.prNumber, tt.token)
 
-			payload := map[string]string{
-				"merge_method": "squash",
-			}
-			body, _ := json.Marshal(payload)
-
-			req, err := http.NewRequestWithContext(ctx, http.MethodPut, testURL, bytes.NewReader(body))
-			if err != nil {
-				t.Fatalf("failed to create request: %v", err)
-			}
-
-			req.Header.Set("Accept", "application/vnd.github.v3+json")
-			req.Header.Set("Content-Type", "application/json")
-			if tt.token != "" {
-				req.Header.Set("Authorization", "token "+tt.token)
-			}
-
-			client := &http.Client{}
-			resp, err := client.Do(req)
-			if err != nil {
-				t.Fatalf("failed to make request: %v", err)
-			}
-			defer resp.Body.Close()
-
-			hasErr := resp.StatusCode < 200 || resp.StatusCode >= 300
-			if hasErr != tt.wantErr {
-				t.Errorf("expected error=%v, got hasErr=%v (status=%d)", tt.wantErr, hasErr, resp.StatusCode)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("SquashMerge() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
 	}
@@ -294,34 +291,19 @@ func TestSquashMergeIntegration(t *testing.T) {
 	}))
 	defer server.Close()
 
+	// Mock githubBaseURL to use our test server
+	oldBaseURL := githubBaseURL
+	githubBaseURL = server.URL
+	defer func() {
+		githubBaseURL = oldBaseURL
+	}()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// Build URL to match the pattern the real function expects, but pointing to our server
-	testURL := fmt.Sprintf("%s/repos/owner/repo/pulls/123/merge", server.URL)
-
-	payload := map[string]string{
-		"merge_method": "squash",
-	}
-	body, _ := json.Marshal(payload)
-
-	req, _ := http.NewRequestWithContext(ctx, http.MethodPut, testURL, bytes.NewReader(body))
-	req.Header.Set("Accept", "application/vnd.github.v3+json")
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "token test-token")
-
-	client := &http.Client{}
-	resp, err := client.Do(req)
+	// Call the real SquashMerge function with mocked base URL
+	err := SquashMerge(ctx, "owner", "repo", 123, "test-token")
 	if err != nil {
-		t.Fatalf("request failed: %v", err)
+		t.Fatalf("SquashMerge() error = %v, want nil", err)
 	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected status 200, got %d", resp.StatusCode)
-	}
-}
-
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 || (len(s) > 0 && len(substr) > 0 && s[0:len(substr)] == substr) || (len(s) > len(substr) && len(substr) > 0 && contains(s[1:], substr)))
 }
