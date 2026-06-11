@@ -33,7 +33,7 @@ graceful stop (finishes the in-flight task; Ctrl-C again to force-quit).
 
 The engine keeps **code** and **state** in separate trees, so they never mix:
 
-- **Code + prompts** (`agent.sh`, the wrappers, `worker-prompt.md`, `reviewer-prompt.md`) — versioned
+- **Code + prompts** (`agent.sh`, the wrappers, `prompts/build/implement.md`, `prompts/build/review.md`) — versioned
   *here*, in the repo. The engine finds them via its own location, and reads the prompt **fresh each
   dispatch**, so editing it applies to the next task with no restart.
 - **State + config** — lives under `$AGENTASK_HOME` (default `~/.agentask`), un-versioned: `env`
