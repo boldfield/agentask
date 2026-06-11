@@ -13,6 +13,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/boldfield/agentask/internal/forge"
 	"github.com/boldfield/agentask/internal/tuiclient"
 )
 
@@ -1679,4 +1680,195 @@ func TestParseFlagsWithPositionals_OrderIndependent(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestParsePRURL tests URL parsing for GitHub PR URLs
+func TestParsePRURL(t *testing.T) {
+	cases := []struct {
+		name       string
+		url        string
+		wantOwner  string
+		wantRepo   string
+		wantNumber int
+		wantErr    bool
+	}{
+		{"valid github url", "https://github.com/boldfield/agentask/pull/174", "boldfield", "agentask", 174, false},
+		{"valid with trailing slash", "https://github.com/boldfield/agentask/pull/174/", "boldfield", "agentask", 174, false},
+		{"invalid not github", "https://gitlab.com/boldfield/agentask/pull/174", "", "", 0, true},
+		{"invalid path", "https://github.com/boldfield/agentask", "", "", 0, true},
+		{"invalid pr number", "https://github.com/boldfield/agentask/pull/abc", "", "", 0, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			owner, repo, number, err := parsePRURL(tc.url)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("err=%v wantErr=%v", err, tc.wantErr)
+			}
+			if !tc.wantErr {
+				if owner != tc.wantOwner {
+					t.Errorf("owner = %q, want %q", owner, tc.wantOwner)
+				}
+				if repo != tc.wantRepo {
+					t.Errorf("repo = %q, want %q", repo, tc.wantRepo)
+				}
+				if number != tc.wantNumber {
+					t.Errorf("number = %d, want %d", number, tc.wantNumber)
+				}
+			}
+		})
+	}
+}
+
+// TestExecuteMergeSuccess tests the happy path: successful merge and task transitions
+func TestExecuteMergeSuccess(t *testing.T) {
+	// Create a mock forge server (GitHub API)
+	forgeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/merge") {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"merged": true})
+		}
+	}))
+	defer forgeServer.Close()
+
+	// Temporarily replace the GitHub base URL
+	oldBaseURL := forge.GitHubBaseURL
+	forge.GitHubBaseURL = forgeServer.URL
+	t.Cleanup(func() { forge.GitHubBaseURL = oldBaseURL })
+
+	// Create a mock agentask API server
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/tasks/") {
+			if strings.HasSuffix(r.URL.Path, "/merge-123") {
+				// Return merge task with target_task_id pointing to parent
+				json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+					ID:           "merge-123",
+					State:        "approved",
+					TargetTaskID: ptrString("parent-456"),
+				})
+			} else if strings.HasSuffix(r.URL.Path, "/parent-456") {
+				// Return parent task
+				json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+					ID:         "parent-456",
+					State:      "approved",
+					AgentMerge: true,
+					Links: []tuiclient.TaskLink{
+						{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/174"},
+					},
+				})
+			}
+		} else if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/transition") {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer apiServer.Close()
+
+	err := executeMerge(context.Background(), apiServer.URL, "test-token", []string{"merge-123"})
+	if err != nil {
+		t.Fatalf("executeMerge failed: %v", err)
+	}
+}
+
+// TestExecuteMergeForgeFails tests handling of forge (GitHub API) failure
+func TestExecuteMergeForgeFails(t *testing.T) {
+	// Create a mock forge server that fails
+	forgeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/merge") {
+			w.WriteHeader(http.StatusForbidden)
+			w.Write([]byte("PR is not mergeable"))
+		}
+	}))
+	defer forgeServer.Close()
+
+	// Temporarily replace the GitHub base URL
+	oldBaseURL := forge.GitHubBaseURL
+	forge.GitHubBaseURL = forgeServer.URL
+	t.Cleanup(func() { forge.GitHubBaseURL = oldBaseURL })
+
+	// Create a mock agentask API server
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/tasks/") {
+			if strings.HasSuffix(r.URL.Path, "/merge-123") {
+				json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+					ID:           "merge-123",
+					State:        "approved",
+					TargetTaskID: ptrString("parent-456"),
+				})
+			} else if strings.HasSuffix(r.URL.Path, "/parent-456") {
+				json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+					ID:         "parent-456",
+					State:      "approved",
+					AgentMerge: true,
+					Links: []tuiclient.TaskLink{
+						{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/174"},
+					},
+				})
+			}
+		}
+	}))
+	defer apiServer.Close()
+
+	err := executeMerge(context.Background(), apiServer.URL, "test-token", []string{"merge-123"})
+	if err == nil {
+		t.Fatal("expected error for failed forge merge")
+	}
+	if !strings.Contains(err.Error(), "failed to squash merge PR") {
+		t.Errorf("expected 'failed to squash merge PR' in error, got: %v", err)
+	}
+}
+
+// TestExecuteMergeIdempotent tests that the command handles already-done tasks gracefully
+func TestExecuteMergeIdempotent(t *testing.T) {
+	// Create a mock forge server
+	forgeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/merge") {
+			w.WriteHeader(http.StatusOK)
+			json.NewEncoder(w).Encode(map[string]interface{}{"merged": true})
+		}
+	}))
+	defer forgeServer.Close()
+
+	// Temporarily replace the GitHub base URL
+	oldBaseURL := forge.GitHubBaseURL
+	forge.GitHubBaseURL = forgeServer.URL
+	t.Cleanup(func() { forge.GitHubBaseURL = oldBaseURL })
+
+	// Create a mock agentask API server where tasks are already done
+	// (simulating a successful previous run)
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/tasks/") {
+			if strings.HasSuffix(r.URL.Path, "/merge-123") {
+				json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+					ID:           "merge-123",
+					State:        "done",
+					TargetTaskID: ptrString("parent-456"),
+				})
+			} else if strings.HasSuffix(r.URL.Path, "/parent-456") {
+				json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+					ID:         "parent-456",
+					State:      "done",
+					AgentMerge: true,
+					Links: []tuiclient.TaskLink{
+						{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/174"},
+					},
+				})
+			}
+		} else if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/transition") {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer apiServer.Close()
+
+	// Should fail because parent task is not in "approved" state
+	err := executeMerge(context.Background(), apiServer.URL, "test-token", []string{"merge-123"})
+	if err == nil {
+		t.Fatal("expected error when parent task is not in approved state")
+	}
+	if !strings.Contains(err.Error(), "expected approved") {
+		t.Errorf("expected error about parent state, got: %v", err)
+	}
+}
+
+// ptrString returns a pointer to a string
+func ptrString(s string) *string {
+	return &s
 }

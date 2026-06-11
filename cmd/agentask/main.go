@@ -923,12 +923,26 @@ func executeMerge(ctx context.Context, baseURL, token string, args []string) err
 		return fmt.Errorf("failed to squash merge PR: %w", err)
 	}
 
-	if err := client.TransitionTask(ctx, parentTaskID, "done", nil); err != nil {
-		return fmt.Errorf("failed to transition parent task to done: %w", err)
+	// Transition parent task to done. Refresh its state first to handle retries safely.
+	parentTask, err = client.GetTask(ctx, parentTaskID)
+	if err != nil {
+		return fmt.Errorf("failed to refresh parent task state: %w", err)
+	}
+	if parentTask.State != "done" {
+		if err := client.TransitionTask(ctx, parentTaskID, "done", nil); err != nil {
+			return fmt.Errorf("failed to transition parent task to done: %w", err)
+		}
 	}
 
-	if err := client.TransitionTask(ctx, mergeTaskID, "done", nil); err != nil {
-		return fmt.Errorf("failed to transition merge task to done: %w", err)
+	// Transition merge task to done. Refresh its state first to handle retries safely.
+	mergeTask, err = client.GetTask(ctx, mergeTaskID)
+	if err != nil {
+		return fmt.Errorf("failed to refresh merge task state: %w", err)
+	}
+	if mergeTask.State != "done" {
+		if err := client.TransitionTask(ctx, mergeTaskID, "done", nil); err != nil {
+			return fmt.Errorf("failed to transition merge task to done: %w", err)
+		}
 	}
 
 	return nil
