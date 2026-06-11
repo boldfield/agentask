@@ -1752,9 +1752,13 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 			var parentModel string
 			var parentEscalate bool
 			var parentAgentMerge bool
+			var parentProjectID string
+			var parentDocumentID string
+			var parentTitle string
+			var parentTrack string
 			err = tx.QueryRowContext(ctx, `
-				SELECT review_round, state, held, model, escalate, agent_merge FROM task WHERE id = ?
-			`, *targetTaskID).Scan(&parentReviewRound, &parentState, &parentHeld, &parentModel, &parentEscalate, &parentAgentMerge)
+				SELECT review_round, state, held, model, escalate, agent_merge, project_id, document_id, title, track FROM task WHERE id = ?
+			`, *targetTaskID).Scan(&parentReviewRound, &parentState, &parentHeld, &parentModel, &parentEscalate, &parentAgentMerge, &parentProjectID, &parentDocumentID, &parentTitle, &parentTrack)
 			if err != nil {
 				return TaskWithDepsAndLinks{}, fmt.Errorf("failed to fetch parent task review_round: %w", err)
 			}
@@ -1814,6 +1818,19 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 							// If agent_merge=true and no_op link with no pr link, go straight to done
 							if hasNoOp && !hasPR {
 								newParentState = "done"
+							}
+
+							// Spawn merge task if approved with agent_merge && pr (not the no_op case)
+							if newParentState == "approved" && hasPR {
+								mergeTaskID := GenerateID()
+								mergeTitle := "Merge: " + parentTitle
+								_, err := tx.ExecContext(ctx, `
+									INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, target_task_id, agent_merge, track, created_at, updated_at)
+									VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+								`, mergeTaskID, parentProjectID, parentDocumentID, mergeTitle, "", "ready", parentModel, "merge", *targetTaskID, false, parentTrack, now, now)
+								if err != nil {
+									return TaskWithDepsAndLinks{}, fmt.Errorf("failed to create merge task: %w", err)
+								}
 							}
 						}
 					} else if doneReviewTasks == totalReviewTasks && approveReviewTasks < totalReviewTasks {

@@ -7793,3 +7793,349 @@ func TestCreateTasksWithTrack(t *testing.T) {
 		t.Errorf("expected track='build' (default) after retrieval, got '%s'", retrievedDefault.Track)
 	}
 }
+
+// TestAgentMergePRSpawnsMergeTask verifies that when a task with agent_merge=true
+// and a PR link transitions to "approved", exactly one merge task is spawned.
+func TestAgentMergePRSpawnsMergeTask(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create project and doc
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create implement task with agent_merge=true
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+			AgentMerge:   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote, claim, and submit with PR link
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Find the review task
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("review task not found")
+	}
+
+	// Count merge tasks before approval
+	var mergeTasksBefore int
+	for i := range allTasks {
+		if allTasks[i].Kind == "merge" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			mergeTasksBefore++
+		}
+	}
+	if mergeTasksBefore != 0 {
+		t.Errorf("expected no merge tasks before approval, found %d", mergeTasksBefore)
+	}
+
+	// Claim and submit review with approve
+	_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+
+	approve := "approve"
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit review task: %v", err)
+	}
+
+	// Verify parent task is in "approved" state
+	parentTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "approved" {
+		t.Errorf("expected parent task state='approved', got '%s'", parentTask.State)
+	}
+
+	// List tasks and find merge tasks
+	allTasks, err = store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var mergeTasks []*Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "merge" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			mergeTasks = append(mergeTasks, &allTasks[i])
+		}
+	}
+
+	// Verify exactly one merge task was spawned
+	if len(mergeTasks) != 1 {
+		t.Errorf("expected exactly 1 merge task, found %d", len(mergeTasks))
+	} else {
+		mergeTask := mergeTasks[0]
+
+		// Verify merge task properties
+		if mergeTask.State != "ready" {
+			t.Errorf("expected merge task state='ready', got '%s'", mergeTask.State)
+		}
+		if mergeTask.Model != "haiku" {
+			t.Errorf("expected merge task model='haiku', got '%s'", mergeTask.Model)
+		}
+		if !strings.HasPrefix(mergeTask.Title, "Merge: ") {
+			t.Errorf("expected merge task title to start with 'Merge: ', got '%s'", mergeTask.Title)
+		}
+		if mergeTask.TargetTaskID == nil || *mergeTask.TargetTaskID != taskID {
+			t.Errorf("expected merge task target_task_id='%s', got %v", taskID, mergeTask.TargetTaskID)
+		}
+	}
+}
+
+// TestAgentMergeDisabledNoMergeTask verifies that no merge task is spawned
+// when agent_merge=false, even when all reviewers approve.
+func TestAgentMergeDisabledNoMergeTask(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create project and doc
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create implement task with agent_merge=false (default)
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+			AgentMerge:   false,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote, claim, and submit with PR link
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Implemented", nil, []LinkInput{{Kind: "pr", Value: "#100"}}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Find and claim review task
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("review task not found")
+	}
+
+	_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+
+	// Submit review with approve
+	approve := "approve"
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Looks good", &approve, []LinkInput{}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit review task: %v", err)
+	}
+
+	// List tasks and verify no merge task was spawned
+	allTasks, err = store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var mergeTaskCount int
+	for i := range allTasks {
+		if allTasks[i].Kind == "merge" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			mergeTaskCount++
+		}
+	}
+
+	if mergeTaskCount != 0 {
+		t.Errorf("expected 0 merge tasks for agent_merge=false, found %d", mergeTaskCount)
+	}
+}
+
+// TestAgentMergeNoOpNoMergeTask verifies that no merge task is spawned
+// for no-op submissions (no PR link), even when agent_merge=true.
+func TestAgentMergeNoOpNoMergeTask(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open test database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create project and doc
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/test/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "test-doc", "test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create implement task with agent_merge=true
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Implement feature",
+			Spec:         "Do the thing",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+			AgentMerge:   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	taskID := tasks[0].ID
+
+	// Promote, claim, and submit with no-op (no PR link)
+	_, err = store.PromoteTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	_, err = store.ClaimTask(ctx, taskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	_, err = store.SubmitTask(ctx, taskID, "agent-1", "Already satisfied on main", nil, []LinkInput{{Kind: "no_op", Value: "commit-hash"}}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit implement task: %v", err)
+	}
+
+	// Find and claim review task
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var reviewTask *Task
+	for i := range allTasks {
+		if allTasks[i].Kind == "review" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			reviewTask = &allTasks[i]
+			break
+		}
+	}
+	if reviewTask == nil {
+		t.Fatalf("review task not found")
+	}
+
+	_, err = store.ClaimTask(ctx, reviewTask.ID, "opus-reviewer", "opus", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim review task: %v", err)
+	}
+
+	// Submit review with approve
+	approve := "approve"
+	_, err = store.SubmitTask(ctx, reviewTask.ID, "opus-reviewer", "Verified", &approve, []LinkInput{}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit review task: %v", err)
+	}
+
+	// Verify parent task went to "done" (auto-finalized for no-op)
+	parentTask, err := store.GetTask(ctx, taskID)
+	if err != nil {
+		t.Fatalf("failed to get parent task: %v", err)
+	}
+	if parentTask.State != "done" {
+		t.Errorf("expected parent task state='done' (auto-finalized for no-op), got '%s'", parentTask.State)
+	}
+
+	// List tasks and verify no merge task was spawned
+	allTasks, err = store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	var mergeTaskCount int
+	for i := range allTasks {
+		if allTasks[i].Kind == "merge" && allTasks[i].TargetTaskID != nil && *allTasks[i].TargetTaskID == taskID {
+			mergeTaskCount++
+		}
+	}
+
+	if mergeTaskCount != 0 {
+		t.Errorf("expected 0 merge tasks for no-op submission, found %d", mergeTaskCount)
+	}
+}
