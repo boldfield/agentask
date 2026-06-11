@@ -76,13 +76,8 @@ if [ "$KIND" = "merge" ]; then
 
   nap() { sleep "$1" & wait $! 2>/dev/null; }
 
-  has_claimable_work() {
-    agentask next --project "$1" --kind "$KIND" >/dev/null 2>&1
-  }
-
   merge_one() {
     local task_id="$1"
-    agentask claim "$task_id" || return 1
     agentask merge "$task_id"
   }
 
@@ -91,14 +86,10 @@ if [ "$KIND" = "merge" ]; then
     echo "[$AGENT_ID] merger (merge/SINGLE) @ project $AGENTASK_PROJECT; polling"
     while true; do
       [ "$STOP" -eq 1 ] && break
-      if has_claimable_work "$AGENTASK_PROJECT"; then
-        task_id=$(agentask next --project "$AGENTASK_PROJECT" --kind merge 2>/dev/null)
-        if [ -n "$task_id" ]; then
-          echo "[$AGENT_ID] $(date '+%H:%M:%S') merging…"
-          merge_one "$task_id"
-        else
-          echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable (merge); sleeping 30s"; nap 30
-        fi
+      task_id=$(agentask next --project "$AGENTASK_PROJECT" --kind merge --claim 2>/dev/null)
+      if [ -n "$task_id" ]; then
+        echo "[$AGENT_ID] $(date '+%H:%M:%S') merging…"
+        merge_one "$task_id"
       else
         echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable (merge); sleeping 30s"; nap 30
       fi
@@ -123,11 +114,10 @@ if [ "$KIND" = "merge" ]; then
       for pid in "${rows[@]}"; do
         [ "$STOP" -eq 1 ] && break
         in_allow "$pid" || continue
-        has_claimable_work "$pid" || continue
-        task_id=$(agentask next --project "$pid" --kind merge 2>/dev/null)
+        task_id=$(agentask next --project "$pid" --kind merge --claim 2>/dev/null)
         if [ -n "$task_id" ]; then
           echo "[$AGENT_ID] $(date '+%H:%M:%S') merging on project [${pid:0:8}]…"
-          agentask claim "$task_id" 2>/dev/null && agentask merge "$task_id"
+          agentask merge "$task_id"
           worked=1
           break
         fi
@@ -251,13 +241,6 @@ dispatch() {
   claude -p --dangerously-skip-permissions "$prompt" --model "$AGENT_MODEL" &
   local pid=$!
   while kill -0 "$pid" 2>/dev/null; do wait "$pid"; done
-}
-
-# Run one merge task (non-LLM): claim and merge directly.
-merge_one() {
-  local task_id="$1"
-  agentask claim "$task_id" || return 1
-  agentask merge "$task_id"
 }
 
 nap() { sleep "$1" & wait $! 2>/dev/null; }
