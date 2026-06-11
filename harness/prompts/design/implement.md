@@ -22,10 +22,12 @@ Run `agentask <verb> -h` for flags. (Raw API — docs/api.md / AGENT-API.md — 
 
 ## What you produce
 
-A single file, `DESIGN.md`, for the ONE candidate tool your task spec names, filling this **strict
-interface-contract template**. This is the **INTERFACE contract** — *what the tool does and how it
-is invoked* — **NOT an implementation plan**: no internal architecture, data structures, file
-layout, or build steps. Fill every section:
+A single file, `DESIGN.md`, for the ONE candidate tool your task spec names. It has a **generic
+contract core** — always present, every section below, in this order — **plus any additional
+sections your task spec requires**. The contract core is the **INTERFACE contract** — *what the tool
+does and how it is invoked* — **NOT an implementation plan**: no internal architecture, data
+structures, file layout, or build steps. The core is tool-agnostic: no Foreman/pipeline knowledge,
+no merge assumptions. Fill every core section:
 
 - **Charter** — ONE sentence: the tool's purpose + its primary user + the ONE headline use case.
 - **Command Surface** — every command, flag, and argument the tool exposes (name, what it takes,
@@ -53,11 +55,18 @@ hold — these are their checks word-for-word; copy them exactly, do not paraphr
 (4) NO second/competing contract or mode hiding
 ```
 
+**Then include every additional section your task spec requires.** The contract core above is the
+generic foundation; your spec names the tool AND MAY require domain-specific sections beyond the core
+(e.g. problem framing, goals/non-goals, build constraints, test expectations). Produce the contract
+core, then append EVERY such section the spec names — its literal heading, fully filled. If the spec
+requires no extra sections, the contract core alone is complete. Do not invent sections the spec does
+not ask for, and add no Foreman/pipeline or merge knowledge of your own — that stays out of the core.
+
 Before you submit, **self-check** your `DESIGN.md` against those four requirements AND the template
 above: one tool only; every acceptance criterion exercises that one contract; the default no-flag
-invocation demonstrates the Charter's headline use case; and there is no second/competing contract
-or alternate mode smuggled in. If any fail, fix the design — do not submit a design that would be
-rejected.
+invocation demonstrates the Charter's headline use case; there is no second/competing contract
+or alternate mode smuggled in; and every additional section your spec required is present. If any
+fail, fix the design — do not submit a design that would be rejected.
 
 ## Your iteration
 
@@ -83,8 +92,9 @@ on sensing elapsed time.
    worker took it; STOP.
 3. Understand it. Read the task's `spec` in full (`agentask show <id>`). The spec **names the one
    candidate tool you are designing** and gives its intent, constraints, and the headline use case —
-   and deliberately NO contract; you write the contract. Everything in your `DESIGN.md` is about
-   **that tool**, never the board or this harness.
+   it gives NO contract (you write the contract core), but it **may require additional domain-specific
+   sections** you must also include. Everything in your `DESIGN.md` is about **that tool**, never the
+   board or this harness.
 4. Set up your branch. You are in your OWN worktree — NEVER run `git checkout main` (main is checked
    out in another worktree and the command will fail). Always branch from the remote, and always work
    **DETACHED** so a branch checkout can't collide with another worker's worktree.
@@ -106,9 +116,10 @@ on sensing elapsed time.
      step 6.)
    - **FRESH — `origin/mr/<TASKID8>` does not exist** (first attempt): `git checkout --detach
      origin/main`; you'll create the branch and PR by pushing in step 7.
-5. Write the design. Fill the interface-contract template above into `DESIGN.md` (at the path your
-   task spec names; default the repo-root `DESIGN.md` if it names none). Design ONLY the one candidate
-   tool the spec names — interface contract, not implementation. Keep the diff scoped to this one
+5. Write the design. Fill the contract-core template above into `DESIGN.md` (at the path your
+   task spec names; default the repo-root `DESIGN.md` if it names none), then append EVERY additional
+   section the spec requires. Design ONLY the one candidate tool the spec names — its interface
+   contract plus the spec's required sections, not implementation. Keep the diff scoped to this one
    file (plus anything the spec explicitly asks for).
 6. Sync with main, then verify. FIRST `git fetch origin && git merge origin/main` to bring your branch
    up to date so the PR merges cleanly. If the merge conflicts, resolve it (keep both sides' intent),
