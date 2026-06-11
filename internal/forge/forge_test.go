@@ -258,11 +258,11 @@ func TestSquashMerge(t *testing.T) {
 			}))
 			defer server.Close()
 
-			// Mock githubBaseURL to use our test server
-			oldBaseURL := githubBaseURL
-			githubBaseURL = server.URL
+			// Mock GitHubBaseURL to use our test server
+			oldBaseURL := GitHubBaseURL
+			GitHubBaseURL = server.URL
 			defer func() {
-				githubBaseURL = oldBaseURL
+				GitHubBaseURL = oldBaseURL
 			}()
 
 			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -291,11 +291,11 @@ func TestSquashMergeIntegration(t *testing.T) {
 	}))
 	defer server.Close()
 
-	// Mock githubBaseURL to use our test server
-	oldBaseURL := githubBaseURL
-	githubBaseURL = server.URL
+	// Mock GitHubBaseURL to use our test server
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
 	defer func() {
-		githubBaseURL = oldBaseURL
+		GitHubBaseURL = oldBaseURL
 	}()
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

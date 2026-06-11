@@ -75,6 +75,7 @@ type TaskDetail struct {
 	Result         *string    `json:"result"`
 	Held           bool       `json:"held"`
 	TargetTaskID   *string    `json:"target_task_id"`
+	AgentMerge     bool       `json:"agent_merge"`
 	CreatedAt      string     `json:"created_at"`
 	UpdatedAt      string     `json:"updated_at"`
 	DependsOn      []string   `json:"depends_on"`
