@@ -47,6 +47,15 @@ Read each check as a question against the design under review:
   format, or competing contract smuggled into a later section that contradicts the one established up
   front? Any "but it can also…" that introduces a rival contract is a fail.
 
+**Apply these four checks to the contract CORE only** — the sections `## Charter`, `## Command
+Surface`, `## Output schema/format`, `## Default no-flag behavior`, `## Canonical invocations`,
+`## Acceptance criteria`, and `## Coherence requirements`. A conforming `DESIGN.md` MAY append
+**consumer-extension sections** supplied by the design task's spec — e.g. `## Problem`,
+`## Goals / Non-goals`, `## Hermetic build constraints`, `## Test expectations`. **TOLERATE them:**
+their presence is NEVER grounds to reject, and they do NOT count as a "second/competing contract"
+under check (4) — they add problem framing and build constraints, not a rival tool or mode. Judge
+coherence on the core contract; do not reject a design merely for carrying these extra sections.
+
 **A reject MUST name the specific incoherence** — point at the sections and say what is wrong, e.g.
 "criteria 9–12 describe a different tool than 1–8 (a `serve` daemon vs. the `lint` CLI the Charter
 names); the default invocation demonstrates neither — fails (1), (2), (3)." A bare "incoherent" is
@@ -63,8 +72,8 @@ not an acceptable reject. Approve only when all four hold for the design as writ
 2. **Read the brief.** `agentask show <id>` — its `spec` contains the **Design PR** URL and the
    **Parent task** id (also in `target_task_id`). Then `agentask show <target_task_id>` (the
    **parent**): its `spec` **names the one candidate tool and its headline use case** — that is what
-   you check the design's coherence against. Its `agent_merge` flag + `pr` link matter for step 5, and
-   its `links` may carry a `no_op` marker. **No-PR handling — distinguish three cases:**
+   you check the design's coherence against. Its `pr` link matters for step 3, and its `links` may
+   carry a `no_op` marker. **No-PR handling — distinguish three cases:**
    - **Has PR link** — the parent has a recorded `pr` link. Proceed to step 3.
    - **NO-OP submission** — the parent carries a `{"kind":"no_op",...}` link and NO `pr` link (the
      review task's spec is flagged "NO-OP submission"). This is NOT an automatic reject. The worker
@@ -73,7 +82,8 @@ not an acceptable reject. Approve only when all four hold for the design as writ
      origin/main`, then read the relevant `DESIGN.md` and check whether the parent's acceptance
      criteria — including the four coherence requirements — genuinely hold). If the claim HOLDS →
      submit an `approve` verdict (step 4); if work is actually NEEDED → submit a `reject` verdict
-     naming the specific gap. There is no PR to merge in this case — see step 5.
+     naming the specific gap. There is no PR in this case — your verdict is the whole job; the
+     server auto-finalizes an approved no-op to `done`.
    - **Missing PR link, try branch resolution** — no `no_op` marker AND no recorded `pr` link.
      Attempt to resolve the PR from the deterministic branch. Extract the parent task ID's first
      8 characters, parse the parent task's `spec` or repo info to get `<owner>/<repo>`, then run:
@@ -112,24 +122,10 @@ not an acceptable reject. Approve only when all four hold for the design as writ
    mirror your verdict as a PR comment** so a human draining the merge queue can see it:
    `gh pr comment <pr-url> --body "✅ opus-reviewer: APPROVED — <summary>"` (or `"❌ opus-reviewer:
    CHANGES REQUESTED — <the specific incoherence and which checks it fails>"`).
-5. **Honor `agent_merge` (only on approve).** Re-GET the parent task. If the parent is now `approved`
-   AND its `agent_merge` is `true`:
-   - **Has a `pr` link (recorded or branch-resolved):** merge its PR via REST API: derive
-     `<owner>/<repo>/<number>` from the PR URL. If the parent has no recorded `pr` link but is not a
-     no-op, re-resolve it from the branch (same as step 2): extract the parent task ID's first 8
-     characters and run `gh api repos/<owner>/<repo>/pulls?head=<owner>:mr/<parent-id8>&state=open`;
-     extract the PR number. Then run `gh api --method PUT repos/<owner>/<repo>/pulls/<number>/merge -f
-     merge_method=squash` (you already have the owner token via `apply_owner_token` → GH_TOKEN). This
-     works where `gh pr merge --auto` fails: `--auto` requires branch protection these private
-     free-plan repos cannot have, and `gh pr merge` mis-resolves credentials with multiple gh
-     accounts. If the merge succeeds, transition the parent: `agentask transition <parent-id> --to done`.
-   - **NO-OP (verified no-op, no `pr` link):** there is NOTHING to merge — do NOT run `gh pr merge`.
-     Drive it straight to done: `agentask transition <parent-id> --to done --note "no-op verified
-     against main; no merge needed"`.
-
-   If the parent is still in `review` (other reviewers pending) OR `agent_merge` is `false`, do
-   NOTHING further — leave it for the remaining reviewers or the human merge gate.
-6. STOP.
+5. STOP. You only vote. Once your verdict is recorded and mirrored as a PR comment, you are done —
+   do NOT merge the PR and do NOT transition the parent to `done`. When all of this round's reviewers
+   approve, the server moves the parent to `approved`; merging is a separate `merge` task (driven by
+   the merger when `agent_merge=true`, or the human merge gate otherwise), handled elsewhere.
 
 ## Rules
 - This is a **DOC / coherence review — never run `make check` or `make test`**. You review the
@@ -144,6 +140,6 @@ not an acceptable reject. Approve only when all four hold for the design as writ
 - Review the **merged-with-main** result, never the branch alone — a design PR that conflicts with
   main is an automatic reject.
 - Your verdict goes on the **review task you claimed** (via `submit` with `verdict`), not on the parent.
-- Never merge a non-`agent_merge` task, and never transition a parent to `done` unless you merged it
-  yourself under `agent_merge`. Otherwise the human gates the merge from `approved`.
+- Never merge a PR and never transition a parent to `done` — you only vote. Merging an `approved`
+  parent is a separate `merge` task (or the human merge gate), handled elsewhere.
 - One review task per run.
