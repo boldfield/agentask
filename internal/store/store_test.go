@@ -7550,3 +7550,76 @@ func TestAgentMergePRStaysApproved(t *testing.T) {
 		t.Errorf("expected transition event note to mention 'Aggregation', got %q", *transitionEvent.Note)
 	}
 }
+
+// TestCreateTasksWithTrack verifies that track field is persisted and defaults to 'build'.
+func TestCreateTasksWithTrack(t *testing.T) {
+	ctx := context.Background()
+
+	store, err := Open("file::memory:?cache=shared", []string{"haiku", "opus", "sonnet"})
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "test-proj", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Doc", "docs/test.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Test 1: Create task with track=design
+	tasksWithTrack, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Design Task", Spec: "Design spec", DocumentID: doc.ID, Track: "design"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task with track: %v", err)
+	}
+
+	if len(tasksWithTrack) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasksWithTrack))
+	}
+
+	if tasksWithTrack[0].Track != "design" {
+		t.Errorf("expected track='design', got '%s'", tasksWithTrack[0].Track)
+	}
+
+	// Verify track persists when retrieved
+	retrieved, err := store.GetTask(ctx, tasksWithTrack[0].ID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+
+	if retrieved.Track != "design" {
+		t.Errorf("expected track='design' after retrieval, got '%s'", retrieved.Track)
+	}
+
+	// Test 2: Create task without track (should default to 'build')
+	tasksDefault, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Build Task", Spec: "Build spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task without track: %v", err)
+	}
+
+	if len(tasksDefault) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasksDefault))
+	}
+
+	if tasksDefault[0].Track != "build" {
+		t.Errorf("expected track='build' (default), got '%s'", tasksDefault[0].Track)
+	}
+
+	// Verify default persists when retrieved
+	retrievedDefault, err := store.GetTask(ctx, tasksDefault[0].ID)
+	if err != nil {
+		t.Fatalf("failed to get task: %v", err)
+	}
+
+	if retrievedDefault.Track != "build" {
+		t.Errorf("expected track='build' (default) after retrieval, got '%s'", retrievedDefault.Track)
+	}
+}
