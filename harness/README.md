@@ -59,7 +59,7 @@ ok). The worker derives the owner from the project's repo URL, exports that owne
 invoke the code from `harness/` and it uses `~/.agentask` purely for state:
 
     cd ~/projects/agentask/harness
-    AGENTASK_PROJECT=all ./worker-haiku.sh haiku-1
+    AGENTASK_PROJECT=all ./worker.sh worker-1
 
 (Symlinking the wrappers *into* `~/.agentask` would drop code into the state tree next to `repos/`
 and `wt-*` — don't. If you want to invoke from anywhere, add `harness/` to `PATH` or alias the
@@ -77,7 +77,7 @@ Set by `AGENTASK_PROJECT`:
   per-`(slot, repo)` worktree `wt-<slot>-<owner-repo>` (a worktree can't span repositories).
   `AGENTASK_PROJECTS=<id,id,…>` optionally restricts which projects multi-mode will touch.
 
-      AGENTASK_PROJECT=all ./worker-haiku.sh haiku-1     # one slot, all boards
+      AGENTASK_PROJECT=all ./worker.sh worker-1     # one slot, all boards
 
   One `claude -p` task per discovery pass, then re-poll with a fresh shuffle — so N parallel slots
   spread across all work-bearing projects instead of serializing on one board. The repo-guard
