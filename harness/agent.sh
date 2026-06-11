@@ -144,10 +144,10 @@ dispatch() {
 }
 nap() { sleep "$1" & wait $! 2>/dev/null; }
 
-# Check if a project has claimable tasks for THIS agent's (model, kind).
+# Check if a project has claimable tasks for THIS agent's kind (any model).
 # Returns 0 if claimable work exists, 1 if not.
 has_claimable_work() {
-  agentask next --project "$1" --model "$AGENT_MODEL" --kind "$KIND" >/dev/null 2>&1
+  agentask next --project "$1" --kind "$KIND" >/dev/null 2>&1
 }
 
 # Cleanup: drop ALL of this slot's worktrees (single wt-$SLOT and multi wt-$SLOT-*), prune clones.
@@ -184,8 +184,19 @@ if [ "$MULTI" = 0 ]; then
   while true; do
     [ "$STOP" -eq 1 ] && break
     if has_claimable_work "$AGENTASK_PROJECT"; then
-      echo "[$AGENT_ID] $(date '+%H:%M:%S') claimable $KIND; dispatching ($MODEL)…"
+      # Find the next claimable task (any model) and get its model
+      task_id=$(agentask next --project "$AGENTASK_PROJECT" --kind "$KIND" 2>/dev/null)
+      if [ -z "$task_id" ]; then
+        echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable ($KIND); sleeping 30s"; nap 30; continue
+      fi
+      task_model=$(agentask show "$task_id" --json 2>/dev/null | jq -r '.model // ""')
+      if [ -z "$task_model" ]; then
+        echo "[$AGENT_ID] $(date '+%H:%M:%S') failed to read task model for $task_id; sleeping 30s"; nap 30; continue
+      fi
+      echo "[$AGENT_ID] $(date '+%H:%M:%S') claimable $KIND; dispatching ($task_model)…"
+      export AGENT_MODEL="$task_model"
       dispatch
+      export AGENT_MODEL="$MODEL"   # restore original model for slot identity
       git -C "$WT" fetch origin --quiet 2>/dev/null || true
       git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
       [ "$STOP" -eq 1 ] && break
@@ -203,10 +214,10 @@ in_allow() { [ -z "$ALLOW" ] && return 0; case ",$ALLOW," in *",$1,"*) return 0 
 echo "[$AGENT_ID] $ROLE ($MODEL/$KIND) MULTI @ $AGENTASK_URL${ALLOW:+ (allow: $ALLOW)}; discovering work across projects"
 while true; do
   [ "$STOP" -eq 1 ] && break
-  # Discover projects holding my (model,kind) claimable work — one call (v0.4.0 filter).
+  # Discover projects holding my kind claimable work (any model) — one call (v0.4.0 filter).
   # (while-read, not mapfile: macOS ships bash 3.2.) sort -R shuffles so projects drain fairly.
   rows=()
-  while IFS= read -r _row; do rows+=("$_row"); done < <(agentask projects --claimable --model "$AGENT_MODEL" --kind "$KIND" --json \
+  while IFS= read -r _row; do rows+=("$_row"); done < <(agentask projects --claimable --kind "$KIND" --json \
       | jq -r '.[] | select(.repo != null and .repo != "") | "\(.id)\t\(.repo)"' 2>/dev/null \
       | sort -R)
   if [ "${#rows[@]}" -eq 0 ]; then
@@ -226,8 +237,19 @@ while true; do
     wt="$(ensure_worktree "$clone")" || continue
     export AGENTASK_PROJECT="$pid" AGENTASK_REPO="$wt"
     cd "$wt" || continue
-    echo "[$AGENT_ID] $(date '+%H:%M:%S') dispatching ($MODEL/$KIND) on $(norm_repo "$prepo") [${pid:0:8}]…"
+    # Find the next claimable task (any model) and get its model
+    task_id=$(agentask next --project "$pid" --kind "$KIND" 2>/dev/null)
+    if [ -z "$task_id" ]; then
+      continue   # task raced away, try next project
+    fi
+    task_model=$(agentask show "$task_id" --json 2>/dev/null | jq -r '.model // ""')
+    if [ -z "$task_model" ]; then
+      continue   # couldn't read task model, try next project
+    fi
+    echo "[$AGENT_ID] $(date '+%H:%M:%S') dispatching ($task_model/$KIND) on $(norm_repo "$prepo") [${pid:0:8}]…"
+    export AGENT_MODEL="$task_model"
     dispatch
+    export AGENT_MODEL="$MODEL"   # restore original model for slot identity
     git -C "$wt" checkout --detach --force origin/main --quiet 2>/dev/null || true
     worked=1
     break   # one task per discovery pass, then re-poll fresh (keeps the shuffle honest)
