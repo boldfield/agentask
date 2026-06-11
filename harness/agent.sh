@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent.sh — the unified Agentask fleet engine. One loop, parameterized:
 #   --model <tier>            the model this agent claims + runs (e.g. haiku, opus)
-#   --kind  <implement|review>  implement = worker (worker-prompt.md); review = reviewer (reviewer-prompt.md)
+#   --kind  <implement|review>  implement = worker (prompts/build/implement.md); review = reviewer (prompts/build/review.md)
 #   [slot]                    stable slot name -> persistent agent id + dedicated worktree(s)
 #
 # PROJECT SCOPE (from $AGENTASK_PROJECT):
@@ -17,7 +17,7 @@
 # FRESH each dispatch. STATE — env, agent ids, repo clones, worktrees — lives under $AGENTASK_HOME
 # (~/.agentask) and is NOT versioned. Ctrl-C is a GRACEFUL stop (in-flight task finishes; again = force-quit).
 #
-# NOTE: assumes each repo's default branch is `main` (matches worker-prompt.md). master-default repos
+# NOTE: assumes each repo's default branch is `main` (matches prompts/build/implement.md). master-default repos
 # need the prompt parameterized — not supported yet.
 #
 # NOTE: requires `agentask` CLI to be on PATH for board discovery and polling.
@@ -50,9 +50,9 @@ case "${KIND:?--kind required}" in implement|review) ;; *) echo "kind must be im
 
 export AGENT_MODEL="$MODEL"
 if [ "$KIND" = "review" ]; then
-  ROLE="reviewer"; PROMPT_FILE="$HARNESS_DIR/reviewer-prompt.md"; SLOT="${SLOT:-${AGENT_SLOT:-${MODEL}-rev-1}}"
+  ROLE="reviewer"; PROMPT_FILE="$HARNESS_DIR/prompts/build/review.md"; SLOT="${SLOT:-${AGENT_SLOT:-${MODEL}-rev-1}}"
 else
-  ROLE="worker";   PROMPT_FILE="$HARNESS_DIR/worker-prompt.md";   SLOT="${SLOT:-${AGENT_SLOT:-${MODEL}-1}}"
+  ROLE="worker";   PROMPT_FILE="$HARNESS_DIR/prompts/build/implement.md";   SLOT="${SLOT:-${AGENT_SLOT:-${MODEL}-1}}"
 fi
 [ -f "$PROMPT_FILE" ] || { echo "prompt not found: $PROMPT_FILE" >&2; exit 1; }
 
