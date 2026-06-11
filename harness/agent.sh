@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agent.sh — the unified Agentask fleet engine. One loop, parameterized:
 #   --model <tier>            the model this agent claims + runs (e.g. haiku, opus)
-#   --kind  <implement|review>  implement = worker (prompts/build/implement.md); review = reviewer (prompts/build/review.md)
+#   --kind  <implement|review|merge>  implement = worker (prompts/build/implement.md); review = reviewer (prompts/build/review.md); merge = merger (non-LLM)
 #   [slot]                    stable slot name -> persistent agent id + dedicated worktree(s)
 #
 # PROJECT SCOPE (from $AGENTASK_PROJECT):
@@ -41,13 +41,95 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --model) MODEL="${2:?}"; shift 2 ;;
     --kind)  KIND="${2:?}";  shift 2 ;;
-    -h|--help) echo "usage: agent.sh --model <tier> --kind <implement|review> [slot]"; exit 0 ;;
+    -h|--help) echo "usage: agent.sh --model <tier> --kind <implement|review|merge> [slot]"; exit 0 ;;
     *) SLOT="$1"; shift ;;
   esac
 done
-case "${KIND:?--kind required}" in implement|review) ;; *) echo "kind must be implement|review" >&2; exit 1 ;; esac
+case "${KIND:?--kind required}" in implement|review|merge) ;; *) echo "kind must be implement|review|merge" >&2; exit 1 ;; esac
 
 export AGENT_MODEL="$MODEL"
+
+# ============================== MERGE-KIND (REPO-LESS) ==============================
+# Merge tasks are handled via REST API (internal/forge) and need NO local repo, NO worktree.
+# Run as a separate early loop before any clone/worktree setup, then exit.
+if [ "$KIND" = "merge" ]; then
+  ROLE="merger"
+  DEFAULT_SLOT="merger-1"
+  SLOT="${SLOT:-${AGENT_SLOT:-$DEFAULT_SLOT}}"
+
+  ID_DIR="$AGENTASK_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
+  mkdir -p "$ID_DIR"
+  [ -s "$ID_FILE" ] || echo "$SLOT-$(hostname -s)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' ')" > "$ID_FILE"
+  export AGENT_ID="$(cat "$ID_FILE")"
+
+  MULTI=0
+  case "${AGENTASK_PROJECT:-}" in ""|all|ALL) MULTI=1 ;; esac
+
+  STOP=0
+  request_stop() {
+    [ "$STOP" -eq 1 ] && return
+    STOP=1
+    echo "[$AGENT_ID] stop requested — finishing the current $ROLE task, then exiting. Ctrl-C again to force-quit."
+    trap - INT TERM
+  }
+  trap request_stop INT TERM
+
+  nap() { sleep "$1" & wait $! 2>/dev/null; }
+
+  merge_one() {
+    local task_id="$1"
+    agentask merge "$task_id"
+  }
+
+  # ---- SINGLE-PROJECT MERGE MODE ----
+  if [ "$MULTI" = 0 ]; then
+    echo "[$AGENT_ID] merger (merge/SINGLE) @ project $AGENTASK_PROJECT; polling"
+    while true; do
+      [ "$STOP" -eq 1 ] && break
+      task_id=$(agentask next --project "$AGENTASK_PROJECT" --kind merge --claim 2>/dev/null)
+      if [ -n "$task_id" ]; then
+        echo "[$AGENT_ID] $(date '+%H:%M:%S') merging…"
+        merge_one "$task_id"
+      else
+        echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable (merge); sleeping 30s"; nap 30
+      fi
+    done
+  else
+    # ---- MULTI-PROJECT MERGE MODE ----
+    ALLOW="${AGENTASK_PROJECTS:-}"
+    in_allow() { [ -z "$ALLOW" ] && return 0; case ",$ALLOW," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
+
+    echo "[$AGENT_ID] merger (merge/MULTI) @ $AGENTASK_URL${ALLOW:+ (allow: $ALLOW)}; discovering work across projects"
+    while true; do
+      [ "$STOP" -eq 1 ] && break
+      # Discover projects holding claimable merge work
+      rows=()
+      while IFS= read -r _row; do rows+=("$_row"); done < <(agentask projects --claimable --kind merge --json \
+          | jq -r '.[] | .id' 2>/dev/null | sort -R)
+      if [ "${#rows[@]}" -eq 0 ]; then
+        echo "[$AGENT_ID] $(date '+%H:%M:%S') no claimable merge work in any project; sleeping 30s"; nap 30; continue
+      fi
+
+      worked=0
+      for pid in "${rows[@]}"; do
+        [ "$STOP" -eq 1 ] && break
+        in_allow "$pid" || continue
+        task_id=$(agentask next --project "$pid" --kind merge --claim 2>/dev/null)
+        if [ -n "$task_id" ]; then
+          echo "[$AGENT_ID] $(date '+%H:%M:%S') merging on project [${pid:0:8}]…"
+          agentask merge "$task_id"
+          worked=1
+          break
+        fi
+      done
+      [ "$STOP" -eq 1 ] && break
+      [ "$worked" -eq 0 ] && { echo "[$AGENT_ID] $(date '+%H:%M:%S') candidate projects raced away; sleeping 10s"; nap 10; }
+    done
+  fi
+  exit 0
+fi
+
+# ============================== IMPLEMENT/REVIEW KIND (WORKTREE-DEPENDENT) ==============================
 if [ "$KIND" = "review" ]; then
   ROLE="reviewer"
   if [ -n "$MODEL" ]; then
@@ -160,6 +242,7 @@ dispatch() {
   local pid=$!
   while kill -0 "$pid" 2>/dev/null; do wait "$pid"; done
 }
+
 nap() { sleep "$1" & wait $! 2>/dev/null; }
 
 # Check if a project has claimable tasks for THIS agent's kind (any model).
