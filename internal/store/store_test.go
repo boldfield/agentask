@@ -8139,3 +8139,43 @@ func TestAgentMergeNoOpNoMergeTask(t *testing.T) {
 		t.Errorf("expected 0 merge tasks for no-op submission, found %d", mergeTaskCount)
 	}
 }
+
+// TestTransitionMergeTaskInProgressToDone pins the v0.10.1 fix: a merge task's
+// lifecycle is ready→in_progress→done (no review), so in_progress→done must be
+// allowed for kind=merge — but still rejected for ordinary kinds.
+func TestTransitionMergeTaskInProgressToDone(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := time.Now().Format(time.RFC3339)
+	conn := store.Conn()
+	if _, err := conn.ExecContext(ctx, `INSERT INTO project (id, name, repo, created_at) VALUES (?, ?, ?, ?)`,
+		"p1", "proj", "https://github.com/example/repo", now); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO document (id, project_id, kind, title, ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"d1", "p1", "design", "D", "DESIGN.md", now, now); err != nil {
+		t.Fatalf("insert document: %v", err)
+	}
+	insertTask := func(id, kind string) {
+		if _, err := conn.ExecContext(ctx, `INSERT INTO task (id, project_id, document_id, title, spec, state, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			id, "p1", "d1", "T", "s", "in_progress", kind, now, now); err != nil {
+			t.Fatalf("insert task %s: %v", id, err)
+		}
+	}
+
+	// merge task: in_progress → done is ALLOWED (the fix).
+	insertTask("mt", "merge")
+	if _, err := store.TransitionTask(ctx, "mt", "done", nil); err != nil {
+		t.Fatalf("merge task in_progress→done should be allowed, got: %v", err)
+	}
+
+	// ordinary task: in_progress → done is still REJECTED.
+	insertTask("it", "implement")
+	if _, err := store.TransitionTask(ctx, "it", "done", nil); err == nil {
+		t.Error("non-merge in_progress→done should be rejected, but it was allowed")
+	}
+}

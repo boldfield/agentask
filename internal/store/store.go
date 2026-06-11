@@ -2088,9 +2088,9 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 	}
 	defer tx.Rollback()
 
-	// Load current state
-	var taskState string
-	err = tx.QueryRowContext(ctx, "SELECT state FROM task WHERE id = ?", taskID).Scan(&taskState)
+	// Load current state and kind (kind gates the merge-task terminal transition)
+	var taskState, taskKind string
+	err = tx.QueryRowContext(ctx, "SELECT state, kind FROM task WHERE id = ?", taskID).Scan(&taskState, &taskKind)
 	if err != nil {
 		if err == sql.ErrNoRows {
 			return Task{}, ErrNotFound
@@ -2103,8 +2103,11 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 
 	switch to {
 	case "done":
-		// Allowed from 'approved' (being in approved implies a passed review)
-		if taskState == "approved" {
+		// Allowed from 'approved' (being in approved implies a passed review).
+		// Also allowed from 'in_progress' for merge-kind tasks: a merge task's
+		// lifecycle is ready→in_progress→done with no review step, so the merger
+		// finalizes it directly after the squash-merge.
+		if taskState == "approved" || (taskState == "in_progress" && taskKind == "merge") {
 			canTransition = true
 		}
 
