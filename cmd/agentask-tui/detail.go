@@ -10,6 +10,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/boldfield/agentask/internal/forge"
 	"github.com/boldfield/agentask/internal/tuiclient"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -419,33 +420,23 @@ func defaultURLOpener(rawURL string) error {
 }
 
 // defaultGHMerger merges a PR via the GitHub REST API with per-owner token support.
-// Returns an error if parsing fails, gh is not found, or the merge fails.
+// Returns an error if parsing fails or the merge fails.
 func defaultGHMerger(ctx context.Context, prURL string) error {
-	if _, err := lookPathFunc("gh"); err != nil {
-		return fmt.Errorf("gh command not found: install GitHub CLI (https://cli.github.com)")
-	}
-
 	// Parse the PR URL to extract owner, repo, and number.
 	owner, repo, number, err := parsePRURL(prURL)
 	if err != nil {
-		return fmt.Errorf("gh api merge failed: %w", err)
+		return fmt.Errorf("merge failed: %w", err)
 	}
 
 	// Get the per-owner token from forge-tokens file.
-	token := forgeTokenForOwner(owner)
-
-	// Run gh api PUT repos/{owner}/{repo}/pulls/{number}/merge with squash method.
-	// The API endpoint performs the merge using the owner's token if available.
-	endpoint := fmt.Sprintf("repos/%s/%s/pulls/%d/merge", owner, repo, number)
-	cmd := commandContextFunc(ctx, "gh", "api", "--method", "PUT", endpoint, "-f", "merge_method=squash")
-
-	// If a token was found, set GH_TOKEN in the command's environment.
-	if token != "" {
-		cmd.Env = append(os.Environ(), "GH_TOKEN="+token)
+	token, err := forge.OwnerToken(owner)
+	if err != nil {
+		return fmt.Errorf("merge failed: %w", err)
 	}
 
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("gh api merge failed: %w", err)
+	// Use the forge package to perform the squash merge.
+	if err := forge.SquashMerge(ctx, owner, repo, number, token); err != nil {
+		return fmt.Errorf("merge failed: %w", err)
 	}
 	return nil
 }

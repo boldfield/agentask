@@ -8,6 +8,8 @@ import (
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/boldfield/agentask/internal/forge"
 )
 
 // parsePRURL parses a GitHub PR URL into its components.
@@ -95,7 +97,10 @@ func findOpenPRURL(ctx context.Context, owner, repo, branch string) (string, err
 	cmd := commandContextFunc(ctx, "gh", "api", endpoint, "-f", query, "-f", "state=open")
 
 	// Get the per-owner token from forge-tokens file.
-	token := forgeTokenForOwner(owner)
+	token, err := forge.OwnerToken(owner)
+	if err != nil {
+		return "", fmt.Errorf("failed to get token: %w", err)
+	}
 
 	// If a token was found, set GH_TOKEN in the command's environment.
 	if token != "" {
