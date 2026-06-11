@@ -51,6 +51,7 @@ type Task struct {
 	State          string  `json:"state"`
 	Kind           string  `json:"kind"`
 	Model          string  `json:"model"`
+	Track          string  `json:"track"`
 	Assignee       *string `json:"assignee"`
 	LeaseExpiresAt *string `json:"lease_expires_at"`
 	Result         *string `json:"result"`
@@ -68,6 +69,7 @@ type TaskDetail struct {
 	State          string     `json:"state"`
 	Model          string     `json:"model"`
 	Kind           string     `json:"kind"`
+	Track          string     `json:"track"`
 	Assignee       *string    `json:"assignee"`
 	LeaseExpiresAt *string    `json:"lease_expires_at"`
 	Result         *string    `json:"result"`
