@@ -157,17 +157,15 @@ See [`harness/README.md`](./harness/README.md) for a deep dive.
 
 The `harness/` directory contains a fleet of headless agents:
 
-- **Workers**: Claim `implement` tasks, execute them via `claude -p`, and submit results.
-  - `worker-haiku.sh`: Haiku implementer.
-  - `worker-opus.sh`: Opus implementer (e.g., for prompt authoring).
-- **Reviewers**: Claim `review` tasks, run `claude -p` to produce verdicts, and submit votes.
-  - `reviewer-opus.sh`: Opus reviewer.
-  - `reviewer-sonnet.sh`: Sonnet reviewer.
+- **Workers**: Claim `implement` tasks across all models, execute them via `claude -p`, and submit results.
+  - `worker.sh`: Generic implementer for any model tier.
+- **Reviewers**: Claim `review` tasks across all models, run `claude -p` to produce verdicts, and submit votes.
+  - `reviewer.sh`: Generic reviewer for any model tier.
 
 Each agent:
-1. Polls for claimable work of its `(model, kind)`.
-2. Claims a task atomically.
-3. Dispatches one `claude -p` task (with a prompt that includes the spec).
+1. Polls for claimable work of its `kind` across all models.
+2. Claims a task atomically (the task specifies the model).
+3. Dispatches one `claude -p` task with the appropriate model (with a prompt that includes the spec).
 4. Waits for completion.
 5. Submits the result and repeats.
 
@@ -182,12 +180,12 @@ export AGENTASK_PROJECT="<project-id>"
 export AGENTASK_REPO="~/projects/<repo>"
 
 # Start workers in separate terminals:
-./worker-haiku.sh haiku-1
-./worker-opus.sh opus-1
+./worker.sh worker-1
+./worker.sh worker-2
 
 # Start reviewers in separate terminals:
-./reviewer-opus.sh opus-reviewer-1
-./reviewer-sonnet.sh sonnet-reviewer-1
+./reviewer.sh reviewer-1
+./reviewer.sh reviewer-2
 ```
 
 For multi-project mode and advanced configuration, see [`harness/README.md`](./harness/README.md).

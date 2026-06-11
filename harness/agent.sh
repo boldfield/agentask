@@ -45,14 +45,25 @@ while [ $# -gt 0 ]; do
     *) SLOT="$1"; shift ;;
   esac
 done
-: "${MODEL:?--model required}"
 case "${KIND:?--kind required}" in implement|review) ;; *) echo "kind must be implement|review" >&2; exit 1 ;; esac
 
 export AGENT_MODEL="$MODEL"
 if [ "$KIND" = "review" ]; then
-  ROLE="reviewer"; SLOT="${SLOT:-${AGENT_SLOT:-${MODEL}-rev-1}}"
+  ROLE="reviewer"
+  if [ -n "$MODEL" ]; then
+    DEFAULT_SLOT="${MODEL}-rev-1"
+  else
+    DEFAULT_SLOT="reviewer-1"
+  fi
+  SLOT="${SLOT:-${AGENT_SLOT:-$DEFAULT_SLOT}}"
 else
-  ROLE="worker";   SLOT="${SLOT:-${AGENT_SLOT:-${MODEL}-1}}"
+  ROLE="worker"
+  if [ -n "$MODEL" ]; then
+    DEFAULT_SLOT="${MODEL}-1"
+  else
+    DEFAULT_SLOT="worker-1"
+  fi
+  SLOT="${SLOT:-${AGENT_SLOT:-$DEFAULT_SLOT}}"
 fi
 
 # Prompt file is determined by task track (dynamically, see dispatch).
@@ -187,7 +198,8 @@ if [ "$MULTI" = 0 ]; then
   git -C "$MAIN_REPO" worktree add --detach "$WT" origin/main
   export AGENTASK_REPO="$WT"; cd "$WT" || { echo "worktree cd failed"; exit 1; }
 
-  echo "[$AGENT_ID] $ROLE ($MODEL/$KIND) SINGLE @ project $AGENTASK_PROJECT @ $WT; polling"
+  AGENT_MODEL_STR="${MODEL:+$MODEL/}$KIND"
+  echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) SINGLE @ project $AGENTASK_PROJECT @ $WT; polling"
   while true; do
     [ "$STOP" -eq 1 ] && break
     if has_claimable_work "$AGENTASK_PROJECT"; then
@@ -210,7 +222,7 @@ if [ "$MULTI" = 0 ]; then
       echo "[$AGENT_ID] $(date '+%H:%M:%S') claimable $KIND; dispatching ($task_model/$task_track)…"
       export AGENT_MODEL="$task_model"
       dispatch
-      export AGENT_MODEL="$MODEL"   # restore original model for slot identity
+      [ -n "$MODEL" ] && export AGENT_MODEL="$MODEL"   # restore original model for slot identity (if initially provided)
       git -C "$WT" fetch origin --quiet 2>/dev/null || true
       git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
       [ "$STOP" -eq 1 ] && break
@@ -225,7 +237,8 @@ fi
 ALLOW="${AGENTASK_PROJECTS:-}"   # optional comma-separated id allowlist
 in_allow() { [ -z "$ALLOW" ] && return 0; case ",$ALLOW," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
-echo "[$AGENT_ID] $ROLE ($MODEL/$KIND) MULTI @ $AGENTASK_URL${ALLOW:+ (allow: $ALLOW)}; discovering work across projects"
+AGENT_MODEL_STR="${MODEL:+$MODEL/}$KIND"
+echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) MULTI @ $AGENTASK_URL${ALLOW:+ (allow: $ALLOW)}; discovering work across projects"
 while true; do
   [ "$STOP" -eq 1 ] && break
   # Discover projects holding my kind claimable work (any model) — one call (v0.4.0 filter).
@@ -270,7 +283,7 @@ while true; do
     echo "[$AGENT_ID] $(date '+%H:%M:%S') dispatching ($task_model/$task_track/$KIND) on $(norm_repo "$prepo") [${pid:0:8}]…"
     export AGENT_MODEL="$task_model"
     dispatch
-    export AGENT_MODEL="$MODEL"   # restore original model for slot identity
+    [ -n "$MODEL" ] && export AGENT_MODEL="$MODEL"   # restore original model for slot identity (if initially provided)
     git -C "$wt" checkout --detach --force origin/main --quiet 2>/dev/null || true
     worked=1
     break   # one task per discovery pass, then re-poll fresh (keeps the shuffle honest)

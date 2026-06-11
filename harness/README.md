@@ -12,22 +12,20 @@ work, run it via `claude -p`, and submit — Haiku implements, Opus reviews, the
 
 ## One engine
 
-`agent.sh` is the whole loop, parameterized by `--model` + `--kind`. The wrappers are one-liners:
+`agent.sh` is the whole loop, parameterized by `--kind`. The wrappers are one-liners:
 
-| Wrapper | Role | Claims |
-|---|---|---|
-| `worker-haiku.sh [slot]`  | Haiku implementer | `model=haiku, kind=implement` |
-| `worker-opus.sh [slot]`   | Opus implementer (e.g. prompt-authoring) | `model=opus, kind=implement` |
-| `reviewer-opus.sh [slot]` | Opus reviewer | `model=opus, kind=review` |
-| `reviewer-sonnet.sh [slot]` | Sonnet reviewer | `model=sonnet, kind=review` |
+| Wrapper | Role |
+|---|---|
+| `worker.sh [slot]`  | Generic implementer — claims `kind=implement` across all models | 
+| `reviewer.sh [slot]` | Generic reviewer — claims `kind=review` across all models |
 
 Run a few in separate terminals, each with a **distinct slot**:
 
-    AGENTASK_PROJECT=<id> AGENTASK_REPO=~/projects/<repo> ./worker-haiku.sh haiku-1
+    AGENTASK_PROJECT=<id> AGENTASK_REPO=~/projects/<repo> ./worker.sh worker-1
 
 Each agent takes a persistent id (per slot), stands up its own detached git worktree, polls for
-claimable work of its `(model, kind)`, dispatches one `claude -p` task, then repeats. Ctrl-C is a
-graceful stop (finishes the in-flight task; Ctrl-C again to force-quit).
+claimable work of its `kind`, and the task specifies the model. One `claude -p` dispatch per task,
+then repeats. Ctrl-C is a graceful stop (finishes the in-flight task; Ctrl-C again to force-quit).
 
 ## Code vs. state
 
@@ -61,7 +59,7 @@ ok). The worker derives the owner from the project's repo URL, exports that owne
 invoke the code from `harness/` and it uses `~/.agentask` purely for state:
 
     cd ~/projects/agentask/harness
-    AGENTASK_PROJECT=all ./worker-haiku.sh haiku-1
+    AGENTASK_PROJECT=all ./worker.sh worker-1
 
 (Symlinking the wrappers *into* `~/.agentask` would drop code into the state tree next to `repos/`
 and `wt-*` — don't. If you want to invoke from anywhere, add `harness/` to `PATH` or alias the
@@ -79,7 +77,7 @@ Set by `AGENTASK_PROJECT`:
   per-`(slot, repo)` worktree `wt-<slot>-<owner-repo>` (a worktree can't span repositories).
   `AGENTASK_PROJECTS=<id,id,…>` optionally restricts which projects multi-mode will touch.
 
-      AGENTASK_PROJECT=all ./worker-haiku.sh haiku-1     # one slot, all boards
+      AGENTASK_PROJECT=all ./worker.sh worker-1     # one slot, all boards
 
   One `claude -p` task per discovery pass, then re-poll with a fresh shuffle — so N parallel slots
   spread across all work-bearing projects instead of serializing on one board. The repo-guard
