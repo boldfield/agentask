@@ -488,6 +488,7 @@ type TaskInput struct {
 	ReviewModels []string `json:"review_models"`
 	AgentMerge   bool     `json:"agent_merge"`
 	Escalate     *bool    `json:"escalate"` // nullable, defaults to true if not provided
+	Track        string   `json:"track"`    // optional, defaults to 'build' if not provided
 }
 
 // LinkInput is the input format for task links during submission.
@@ -516,6 +517,7 @@ type TaskWithDepsAndLinks struct {
 	AgentMerge     bool       `json:"agent_merge"`
 	Held           bool       `json:"held"`
 	Escalate       bool       `json:"escalate"`
+	Track          string     `json:"track"`
 	CreatedAt      string     `json:"created_at"`
 	UpdatedAt      string     `json:"updated_at"`
 	ArchivedAt     *string    `json:"archived_at"`
@@ -933,6 +935,11 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 			escalate = *input.Escalate
 		}
 
+		track := "build"
+		if input.Track != "" {
+			track = input.Track
+		}
+
 		task := Task{
 			ID:           taskID,
 			ProjectID:    projectID,
@@ -947,6 +954,7 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 			TargetTaskID: nil,
 			AgentMerge:   input.AgentMerge,
 			Escalate:     escalate,
+			Track:        track,
 			CreatedAt:    now,
 			UpdatedAt:    now,
 		}
@@ -958,9 +966,9 @@ func (s *sqliteStore) CreateTasks(ctx context.Context, projectID string, tasks [
 
 		// Insert task
 		_, err = tx.ExecContext(ctx, `
-			INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, review_models, review_round, target_task_id, agent_merge, escalate, created_at, updated_at)
-			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-		`, task.ID, task.ProjectID, task.DocumentID, task.Title, task.Spec, task.State, task.Model, task.Kind, reviewModelsJSON, task.ReviewRound, task.TargetTaskID, task.AgentMerge, task.Escalate, task.CreatedAt, task.UpdatedAt)
+			INSERT INTO task (id, project_id, document_id, title, spec, state, model, kind, review_models, review_round, target_task_id, agent_merge, escalate, track, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		`, task.ID, task.ProjectID, task.DocumentID, task.Title, task.Spec, task.State, task.Model, task.Kind, reviewModelsJSON, task.ReviewRound, task.TargetTaskID, task.AgentMerge, task.Escalate, task.Track, task.CreatedAt, task.UpdatedAt)
 		if err != nil {
 			return nil, fmt.Errorf("failed to insert task: %w", err)
 		}
@@ -1107,6 +1115,7 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLi
 		AgentMerge:     t.AgentMerge,
 		Held:           t.Held,
 		Escalate:       t.Escalate,
+		Track:          t.Track,
 		CreatedAt:      t.CreatedAt,
 		UpdatedAt:      t.UpdatedAt,
 		ArchivedAt:     t.ArchivedAt,
