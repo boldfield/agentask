@@ -211,8 +211,8 @@ func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if kind := r.URL.Query().Get("kind"); kind != "" {
-		if kind != "implement" && kind != "review" {
-			s.errorResponse(w, http.StatusBadRequest, "INVALID_KIND", "kind must be 'implement' or 'review'")
+		if kind != "implement" && kind != "review" && kind != "merge" {
+			s.errorResponse(w, http.StatusBadRequest, "INVALID_KIND", "kind must be 'implement', 'review', or 'merge'")
 			return
 		}
 		filter.Kind = &kind
@@ -382,8 +382,8 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if kind := r.URL.Query().Get("kind"); kind != "" {
-		if kind != "implement" && kind != "review" {
-			s.errorResponse(w, http.StatusBadRequest, "INVALID_KIND", "kind must be 'implement' or 'review'")
+		if kind != "implement" && kind != "review" && kind != "merge" {
+			s.errorResponse(w, http.StatusBadRequest, "INVALID_KIND", "kind must be 'implement', 'review', or 'merge'")
 			return
 		}
 		filter.Kind = &kind
