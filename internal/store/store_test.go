@@ -2268,6 +2268,176 @@ func TestSubmitImplementTaskAutoSpawnsReviewTasks_MultiReviewer(t *testing.T) {
 	}
 }
 
+// TestSubmitImplementTaskAutoSpawnsReviewTasks_TrackPropagation tests that spawned review tasks
+// inherit the parent task's track field.
+func TestSubmitImplementTaskAutoSpawnsReviewTasks_TrackPropagation(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project and document
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Test case 1: design-track parent
+	designTasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Design implementation task",
+			Spec:         "Implement design feature",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"sonnet"},
+			Track:        "design",
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create design-track task: %v", err)
+	}
+	designTaskID := designTasks[0].ID
+
+	// Promote and claim the design-track task
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", designTaskID)
+	if err != nil {
+		t.Fatalf("failed to promote design-track task: %v", err)
+	}
+
+	_, err = store.ClaimTask(ctx, designTaskID, "agent-1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim design-track task: %v", err)
+	}
+
+	// Submit the design-track task
+	_, err = store.SubmitTask(ctx, designTaskID, "agent-1", "Design complete", nil, []LinkInput{{Kind: "pr", Value: "#123"}}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit design-track task: %v", err)
+	}
+
+	// Test case 2: build-track parent (explicit)
+	buildTasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Build implementation task",
+			Spec:         "Implement build feature",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+			Track:        "build",
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create build-track task: %v", err)
+	}
+	buildTaskID := buildTasks[0].ID
+
+	// Promote and claim the build-track task
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", buildTaskID)
+	if err != nil {
+		t.Fatalf("failed to promote build-track task: %v", err)
+	}
+
+	_, err = store.ClaimTask(ctx, buildTaskID, "agent-2", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim build-track task: %v", err)
+	}
+
+	// Submit the build-track task
+	_, err = store.SubmitTask(ctx, buildTaskID, "agent-2", "Build complete", nil, []LinkInput{{Kind: "pr", Value: "#456"}}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit build-track task: %v", err)
+	}
+
+	// Test case 3: default track (no track specified, should default to 'build')
+	defaultTasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{
+			Title:        "Default implementation task",
+			Spec:         "Implement default feature",
+			DocumentID:   doc.ID,
+			Model:        "haiku",
+			ReviewModels: []string{"opus"},
+			// Track not specified - should default to 'build'
+		},
+	})
+	if err != nil {
+		t.Fatalf("failed to create default-track task: %v", err)
+	}
+	defaultTaskID := defaultTasks[0].ID
+
+	// Promote and claim the default-track task
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", defaultTaskID)
+	if err != nil {
+		t.Fatalf("failed to promote default-track task: %v", err)
+	}
+
+	_, err = store.ClaimTask(ctx, defaultTaskID, "agent-3", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim default-track task: %v", err)
+	}
+
+	// Submit the default-track task
+	_, err = store.SubmitTask(ctx, defaultTaskID, "agent-3", "Default complete", nil, []LinkInput{{Kind: "pr", Value: "#789"}}, 5, nil)
+	if err != nil {
+		t.Fatalf("failed to submit default-track task: %v", err)
+	}
+
+	// Verify all review tasks have the correct track
+	allTasks, err := store.ListTasks(ctx, proj.ID, TaskListFilter{})
+	if err != nil {
+		t.Fatalf("failed to list tasks: %v", err)
+	}
+
+	// Check design-track spawned reviews
+	var designReviewCount int
+	for _, task := range allTasks {
+		if task.Kind == "review" && task.TargetTaskID != nil && *task.TargetTaskID == designTaskID {
+			designReviewCount++
+			if task.Track != "design" {
+				t.Errorf("design-track parent spawned review with track='%s', expected 'design'", task.Track)
+			}
+		}
+	}
+	if designReviewCount != 1 {
+		t.Errorf("expected 1 design-track review, got %d", designReviewCount)
+	}
+
+	// Check build-track spawned reviews
+	var buildReviewCount int
+	for _, task := range allTasks {
+		if task.Kind == "review" && task.TargetTaskID != nil && *task.TargetTaskID == buildTaskID {
+			buildReviewCount++
+			if task.Track != "build" {
+				t.Errorf("build-track parent spawned review with track='%s', expected 'build'", task.Track)
+			}
+		}
+	}
+	if buildReviewCount != 1 {
+		t.Errorf("expected 1 build-track review, got %d", buildReviewCount)
+	}
+
+	// Check default-track spawned reviews (should be 'build')
+	var defaultReviewCount int
+	for _, task := range allTasks {
+		if task.Kind == "review" && task.TargetTaskID != nil && *task.TargetTaskID == defaultTaskID {
+			defaultReviewCount++
+			if task.Track != "build" {
+				t.Errorf("default-track parent spawned review with track='%s', expected 'build'", task.Track)
+			}
+		}
+	}
+	if defaultReviewCount != 1 {
+		t.Errorf("expected 1 default-track review (should be 'build'), got %d", defaultReviewCount)
+	}
+}
+
 // TestSubmitImplementTaskAutoSpawnsReviewTasks_DefaultSingleOpus tests that submitting
 // an implement task with no reviewers specified creates exactly one Opus review task.
 func TestSubmitImplementTaskAutoSpawnsReviewTasks_DefaultSingleOpus(t *testing.T) {
