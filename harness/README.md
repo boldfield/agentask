@@ -12,22 +12,20 @@ work, run it via `claude -p`, and submit — Haiku implements, Opus reviews, the
 
 ## One engine
 
-`agent.sh` is the whole loop, parameterized by `--model` + `--kind`. The wrappers are one-liners:
+`agent.sh` is the whole loop, parameterized by `--kind`. The wrappers are one-liners:
 
-| Wrapper | Role | Claims |
-|---|---|---|
-| `worker-haiku.sh [slot]`  | Haiku implementer | `model=haiku, kind=implement` |
-| `worker-opus.sh [slot]`   | Opus implementer (e.g. prompt-authoring) | `model=opus, kind=implement` |
-| `reviewer-opus.sh [slot]` | Opus reviewer | `model=opus, kind=review` |
-| `reviewer-sonnet.sh [slot]` | Sonnet reviewer | `model=sonnet, kind=review` |
+| Wrapper | Role |
+|---|---|
+| `worker.sh [slot]`  | Generic implementer — claims `kind=implement` across all models | 
+| `reviewer.sh [slot]` | Generic reviewer — claims `kind=review` across all models |
 
 Run a few in separate terminals, each with a **distinct slot**:
 
-    AGENTASK_PROJECT=<id> AGENTASK_REPO=~/projects/<repo> ./worker-haiku.sh haiku-1
+    AGENTASK_PROJECT=<id> AGENTASK_REPO=~/projects/<repo> ./worker.sh worker-1
 
 Each agent takes a persistent id (per slot), stands up its own detached git worktree, polls for
-claimable work of its `(model, kind)`, dispatches one `claude -p` task, then repeats. Ctrl-C is a
-graceful stop (finishes the in-flight task; Ctrl-C again to force-quit).
+claimable work of its `kind`, and the task specifies the model. One `claude -p` dispatch per task,
+then repeats. Ctrl-C is a graceful stop (finishes the in-flight task; Ctrl-C again to force-quit).
 
 ## Code vs. state
 
