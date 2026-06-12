@@ -1070,6 +1070,108 @@ func TestExecuteTasksMissingToken(t *testing.T) {
 	}
 }
 
+func TestExecutePendingTable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-1", State: "review", Kind: "implement", Title: "Task 1"},
+				{ID: "task-2", State: "approved", Kind: "review", Title: "Task 2"},
+				{ID: "task-3", State: "ready", Kind: "implement", Title: "Task 3"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executePending(context.Background(), server.URL, "test-token", false, []string{"--project", "proj-1"}, buf)
+	if err != nil {
+		t.Fatalf("executePending failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "task-1") {
+		t.Errorf("expected output to contain 'task-1', got: %s", output)
+	}
+	if !strings.Contains(output, "task-2") {
+		t.Errorf("expected output to contain 'task-2', got: %s", output)
+	}
+	if strings.Contains(output, "task-3") {
+		t.Errorf("expected output to NOT contain 'task-3' (not review/approved), got: %s", output)
+	}
+	if !strings.Contains(output, "ID") || !strings.Contains(output, "STATE") {
+		t.Errorf("expected table headers in output, got: %s", output)
+	}
+}
+
+func TestExecutePendingJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{
+				{ID: "task-1", State: "review", Kind: "implement", Title: "Task 1"},
+				{ID: "task-2", State: "approved", Kind: "review", Title: "Task 2"},
+				{ID: "task-3", State: "ready", Kind: "implement", Title: "Task 3"},
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executePending(context.Background(), server.URL, "test-token", true, []string{"--project", "proj-1"}, buf)
+	if err != nil {
+		t.Fatalf("executePending with JSON failed: %v", err)
+	}
+
+	output := buf.String()
+	var result []tuiclient.Task
+	if err := json.Unmarshal([]byte(output), &result); err != nil {
+		t.Fatalf("output is not valid JSON: %v", err)
+	}
+
+	if len(result) != 2 {
+		t.Errorf("expected 2 tasks in JSON, got %d", len(result))
+	}
+	if result[0].State != "review" && result[0].State != "approved" {
+		t.Errorf("expected task state to be review or approved, got %q", result[0].State)
+	}
+	if result[1].State != "review" && result[1].State != "approved" {
+		t.Errorf("expected task state to be review or approved, got %q", result[1].State)
+	}
+}
+
+func TestExecutePendingEmptyQueue(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/projects/proj-1/tasks" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode([]tuiclient.Task{})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executePending(context.Background(), server.URL, "test-token", false, []string{"--project", "proj-1"}, buf)
+	if err != nil {
+		t.Fatalf("executePending with empty queue failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "ID") || !strings.Contains(output, "STATE") || !strings.Contains(output, "KIND") || !strings.Contains(output, "TITLE") {
+		t.Errorf("expected table headers in output for empty queue, got: %s", output)
+	}
+}
+
+func TestExecutePendingMissingProject(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executePending(context.Background(), "http://localhost:8080", "test-token", false, []string{}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing --project, got nil")
+	}
+	if !strings.Contains(err.Error(), "--project") {
+		t.Errorf("expected error to mention --project, got: %v", err)
+	}
+}
+
 func TestExecuteHeartbeatSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == "POST" && r.URL.Path == "/tasks/task123/heartbeat" {
