@@ -2,18 +2,10 @@ package localcommit
 
 import (
 	"fmt"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 )
-
-func WorktreeHome() string {
-	if home := os.Getenv("AGENTASK_WORKTREE_HOME"); home != "" {
-		return home
-	}
-	return os.Getenv("AGENTASK_HOME")
-}
 
 func Freeze(repoDir, slug, iid string) error {
 	// Step 1: Check if wi/<slug> is checked out in any worktree
@@ -50,7 +42,10 @@ func Freeze(repoDir, slug, iid string) error {
 	}
 
 	// Step 3: Remove the worktree (tolerate already-removed)
-	home := WorktreeHome()
+	home, err := WorktreeHome()
+	if err != nil {
+		return err
+	}
 	worktreePath := filepath.Join(home, iid)
 	cmd = exec.Command("git", "-C", repoDir, "worktree", "remove", worktreePath)
 	cmd.Run() // Ignore error - it might already be removed

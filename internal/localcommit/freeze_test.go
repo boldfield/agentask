@@ -35,6 +35,13 @@ func branchExists(t *testing.T, dir, branchName string) bool {
 func TestFreeze_FirstFreeze(t *testing.T) {
 	// Setup: create main repo with origin/main and wip/<iid> branch
 	repoDir := t.TempDir()
+	// Use current working directory for worktree home (validation rejects /tmp and /var/folders)
+	cwd, _ := os.Getwd()
+	worktreeHome := filepath.Join(cwd, "test-worktree-home")
+	os.MkdirAll(worktreeHome, 0755)
+	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
+	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+
 	runCmd(t, repoDir, "git", "init")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
 	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
@@ -87,6 +94,13 @@ func TestFreeze_FirstFreeze(t *testing.T) {
 func TestFreeze_FFAdvance(t *testing.T) {
 	// Setup: wi/<slug> exists as ancestor of wip/<iid>
 	repoDir := t.TempDir()
+	// Use current working directory for worktree home (validation rejects /tmp and /var/folders)
+	cwd, _ := os.Getwd()
+	worktreeHome := filepath.Join(cwd, "test-worktree-home-ffadvance")
+	os.MkdirAll(worktreeHome, 0755)
+	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
+	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+
 	runCmd(t, repoDir, "git", "init")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
 	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
@@ -137,6 +151,13 @@ func TestFreeze_FFAdvance(t *testing.T) {
 func TestFreeze_Footgun(t *testing.T) {
 	// Setup: wi/<slug> is checked out in a second worktree
 	mainDir := t.TempDir()
+	// Use current working directory for worktree home (validation rejects /tmp and /var/folders)
+	cwd, _ := os.Getwd()
+	worktreeHome := filepath.Join(cwd, "test-worktree-home-footgun")
+	os.MkdirAll(worktreeHome, 0755)
+	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
+	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+
 	runCmd(t, mainDir, "git", "init")
 	runCmd(t, mainDir, "git", "config", "user.email", "test@example.com")
 	runCmd(t, mainDir, "git", "config", "user.name", "Test User")
@@ -157,7 +178,7 @@ func TestFreeze_Footgun(t *testing.T) {
 	runCmd(t, mainDir, "git", "branch", "-f", "wip/task-123", wipCommit)
 
 	// Create a second worktree with wi/my-feature checked out
-	worktreeDir := filepath.Join(t.TempDir(), "worktree")
+	worktreeDir := filepath.Join(worktreeHome, "worktree")
 	runCmd(t, mainDir, "git", "worktree", "add", worktreeDir, "wi/my-feature")
 
 	// Call Freeze - should return footgun error
@@ -195,6 +216,13 @@ func TestFreeze_Footgun(t *testing.T) {
 func TestFreeze_AlreadyRemovedWorktree(t *testing.T) {
 	// Setup: worktree already removed but wip/<iid> exists
 	repoDir := t.TempDir()
+	// Use current working directory for worktree home (validation rejects /tmp and /var/folders)
+	cwd, _ := os.Getwd()
+	worktreeHome := filepath.Join(cwd, "test-worktree-home-removed")
+	os.MkdirAll(worktreeHome, 0755)
+	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
+	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+
 	runCmd(t, repoDir, "git", "init")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
 	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
@@ -210,11 +238,7 @@ func TestFreeze_AlreadyRemovedWorktree(t *testing.T) {
 	wipCommit := runCmd(t, repoDir, "git", "rev-parse", "HEAD")
 	runCmd(t, repoDir, "git", "branch", "-f", "wip/task-123", wipCommit)
 
-	// Set up a fake worktree home
-	worktreeHome := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
-
-	// Create a worktree then remove it (so the directory doesn't exist)
+	// Create a worktree directory (simulate already removed worktree)
 	worktreeDir := filepath.Join(worktreeHome, "task-123")
 	os.MkdirAll(worktreeDir, 0755)
 	// Don't register it with git, just have the directory

@@ -29,8 +29,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory
-		worktreeHome := t.TempDir()
+		// Create worktree home directory (use non-temporary path to satisfy validation)
+		cwd, _ := os.Getwd()
+		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+t.Name())
+		os.MkdirAll(worktreeHome, 0755)
+		t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-123"
@@ -96,8 +99,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory
-		worktreeHome := t.TempDir()
+		// Create worktree home directory (use non-temporary path to satisfy validation)
+		cwd, _ := os.Getwd()
+		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+t.Name())
+		os.MkdirAll(worktreeHome, 0755)
+		t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-456"
@@ -147,8 +153,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory
-		worktreeHome := t.TempDir()
+		// Create worktree home directory (use non-temporary path to satisfy validation)
+		cwd, _ := os.Getwd()
+		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+t.Name())
+		os.MkdirAll(worktreeHome, 0755)
+		t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-789"
