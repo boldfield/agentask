@@ -169,23 +169,27 @@ A task in `approved` passed review and awaits merge:
 
 - **`agent_merge` is `false` (default):** the **human** merges the PR and transitions
   `approved → done`.
-- **`agent_merge` is `true`:** the reviewer auto-merges (next section).
+- **`agent_merge` is `true`:** the server auto-completes the merge (next section). Reviewers never
+  merge.
 
 `review → approved` and `review → ready` are server-driven by review verdicts — not manual
 transitions. `approved → done` / `approved → ready` are the merge gate.
 
-## Reviewer auto-merge (`agent_merge`)
+## Agent merge (`agent_merge`)
 
 `agent_merge` is an **immutable** per-task boolean (set at creation, default `false`). When it's
-`true`, after a passing review the reviewer (running with local `gh`) merges the parent's PR:
+`true`, the **server** completes the merge once all reviewers approve — reviewers never merge:
 
-```bash
-gh pr merge "<parent-pr-url>" --auto    # CI-gated: merges only once required checks pass
-```
+- **Parent has a `pr` link:** in the same aggregation that moves the parent to `approved`, the server
+  spawns a `merge`-kind task (state `ready`). A dedicated **merger** claims it and squash-merges the
+  PR via `agentask merge <merge-task-id>` (REST `PUT .../merge`, per-owner forge token), then
+  transitions both the parent and the merge task to `done`. `agentask merge` is idempotent — a
+  retried merge job on an already-merged PR converges instead of erroring.
+- **Parent is a verified no-op (a `no_op` link, no `pr` link):** the server drives the parent
+  straight to `done` in the aggregation — no merge task, nothing to merge.
 
-If the merge succeeds, transition the parent `POST /tasks/<parent-id>/transition {"to":"done"}`. If
-it can't merge (red checks, branch protection, conflict), the task stays in `approved` for the
-human. Only do this when the parent has actually reached `approved` (all reviewers approved).
+When `agent_merge` is `false`, the parent waits in `approved` for the **human** merge gate. In no
+case does a reviewer run `gh pr merge` or transition the parent.
 
 ## Task creation
 
