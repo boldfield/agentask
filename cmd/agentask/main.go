@@ -17,6 +17,7 @@ import (
 
 	"github.com/boldfield/agentask/internal/api"
 	"github.com/boldfield/agentask/internal/forge"
+	"github.com/boldfield/agentask/internal/localcommit"
 	"github.com/boldfield/agentask/internal/store"
 	"github.com/boldfield/agentask/internal/tuiclient"
 )
@@ -69,7 +70,7 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
-	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition", "project", "merge", "pending", "diff", "approve", "reject":
+	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition", "project", "merge", "pending", "diff", "approve", "reject", "wt-ensure":
 		return runClient(args[1], args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n\n", args[1])
@@ -104,6 +105,7 @@ Commands:
   promote                Promote a task from backlog to ready
   transition             Transition a task to a new state
   merge                  Merge a pull request and transition tasks
+  wt-ensure              Ensure worktree for task (local_commit mode)
   help, -h, --help       Show this help message
 `, version)
 }
@@ -265,6 +267,8 @@ func runClient(verb string, args []string) error {
 		return executeApprove(ctx, baseURL, token, args)
 	case "reject":
 		return executeReject(ctx, baseURL, token, args)
+	case "wt-ensure":
+		return executeWtEnsure(ctx, baseURL, token, args)
 	default:
 		return fmt.Errorf("unknown command %q", verb)
 	}
@@ -1010,6 +1014,71 @@ func parsePRURL(prURL string) (owner, repo string, number int, err error) {
 	}
 
 	return owner, repo, number, nil
+}
+
+func executeWtEnsure(ctx context.Context, baseURL, token string, args []string) error {
+	if baseURL == "" {
+		return fmt.Errorf("AGENTASK_URL environment variable not set")
+	}
+	if token == "" {
+		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+	}
+
+	// Check if in local_commit mode
+	if !localcommit.IsLocalCommit() {
+		return fmt.Errorf("wt-ensure requires local_commit mode (set AGENTASK_DELIVERY_MODE=local_commit)")
+	}
+
+	// Parse flags
+	fs := flag.NewFlagSet("wt-ensure", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	repoFlag := fs.String("repo", "", "repository directory")
+	positionals, err := parseFlagsWithPositionals(fs, args)
+	if err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
+	}
+
+	// Get task ID from positional argument
+	if len(positionals) < 1 {
+		return fmt.Errorf("task ID is required")
+	}
+	taskID := positionals[0]
+
+	// Resolve repoDir from --repo flag or AGENTASK_REPO
+	repoDir := *repoFlag
+	if repoDir == "" {
+		repoDir = os.Getenv("AGENTASK_REPO")
+	}
+	if repoDir == "" {
+		return fmt.Errorf("--repo flag or AGENTASK_REPO environment variable required")
+	}
+
+	// Get task details to retrieve the title
+	client := tuiclient.NewHTTPClient(baseURL, token)
+	task, err := client.GetTask(ctx, taskID)
+	if err != nil {
+		return fmt.Errorf("failed to get task: %w", err)
+	}
+
+	// Compute slug from task title
+	slug := localcommit.Slugify(task.Title)
+
+	// Resolve tip (MR branch or origin/main)
+	tip, err := localcommit.ResolveTip(repoDir, slug)
+	if err != nil {
+		return fmt.Errorf("failed to resolve tip: %w", err)
+	}
+
+	// Add worktree
+	wtPath, err := localcommit.AddWorktree(repoDir, taskID, tip)
+	if err != nil {
+		return fmt.Errorf("failed to add worktree: %w", err)
+	}
+
+	// Print worktree path to stdout
+	fmt.Println(wtPath)
+
+	return nil
 }
 
 func resolveAgentIdentity(agentFlag, modelFlag string) (agentID, model string, err error) {
