@@ -178,10 +178,15 @@ case "${AGENTASK_PROJECT:-}" in ""|all|ALL) MULTI=1 ;; esac
 
 # --- graceful stop ---
 STOP=0
+CLAUDE_PID=""   # pid (== pgid, via `set -m`) of the in-flight `claude -p`, if any
 request_stop() {
   [ "$STOP" -eq 1 ] && return
   STOP=1
-  echo "[$AGENT_ID] stop requested — finishing the current $ROLE task, then exiting. Ctrl-C again to force-quit."
+  echo "[$AGENT_ID] stop requested — stopping the in-flight $ROLE task and exiting. Ctrl-C again to force-quit."
+  # The in-flight claude runs in its OWN process group (`set -m`, to shield it from the terminal's
+  # Ctrl-C), so a group-kill aimed at the fleet's group never reaches it. TERM its group here so it
+  # winds down WITH us — otherwise a force-kill of this agent would orphan the claude.
+  [ -n "$CLAUDE_PID" ] && kill -TERM "-$CLAUDE_PID" 2>/dev/null || true
   trap - INT TERM
 }
 trap request_stop INT TERM
@@ -254,9 +259,18 @@ CLAUDE_FAILS=0
 dispatch() {
   local prompt; prompt="$(cat "$PROMPT_FILE")"
   # >>> remove --dangerously-skip-permissions if you want interactive permission prompts <<<
-  claude -p --dangerously-skip-permissions "$prompt" --model "$AGENT_MODEL" &
-  local pid=$! rc=0
+  # AGENT_CLAUDE_FLAGS appends extra flags to the nested claude (default empty, so the normal fleet
+  # is unchanged). sbx.sh sets it to --allow-dangerously-skip-permissions, which a NESTED `claude -p`
+  # requires inside an sbx sandbox; it is unquoted on purpose so multiple flags word-split.
+  # shellcheck disable=SC2086
+  claude -p --dangerously-skip-permissions ${AGENT_CLAUDE_FLAGS:-} "$prompt" --model "$AGENT_MODEL" &
+  CLAUDE_PID=$!   # tracked so request_stop()/cleanup() can tear down this claude's process group
+  local pid=$CLAUDE_PID rc=0
   while kill -0 "$pid" 2>/dev/null; do wait "$pid"; rc=$?; done
+  CLAUDE_PID=""
+  # If we're shutting down, the non-zero rc is our own TERM of claude — don't treat it as a credit
+  # failure and don't back off; just unwind so the loop can exit promptly.
+  [ "$STOP" -eq 1 ] && return "$rc"
   if [ "$rc" -ne 0 ]; then
     CLAUDE_FAILS=$((CLAUDE_FAILS + 1))
     local backoff=$((CLAUDE_FAILS * 30)); [ "$backoff" -gt 300 ] && backoff=300
@@ -278,6 +292,10 @@ has_claimable_work() {
 
 # Cleanup: drop ALL of this slot's worktrees (single wt-$SLOT and multi wt-$SLOT-*), prune clones.
 cleanup() {
+  # Backstop: if a claude dispatch is still tracked when we exit (force-quit, error), KILL its
+  # process group so it can't outlive us as an orphan. (Cannot run if WE are SIGKILLed — that's why
+  # request_stop TERMs it on the graceful path.)
+  [ -n "$CLAUDE_PID" ] && kill -KILL "-$CLAUDE_PID" 2>/dev/null || true
   echo "[$AGENT_ID] cleaning up worktrees for slot $SLOT"
   for wt in "$AGENTASK_HOME/wt-$SLOT" "$AGENTASK_HOME"/wt-"$SLOT"-*; do
     [ -e "$wt" ] && rm -rf "$wt"
