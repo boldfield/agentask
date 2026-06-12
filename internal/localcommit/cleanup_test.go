@@ -4,15 +4,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
-func sanitizeTestName(name string) string {
-	return strings.ReplaceAll(name, "/", "-")
-}
-
 func TestCleanupAbandon(t *testing.T) {
+	// Skip path validation during tests since we use t.TempDir()
+	t.Setenv("AGENTASK_SKIP_PATH_VALIDATION", "1")
+
 	t.Run("removes worktree and wip branch", func(t *testing.T) {
 		// Create a temporary git repo
 		tmpDir := t.TempDir()
@@ -34,11 +32,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory (use non-temporary path to satisfy validation)
-		cwd, _ := os.Getwd()
-		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+sanitizeTestName(t.Name()))
-		os.MkdirAll(worktreeHome, 0755)
-		t.Cleanup(func() { os.RemoveAll(worktreeHome) })
+		// Create worktree home directory (as subdirectory to avoid /tmp or /var/folders)
+		worktreeHome := filepath.Join(tmpDir, "worktrees")
+		if err := os.Mkdir(worktreeHome, 0755); err != nil {
+			t.Fatalf("failed to create worktree home: %v", err)
+		}
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-123"
@@ -104,11 +102,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory (use non-temporary path to satisfy validation)
-		cwd, _ := os.Getwd()
-		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+sanitizeTestName(t.Name()))
-		os.MkdirAll(worktreeHome, 0755)
-		t.Cleanup(func() { os.RemoveAll(worktreeHome) })
+		// Create worktree home directory (as subdirectory to avoid /tmp or /var/folders)
+		worktreeHome := filepath.Join(tmpDir, "worktrees")
+		if err := os.Mkdir(worktreeHome, 0755); err != nil {
+			t.Fatalf("failed to create worktree home: %v", err)
+		}
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-456"
@@ -158,11 +156,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory (use non-temporary path to satisfy validation)
-		cwd, _ := os.Getwd()
-		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+sanitizeTestName(t.Name()))
-		os.MkdirAll(worktreeHome, 0755)
-		t.Cleanup(func() { os.RemoveAll(worktreeHome) })
+		// Create worktree home directory (as subdirectory to avoid /tmp or /var/folders)
+		worktreeHome := filepath.Join(tmpDir, "worktrees")
+		if err := os.Mkdir(worktreeHome, 0755); err != nil {
+			t.Fatalf("failed to create worktree home: %v", err)
+		}
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-789"

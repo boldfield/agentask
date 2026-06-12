@@ -47,6 +47,7 @@ func TestFreeze_FirstFreeze(t *testing.T) {
 	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
 
 	// Create initial commit on main
+	runCmd(t, repoDir, "git", "checkout", "-b", "main")
 	runCmd(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
 	mainCommit := runCmd(t, repoDir, "git", "rev-parse", "HEAD")
 
@@ -106,6 +107,7 @@ func TestFreeze_FFAdvance(t *testing.T) {
 	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
 
 	// Create initial commit on main
+	runCmd(t, repoDir, "git", "checkout", "-b", "main")
 	runCmd(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
 	initialCommit := runCmd(t, repoDir, "git", "rev-parse", "HEAD")
 
@@ -163,6 +165,7 @@ func TestFreeze_Footgun(t *testing.T) {
 	runCmd(t, mainDir, "git", "config", "user.name", "Test User")
 
 	// Create initial commit
+	runCmd(t, mainDir, "git", "checkout", "-b", "main")
 	runCmd(t, mainDir, "git", "commit", "--allow-empty", "-m", "initial")
 
 	// Create fake origin/main
@@ -228,6 +231,7 @@ func TestFreeze_AlreadyRemovedWorktree(t *testing.T) {
 	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
 
 	// Create initial commit
+	runCmd(t, repoDir, "git", "checkout", "-b", "main")
 	runCmd(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
 
 	// Create fake origin/main
@@ -278,6 +282,7 @@ func TestFreeze_PrefixCollision(t *testing.T) {
 	runCmd(t, mainDir, "git", "config", "user.name", "Test User")
 
 	// Create initial commit
+	runCmd(t, mainDir, "git", "checkout", "-b", "main")
 	runCmd(t, mainDir, "git", "commit", "--allow-empty", "-m", "initial")
 	initialCommit := runCmd(t, mainDir, "git", "rev-parse", "HEAD")
 

@@ -22,8 +22,8 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
    `review`-kind tasks; `target_task_id` is the implement task under review.)
 2. **Read the brief.** `agentask show <id>` — its `spec` contains the **Implementation PR** URL and
    the **Parent task** id (also in `target_task_id`). Then `agentask show <target_task_id>` (the
-   **parent**): its `spec` is the real acceptance criteria you review against, its
-   `agent_merge` flag + `pr` link matter for step 5, and its `links` may carry a `no_op` marker.
+   **parent**): its `spec` is the real acceptance criteria you review against, its `pr` link is the
+   PR you review, and its `links` may carry a `no_op` marker.
    **No-PR handling — distinguish three cases:**
    - **Has PR link** — the parent has a recorded `pr` link. Proceed normally to step 3.
    - **NO-OP submission** — the parent carries a `{"kind":"no_op",...}` link and NO `pr` link (the
@@ -33,8 +33,8 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
      git checkout --detach origin/main`, then check whether the parent's acceptance criteria
      genuinely hold — read the relevant code/tests, run `make check`/`make test` if useful). If the
      claim HOLDS → submit an `approve` verdict (step 4); if work is actually NEEDED → submit a
-     `reject` verdict naming the specific gap (the worker must then actually implement it). There
-     is no PR to merge in this case — see step 5.
+     `reject` verdict naming the specific gap (the worker must then actually implement it). On
+     approve, the server drives a verified no-op straight to `done` — you do nothing further.
    - **Missing PR link, try branch resolution** — no `no_op` marker AND no recorded `pr` link.
      Attempt to resolve the PR from the deterministic branch. Extract the parent task ID's first
      8 characters, parse the parent task's `spec` or repo info to get `<owner>/<repo>`, then run:
@@ -62,6 +62,12 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
      conflict with main — sync `origin/main` and resolve before resubmitting").
    - Clean merge → run `make check` and `make test` **on the merged result**, and read the full diff
      (`gh pr diff <pr-url>`). Any failure → reject.
+   - **CI is the source of truth — check it, don't trust your local run.** Run
+     `gh pr checks "<pr-url>"`. If any check has **FAILED**, reject (note which check + the failure):
+     your local environment differs from CI (CI's git defaults `init.defaultBranch` to `master`, has
+     no `gh` auth, etc.), so a green local run over a red CI means the test is non-portable — a defect
+     to reject, not approve. If checks are still **pending**, wait and re-check before deciding; never
+     approve over a known-red CI.
    - **Interactive / terminal-UI changes (e.g. `cmd/agentask-tui`, any Bubble Tea `Update`/`View`
      code): reading the diff + green `make check`/`make test` is NOT sufficient** — a TUI routinely
      passes both while rendering a blank screen, because logic and *display* are separate paths. You
@@ -84,19 +90,17 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
    comment so a human draining the merge queue can see it:** `gh pr comment <pr-url> --body
    "✅ opus-reviewer: APPROVED — <summary>"` (or `"❌ opus-reviewer: CHANGES REQUESTED — <numbered
    findings>"`).
-5. **Honor `agent_merge` (only on approve).** Re-GET the parent task. If the parent is now
-   `approved` AND its `agent_merge` is `true`:
-   - **Has a `pr` link (recorded or branch-resolved):** merge its PR via REST API: derive
-     `<owner>/<repo>/<number>` from the PR URL. If the parent has no recorded `pr` link but is not
-     a no-op, re-resolve it from the branch (same as step 2): extract the parent task ID's first
-     8 characters and run `gh api repos/<owner>/<repo>/pulls?head=<owner>:mr/<parent-id8>&state=open`;
-     extract the PR number from the result. Then run `gh api --method PUT repos/<owner>/<repo>/pulls/<number>/merge -f merge_method=squash` (the reviewer already has the owner token via `apply_owner_token` → GH_TOKEN). This works where `gh pr merge --auto` fails: `--auto` requires branch protection these private free-plan repos cannot have, and `gh pr merge` mis-resolves credentials with multiple gh accounts. If the merge succeeds, transition the parent: `agentask transition <parent-id> --to done`.
-   - **NO-OP (verified no-op, no `pr` link):** there is NOTHING to merge — do NOT run `gh pr merge`.
-     Drive it straight to done via the same transition: `agentask transition <parent-id> --to done
-     --note "no-op verified against main; no merge needed"`.
+5. **Do NOT merge — ever.** After submitting your verdict you are DONE with this task. Never merge a
+   PR (no `gh pr merge`, no `gh api .../merge`), and never transition the parent task. The server
+   handles the rest automatically once all of this round's reviewers approve:
+   - parent has `agent_merge=true` + a `pr` link → the server spawns a `merge`-kind task that a
+     dedicated **merger** claims and squash-merges via `agentask merge`;
+   - parent has `agent_merge=true` + a verified no-op (no `pr` link) → the server drives it straight
+     to `done` itself;
+   - parent has `agent_merge=false` → it waits in `approved` for the **human** merge gate.
 
-   If the parent is still in `review` (other reviewers pending) OR `agent_merge` is `false`, do
-   NOTHING further — leave it for the remaining reviewers or the human merge gate.
+   In every case, merging and the final transition are NOT the reviewer's job — your only output is
+   the verdict.
 6. STOP.
 
 ## Rules
@@ -104,8 +108,9 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
   whose merged result fails `make check`/`make test`, is an automatic reject.
 - Your verdict goes on the **review task you claimed** (via `submit` with `verdict`), not on the
   parent.
-- Never merge a non-`agent_merge` task, and never transition a parent to `done` unless you merged it
-  yourself under `agent_merge`. Otherwise the human gates the merge from `approved`.
+- **NEVER merge a PR and NEVER transition a parent task** — merging is the merger's job (the server
+  auto-spawns a `merge`-kind task on approve + `agent_merge` + `pr`), the server's (no-op auto-done),
+  or the human's (when `agent_merge=false`). Your only output is the verdict on the review task.
 - **For UI/TUI changes, green tests are NOT proof it works** — verify every new mode/key is in both
   the update AND render paths, and that a test asserts the visible `View()` output. An invisible
   flow is a broken flow (see step 3).

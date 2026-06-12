@@ -2023,6 +2023,89 @@ func TestExecuteMergeFinalizesAfterPartialRun(t *testing.T) {
 	}
 }
 
+func TestExecuteDiffWithPR(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-1",
+				State: "in_progress",
+				Links: []tuiclient.TaskLink{
+					{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/123"},
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeDiff(context.Background(), server.URL, "test-token", []string{"task-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeDiff failed: %v", err)
+	}
+
+	output := buf.String()
+	if !strings.Contains(output, "https://github.com/boldfield/agentask/pull/123") {
+		t.Errorf("expected PR URL in output, got: %s", output)
+	}
+}
+
+func TestExecuteDiffNoPR(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-1",
+				State: "in_progress",
+				Links: []tuiclient.TaskLink{},
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	err := executeDiff(context.Background(), server.URL, "test-token", []string{"task-1"}, buf)
+	if err == nil {
+		t.Fatal("expected error for task with no PR link, got nil")
+	}
+	if !strings.Contains(err.Error(), "no pull request link") {
+		t.Errorf("expected error to mention 'no pull request link', got: %v", err)
+	}
+}
+
+func TestExecuteDiffMissingID(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeDiff(context.Background(), "http://localhost:8080", "test-token", []string{}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing task ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "task id required") {
+		t.Errorf("expected error to mention 'task id required', got: %v", err)
+	}
+}
+
+func TestExecuteDiffMissingURL(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeDiff(context.Background(), "", "test-token", []string{"task-1"}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_URL") {
+		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	}
+}
+
+func TestExecuteDiffMissingToken(t *testing.T) {
+	buf := &bytes.Buffer{}
+	err := executeDiff(context.Background(), "http://localhost:8080", "", []string{"task-1"}, buf)
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
+		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
 // ptrString returns a pointer to a string
 func ptrString(s string) *string {
 	return &s
