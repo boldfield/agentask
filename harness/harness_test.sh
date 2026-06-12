@@ -73,12 +73,23 @@ else
   test_fail "agent.sh doesn't set up worktrees in pull_request mode"
 fi
 
-# Test 7: Check that get_prompt_file selects local_commit prompts
-echo "Test 7: get_prompt_file handles local_commit prompts"
-if grep -q 'worker-prompt-localcommit' "$SCRIPT_TO_TEST"; then
-  test_pass "agent.sh uses worker-prompt-localcommit for local_commit"
+# Test 7: prompts are keyed on delivery_mode/track/kind as path dimensions, and every
+# (delivery_mode, kind) combo the build fleet runs has a prompt file present.
+echo "Test 7: prompts key on delivery_mode/track/kind"
+if grep -q 'prompts/\$DELIVERY_MODE/\$track/\$kind.md' "$SCRIPT_TO_TEST"; then
+  test_pass "agent.sh resolves prompts/<delivery_mode>/<track>/<kind>.md"
 else
-  test_fail "agent.sh doesn't select local_commit prompt"
+  test_fail "agent.sh does not key the prompt path on delivery_mode"
+fi
+_missing=0
+for _f in prompts/pull_request/build/implement.md prompts/pull_request/build/review.md \
+          prompts/local_commit/build/implement.md prompts/local_commit/build/review.md; do
+  [ -f "$HARNESS_DIR/$_f" ] || { echo "  missing: $_f"; _missing=1; }
+done
+if [ "$_missing" -eq 0 ]; then
+  test_pass "all build prompts present (pull_request + local_commit)"
+else
+  test_fail "a delivery-mode build prompt is missing"
 fi
 
 # Test 8: Check fleet.sh exists and is executable

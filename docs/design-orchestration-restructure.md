@@ -164,7 +164,7 @@ this design defines it; **EXISTING** = the current declaration, which the task a
 - `internal/store`/`internal/api`: `next --kind merge` claimable (§1.2).
 - `cmd/agentask`: `merge` verb (§1.2).
 - `harness/agent.sh`: `--kind merge` non-LLM branch (§1.2); `harness/merger.sh` slot.
-- `harness/prompts/design/implement.md`: extensible (§1.4); `review.md`: tolerant + drop merge (§1.2,§1.4).
+- `harness/prompts/pull_request/design/implement.md`: extensible (§1.4); `review.md`: tolerant + drop merge (§1.2,§1.4).
 - `testdata/design-canonical.md`: the fixture (§1.1).
 
 **foreman**

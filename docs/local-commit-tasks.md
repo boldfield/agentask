@@ -153,13 +153,13 @@
 # Group H — harness
 
 ### H1 — local_commit worker prompt · author **opus**
-- **Files:** `harness/worker-prompt-localcommit.md` (or a mode branch in `worker-prompt.md`)
+- **Files:** `harness/prompts/local_commit/build/implement.md`
 - **Contract:** no clone, no push, no `gh`. Flow: `agentask next --kind implement --claim` → `agentask wt-ensure <id>` (cd into printed worktree) → **edit files only** (the CLI makes every commit) → `agentask submit` (CLI commits + links SHA) → on reject, re-claim, amend in the same worktree, re-submit. Emphasize: never run git commit/branch/push yourself.
 - **Tests:** n/a (prompt) — reviewers check it against the verb contracts above.
 - **Deps:** V2, V1 (verbs must exist). **Models:** opus / [opus, sonnet].
 
 ### H2 — local_commit reviewer prompt · author **opus**
-- **Files:** `harness/reviewer-prompt-localcommit.md`
+- **Files:** `harness/prompts/local_commit/build/review.md`
 - **Contract:** no clone. `agentask next --kind review --claim` → `agentask diff <target-id>` to see the commit (no PR) → submit a verdict via `agentask submit --verdict`. N reviewers screen; the human freezes on approve.
 - **Deps:** V3. **Models:** opus / [opus, sonnet].
 
