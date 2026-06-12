@@ -238,7 +238,7 @@ like *"let's break this down for the board"* or *"decompose this feature into Ag
 
 ### `review` — the human merge gate
 
-[`.claude/skills/review/`](./.claude/skills/review/SKILL.md) is a conversational wrapper for the
+[`skills/review/`](./skills/review/SKILL.md) is a conversational wrapper for the
 **human review gate**: show the queue of tasks awaiting a decision (`agentask pending`), show one
 task's diff (`agentask diff`), and — **only on the human's explicit instruction** — record the
 verdict (`agentask approve` / `agentask reject --note …`). It never forms its own opinion; the human
@@ -248,37 +248,51 @@ diff for <task>"*, *"approve <task>"*, or *"reject <task> because …"*.
 
 ### Installing
 
-A Claude Code skill is just a directory containing a `SKILL.md`; Claude Code auto-discovers them
-under `~/.claude/skills/` (personal, available everywhere) and `<repo>/.claude/skills/` (project,
-available only in that repo). Once discovered, a skill triggers on requests matching its
-`description` — no separate enable step. Both skills need `AGENTASK_URL` and `AGENTASK_TOKEN` in your
-environment (and, for `review` in `local_commit` mode, `AGENTASK_REPO`).
+Both skills live under [`skills/`](./skills/) and install **three ways — pick one**. Whichever you
+use, each skill needs `AGENTASK_URL` and `AGENTASK_TOKEN` in your environment (and, for `review` in
+`local_commit` mode, `AGENTASK_REPO`), and triggers automatically on requests matching its
+`description` — there is no separate enable step.
 
-- **`review`** is already a **project skill** (it lives in this repo's `.claude/skills/`), so it's
-  available automatically whenever you run `claude` from the Agentask checkout — nothing to install.
+**1. Marketplace (recommended) — installs both, globally.** This repo is itself a Claude Code plugin
+marketplace ([`.claude-plugin/marketplace.json`](./.claude-plugin/marketplace.json)); the `agentask`
+plugin bundles both skills:
 
-- **`agentask-breakdown`** ships under [`skills/`](./skills/) so you can install it wherever you
-  scaffold boards (often a *different* repo). Copy or symlink it into a skills path:
+```text
+/plugin marketplace add boldfield/agentask
+/plugin install agentask@agentask
+/reload-plugins
+```
 
-  ```bash
-  # personal — available in every project:
-  cp -r skills/agentask-breakdown ~/.claude/skills/agentask-breakdown
-  # …or symlink to track upstream changes:
-  ln -s "$PWD/skills/agentask-breakdown" ~/.claude/skills/agentask-breakdown
+They're then available in every session, namespaced by the plugin: **`/agentask:agentask-breakdown`**
+and **`/agentask:review`**. (A marketplace can also be added from a local path or any git URL — e.g.
+`/plugin marketplace add ./` from a checkout — and managed from the interactive `/plugin` menu.)
 
-  # …or scope it to one project instead:
-  cp -r skills/agentask-breakdown /path/to/project/.claude/skills/agentask-breakdown
-  ```
+**2. Symlink or copy into a skills directory.** A Claude Code skill is just a directory containing a
+`SKILL.md`, auto-discovered under `~/.claude/skills/` (personal, every project) or
+`<repo>/.claude/skills/` (one project). This gives them **bare** names (`/agentask-breakdown`,
+`/review`) rather than the plugin namespace:
 
-  Its helper scripts (`scripts/agentask.sh`, `scripts/create-repo.sh`) travel with the directory;
-  keep them executable (`chmod +x`).
+```bash
+mkdir -p ~/.claude/skills
+# symlink (tracks upstream changes) — or `cp -r` for a frozen copy:
+ln -s "$PWD/skills/agentask-breakdown" ~/.claude/skills/agentask-breakdown
+ln -s "$PWD/skills/review"             ~/.claude/skills/review
+# …or scope either to a single project under <that-repo>/.claude/skills/ instead.
+```
+
+**3. Project-local in another repo.** Drop (copy/symlink) a skill into a target repo's
+`.claude/skills/` so it's available only when you work in that repo — handy for `agentask-breakdown`
+in whatever repo you're scaffolding boards from.
+
+`agentask-breakdown`'s helper scripts (`scripts/agentask.sh`, `scripts/create-repo.sh`) travel with
+its directory; keep them executable (`chmod +x`).
 
 ## Documentation
 
 - [`DESIGN.md`](./DESIGN.md) — MVP design document with detailed state machine, atomic claiming, and review semantics.
 - [`docs/api.md`](./docs/api.md) — Complete REST API reference with all endpoints, request/response formats, and examples.
 - [`harness/README.md`](./harness/README.md) — Worker and reviewer harness design, configuration, multi-project mode, GitHub auth, and running self-contained inside an `sbx` sandbox (`sbx.sh`).
-- [`skills/agentask-breakdown/SKILL.md`](./skills/agentask-breakdown/SKILL.md) & [`.claude/skills/review/SKILL.md`](./.claude/skills/review/SKILL.md) — Claude Code skills for decomposing intent onto the board and driving the human review gate.
+- [`skills/agentask-breakdown/SKILL.md`](./skills/agentask-breakdown/SKILL.md) & [`skills/review/SKILL.md`](./skills/review/SKILL.md) — Claude Code skills for decomposing intent onto the board and driving the human review gate (installable via the plugin marketplace; see **Skills**).
 - [`docs/features/`](./docs/features/) — Feature specifications for deeper Agentask subsystems.
 
 ## Status
