@@ -1,0 +1,13 @@
+{
+  "name": "agentask",
+  "owner": {
+    "name": "boldfield"
+  },
+  "plugins": [
+    {
+      "name": "agentask",
+      "source": ".",
+      "description": "Agentask board skills: design + breakdown, and the human review gate."
+    }
+  ]
+}

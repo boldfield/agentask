@@ -1,0 +1,11 @@
+{
+  "name": "agentask",
+  "description": "Skills for driving an Agentask board: collaboratively break an idea or feature into bite-size, model-pinned tasks (agentask-breakdown), and run the human review gate — queue, diff, approve/reject (review).",
+  "version": "0.1.0",
+  "author": {
+    "name": "boldfield"
+  },
+  "homepage": "https://github.com/boldfield/agentask",
+  "repository": "https://github.com/boldfield/agentask",
+  "license": "MIT"
+}
