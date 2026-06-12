@@ -37,25 +37,30 @@ claimable work — so the human can pick where to look.
 
 ## The task board (one project) — render it like the TUI
 
-Pull the tasks once: `agentask tasks --project <id> --json`, then group by **state**, in the TUI's
+Pull the tasks once: `agentask tasks --project <id> --json`, then render by **state** in the TUI's
 column order:
 
 ```
 backlog → ready → in_progress → review → approved → done        (blocked / failed shown off to the side)
 ```
 
-Render each column as a short list; lead with a per-column count. For each task show, at minimum:
+Build it in two steps — the first is not optional:
 
-- the **short id** (first 8 chars) and `[model]` badge and **title** — same as the TUI line
-  (`<id8> [haiku] Implement the foo`);
-- for `in_progress` and `review`: the **assignee** and the **lease** — and **flag an expired lease**
-  (`lease_expires_at` in the past) as a likely-stuck task worth a closer look;
-- for `review`: the `review_round` and how many reviewers have voted, if visible.
+1. **FILTER FIRST — drop the bookkeeping before you render.** A `kind=review` or `kind=merge` task
+   is server-spawned plumbing, not a deliverable. The **`done` column shows ONLY `implement` (and
+   design/track) deliverables** — **every `review`- and `merge`-kind task is excluded from `done`**,
+   exactly as the TUI does. (Their `review` and `in_progress` lanes still show, because that's where
+   live review/merge work is; it's specifically the **`done` lane** that must never list a
+   `review`/`merge` task.) Apply this drop *before* counting or listing anything in `done` — do not
+   render and then apologize. If asked, report the hidden done-bucket review/merge counts separately.
 
-**Match the TUI's done-column filtering (important):** in the `done` column, **omit `kind=review`
-and `kind=merge` tasks** — they're server-spawned bookkeeping, not deliverables. Show only
-`implement` (and design/track) deliverables there, exactly as the TUI does. If the human asks, you
-can report the hidden review/merge counts separately.
+2. **Render** each column as a short list, leading with a per-column count. For each task show, at
+   minimum:
+   - the **short id** (first 8 chars) and `[model]` badge and **title** — same as the TUI line
+     (`<id8> [haiku] Implement the foo`);
+   - for `in_progress` and `review`: the **assignee** and the **lease** — and **flag an expired
+     lease** (`lease_expires_at` in the past) as a likely-stuck task worth a closer look;
+   - for `review`: the `review_round` and how many reviewers have voted, if visible.
 
 Keep it scannable: a human reading this in a chat window wants columns with counts and one line per
 task, not a JSON dump. Summarize empty columns as "(none)".
