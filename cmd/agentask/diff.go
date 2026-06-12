@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 
 	"github.com/boldfield/agentask/internal/tuiclient"
@@ -51,14 +50,12 @@ func executeDiff(ctx context.Context, baseURL, token string, args []string, out 
 
 	fmt.Fprintln(out, prURL)
 
-	// Check if gh is available and run gh pr diff if it is
+	// Check if gh is available and run gh pr diff if it is (best-effort)
 	if _, err := exec.LookPath("gh"); err == nil {
 		cmd := exec.CommandContext(ctx, "gh", "pr", "diff", prURL)
 		cmd.Stdout = out
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("failed to run gh pr diff: %w", err)
-		}
+		cmd.Stderr = io.Discard
+		_ = cmd.Run()
 	}
 
 	return nil
