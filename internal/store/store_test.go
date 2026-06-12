@@ -8140,17 +8140,19 @@ func TestAgentMergeNoOpNoMergeTask(t *testing.T) {
 	}
 }
 
-// TestTransitionMergeTaskInProgressToDone pins the v0.10.1 fix: a merge task's
-// lifecycle is ready→in_progress→done (no review), so in_progress→done must be
-// allowed for kind=merge — but still rejected for ordinary kinds.
-func TestTransitionMergeTaskInProgressToDone(t *testing.T) {
+// TestClaimReclaimsExpiredInProgressTask pins the lease-reclaim fix: an in_progress
+// task whose lease has lapsed (stalled/dead worker) is reclaimable by another worker;
+// one with a live lease is not.
+func TestClaimReclaimsExpiredInProgressTask(t *testing.T) {
 	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
 	if err != nil {
 		t.Fatalf("failed to open store: %v", err)
 	}
 	defer store.Close()
 	ctx := context.Background()
-	now := time.Now().Format(time.RFC3339)
+	now := nowTimestamp()
+	past := leaseExpiryTimestamp(-time.Hour)  // now - 1h -> expired lease (store's format/UTC)
+	future := leaseExpiryTimestamp(time.Hour) // now + 1h -> live lease
 	conn := store.Conn()
 	if _, err := conn.ExecContext(ctx, `INSERT INTO project (id, name, repo, created_at) VALUES (?, ?, ?, ?)`,
 		"p1", "proj", "https://github.com/example/repo", now); err != nil {
@@ -8160,22 +8162,66 @@ func TestTransitionMergeTaskInProgressToDone(t *testing.T) {
 		"d1", "p1", "design", "D", "DESIGN.md", now, now); err != nil {
 		t.Fatalf("insert document: %v", err)
 	}
-	insertTask := func(id, kind string) {
-		if _, err := conn.ExecContext(ctx, `INSERT INTO task (id, project_id, document_id, title, spec, state, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-			id, "p1", "d1", "T", "s", "in_progress", kind, now, now); err != nil {
+	insertInProgress := func(id, lease string) {
+		if _, err := conn.ExecContext(ctx, `INSERT INTO task (id, project_id, document_id, title, spec, state, kind, model, assignee, lease_expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'in_progress', 'implement', 'haiku', 'old-worker', ?, ?, ?)`,
+			id, "p1", "d1", "T", "s", lease, now, now); err != nil {
 			t.Fatalf("insert task %s: %v", id, err)
 		}
 	}
 
-	// merge task: in_progress → done is ALLOWED (the fix).
-	insertTask("mt", "merge")
-	if _, err := store.TransitionTask(ctx, "mt", "done", nil); err != nil {
-		t.Fatalf("merge task in_progress→done should be allowed, got: %v", err)
+	// EXPIRED lease -> reclaimable by a new worker (and reassigned).
+	insertInProgress("expired", past)
+	tk, err := store.ClaimTask(ctx, "expired", "new-worker", "haiku", time.Minute)
+	if err != nil {
+		t.Fatalf("expired-lease in_progress task should be reclaimable, got: %v", err)
+	}
+	if tk.Assignee == nil || *tk.Assignee != "new-worker" {
+		t.Errorf("expected reassignment to new-worker, got %v", tk.Assignee)
 	}
 
-	// ordinary task: in_progress → done is still REJECTED.
+	// LIVE lease -> NOT claimable.
+	insertInProgress("live", future)
+	if _, err := store.ClaimTask(ctx, "live", "new-worker", "haiku", time.Minute); err == nil {
+		t.Error("live-lease in_progress task should NOT be claimable, but the claim succeeded")
+	}
+}
+
+// TestTransitionMergeTaskInProgressToDone pins the merge-transition fix: a merge task's
+// lifecycle is ready->in_progress->done (no review), so in_progress->done must be
+// allowed for kind=merge -- but still rejected for ordinary kinds.
+func TestTransitionMergeTaskInProgressToDone(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := nowTimestamp()
+	conn := store.Conn()
+	if _, err := conn.ExecContext(ctx, `INSERT INTO project (id, name, repo, created_at) VALUES (?, ?, ?, ?)`,
+		"pm", "proj", "https://github.com/example/repo", now); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO document (id, project_id, kind, title, ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"dm", "pm", "design", "D", "DESIGN.md", now, now); err != nil {
+		t.Fatalf("insert document: %v", err)
+	}
+	insertTask := func(id, kind string) {
+		if _, err := conn.ExecContext(ctx, `INSERT INTO task (id, project_id, document_id, title, spec, state, kind, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'in_progress', ?, ?, ?)`,
+			id, "pm", "dm", "T", "s", kind, now, now); err != nil {
+			t.Fatalf("insert task %s: %v", id, err)
+		}
+	}
+
+	// merge task: in_progress -> done is ALLOWED (the fix).
+	insertTask("mt", "merge")
+	if _, err := store.TransitionTask(ctx, "mt", "done", nil); err != nil {
+		t.Fatalf("merge task in_progress->done should be allowed, got: %v", err)
+	}
+
+	// ordinary task: in_progress -> done is still REJECTED.
 	insertTask("it", "implement")
 	if _, err := store.TransitionTask(ctx, "it", "done", nil); err == nil {
-		t.Error("non-merge in_progress→done should be rejected, but it was allowed")
+		t.Error("non-merge in_progress->done should be rejected, but it was allowed")
 	}
 }

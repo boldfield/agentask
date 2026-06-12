@@ -1127,20 +1127,21 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLi
 
 // claimableSQL is the SQL predicate for the claimable condition, reused by both ListTasks and ClaimTask.
 // A task is claimable iff:
-// - state = 'ready'
-// - all dependencies are done
-// - no live lease (lease_expires_at IS NULL OR lease_expires_at < now)
-// - not held (held = 0)
-// IMPORTANT: This predicate is reused in ListTasks and ClaimTask (in UPDATE statement).
-// If you change this, update all usages.
-const claimableSQL = `state = 'ready'
+//   - state = 'ready', OR state = 'in_progress' with an EXPIRED lease — a stalled or dead
+//     worker's task becomes reclaimable once its lease lapses (the standard lease pattern;
+//     the new claimer resumes the existing mr/<id8> branch, so no work is lost)
+//   - all dependencies are done
+//   - not held (held = 0)
+//
+// IMPORTANT: reused in ListTasks and ClaimTask (in the UPDATE statement) and contains exactly
+// ONE '?' (the lease cutoff). If you change the '?' count, update all callers' arg lists.
+const claimableSQL = `(state = 'ready' OR (state = 'in_progress' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?))
 	AND held = 0
 	AND NOT EXISTS (
 		SELECT 1 FROM task_dep d
 		JOIN task t2 ON t2.id = d.depends_on_id
 		WHERE d.task_id = task.id AND t2.state != 'done'
-	)
-	AND (lease_expires_at IS NULL OR lease_expires_at < ?)`
+	)`
 
 // ListTasks retrieves tasks for a project with optional filters.
 // Filters compose with AND logic.
