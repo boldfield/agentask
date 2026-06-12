@@ -1,11 +1,34 @@
 package localcommit
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+	"time"
 )
+
+func createDurableWorktreeHome(t *testing.T) string {
+	// Create a durable temp dir in the home directory instead of /tmp or /var/folders
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatalf("failed to get home directory: %v", err)
+	}
+
+	// Create a test-specific directory with timestamp to avoid conflicts
+	timestamp := time.Now().UnixNano()
+	wtHomeDir := filepath.Join(homeDir, ".agentask-test", t.Name()+"-"+fmt.Sprintf("%d", timestamp))
+	if err := os.MkdirAll(wtHomeDir, 0755); err != nil {
+		t.Fatalf("failed to create durable worktree home: %v", err)
+	}
+
+	t.Cleanup(func() {
+		os.RemoveAll(wtHomeDir)
+	})
+
+	return wtHomeDir
+}
 
 func setupRepoForWorktree(t *testing.T) string {
 	tmpDir := t.TempDir()
@@ -37,7 +60,7 @@ func setupRepoForWorktree(t *testing.T) string {
 
 func TestAddWorktree_Fresh(t *testing.T) {
 	repoDir := setupRepoForWorktree(t)
-	wtHome := t.TempDir()
+	wtHome := createDurableWorktreeHome(t)
 	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
 
 	iid := "task-123"
@@ -83,7 +106,7 @@ func TestAddWorktree_Fresh(t *testing.T) {
 
 func TestAddWorktree_Idempotent(t *testing.T) {
 	repoDir := setupRepoForWorktree(t)
-	wtHome := t.TempDir()
+	wtHome := createDurableWorktreeHome(t)
 	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
 
 	iid := "task-456"
@@ -107,7 +130,7 @@ func TestAddWorktree_Idempotent(t *testing.T) {
 
 func TestAddWorktree_WithMRBranch(t *testing.T) {
 	repoDir := setupRepoForWorktree(t)
-	wtHome := t.TempDir()
+	wtHome := createDurableWorktreeHome(t)
 	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
 
 	// Create a wi/<slug> branch
@@ -161,7 +184,7 @@ func TestAddWorktree_WithMRBranch(t *testing.T) {
 
 func TestAddWorktree_WithOriginMain(t *testing.T) {
 	repoDir := setupRepoForWorktree(t)
-	wtHome := t.TempDir()
+	wtHome := createDurableWorktreeHome(t)
 	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
 
 	iid := "task-origin-main"

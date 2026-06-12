@@ -1,6 +1,7 @@
 package localcommit
 
 import (
+	"errors"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -17,8 +18,11 @@ func AddWorktree(repoDir, iid, tip string) (wtPath string, err error) {
 	// Check if worktree is already registered
 	cmd := exec.Command("git", "-C", repoDir, "worktree", "list", "--porcelain")
 	output, err := cmd.Output()
-	if err != nil && err.Error() != "exit status 1" {
-		return "", err
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			return "", err
+		}
 	}
 
 	// Resolve wtPath to canonical form for comparison (handles symlinks)
