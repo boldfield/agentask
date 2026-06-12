@@ -69,7 +69,7 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
-	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition", "project", "merge":
+	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition", "project", "merge", "pending":
 		return runClient(args[1], args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n\n", args[1])
@@ -92,6 +92,7 @@ Commands:
   projects               List all projects
   project                Show project details
   tasks                  List tasks for a project
+  pending                List pending tasks in review or approved states
   show                   Show task details
   claim                  Claim a task
   submit                 Submit a task for review
@@ -221,6 +222,8 @@ func runClient(verb string, args []string) error {
 		return executeProject(ctx, baseURL, token, jsonOutput, args, os.Stdout)
 	case "tasks":
 		return executeTasks(ctx, baseURL, token, jsonOutput, args, os.Stdout)
+	case "pending":
+		return executePending(ctx, baseURL, token, jsonOutput, args, os.Stdout)
 	case "show":
 		return executeShow(ctx, baseURL, token, jsonOutput, args, os.Stdout)
 	case "transition":
