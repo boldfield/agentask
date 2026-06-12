@@ -8139,3 +8139,49 @@ func TestAgentMergeNoOpNoMergeTask(t *testing.T) {
 		t.Errorf("expected 0 merge tasks for no-op submission, found %d", mergeTaskCount)
 	}
 }
+
+// TestClaimReclaimsExpiredInProgressTask pins the lease-reclaim fix: an in_progress
+// task whose lease has lapsed (stalled/dead worker) is reclaimable by another worker;
+// one with a live lease is not.
+func TestClaimReclaimsExpiredInProgressTask(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	defer store.Close()
+	ctx := context.Background()
+	now := nowTimestamp()
+	past := leaseExpiryTimestamp(-time.Hour)  // now - 1h → expired lease (store's format/UTC)
+	future := leaseExpiryTimestamp(time.Hour) // now + 1h → live lease
+	conn := store.Conn()
+	if _, err := conn.ExecContext(ctx, `INSERT INTO project (id, name, repo, created_at) VALUES (?, ?, ?, ?)`,
+		"p1", "proj", "https://github.com/example/repo", now); err != nil {
+		t.Fatalf("insert project: %v", err)
+	}
+	if _, err := conn.ExecContext(ctx, `INSERT INTO document (id, project_id, kind, title, ref, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+		"d1", "p1", "design", "D", "DESIGN.md", now, now); err != nil {
+		t.Fatalf("insert document: %v", err)
+	}
+	insertInProgress := func(id, lease string) {
+		if _, err := conn.ExecContext(ctx, `INSERT INTO task (id, project_id, document_id, title, spec, state, kind, model, assignee, lease_expires_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, 'in_progress', 'implement', 'haiku', 'old-worker', ?, ?, ?)`,
+			id, "p1", "d1", "T", "s", lease, now, now); err != nil {
+			t.Fatalf("insert task %s: %v", id, err)
+		}
+	}
+
+	// EXPIRED lease → reclaimable by a new worker (and reassigned).
+	insertInProgress("expired", past)
+	tk, err := store.ClaimTask(ctx, "expired", "new-worker", "haiku", time.Minute)
+	if err != nil {
+		t.Fatalf("expired-lease in_progress task should be reclaimable, got: %v", err)
+	}
+	if tk.Assignee == nil || *tk.Assignee != "new-worker" {
+		t.Errorf("expected reassignment to new-worker, got %v", tk.Assignee)
+	}
+
+	// LIVE lease → NOT claimable.
+	insertInProgress("live", future)
+	if _, err := store.ClaimTask(ctx, "live", "new-worker", "haiku", time.Minute); err == nil {
+		t.Error("live-lease in_progress task should NOT be claimable, but the claim succeeded")
+	}
+}
