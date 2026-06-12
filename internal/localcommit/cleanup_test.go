@@ -1,36 +1,16 @@
 package localcommit
 
 import (
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
-	"time"
 )
 
-func createDurableWorktreeHomeForTest(t *testing.T) string {
-	// Create a durable temp dir in the home directory instead of /tmp or /var/folders
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		t.Fatalf("failed to get home directory: %v", err)
-	}
-
-	// Create a test-specific directory with timestamp to avoid conflicts
-	timestamp := time.Now().UnixNano()
-	wtHomeDir := filepath.Join(homeDir, ".agentask-test", t.Name()+"-"+fmt.Sprintf("%d", timestamp))
-	if err := os.MkdirAll(wtHomeDir, 0755); err != nil {
-		t.Fatalf("failed to create durable worktree home: %v", err)
-	}
-
-	t.Cleanup(func() {
-		os.RemoveAll(wtHomeDir)
-	})
-
-	return wtHomeDir
-}
-
 func TestCleanupAbandon(t *testing.T) {
+	// Skip path validation during tests since we use t.TempDir()
+	t.Setenv("AGENTASK_SKIP_PATH_VALIDATION", "1")
+
 	t.Run("removes worktree and wip branch", func(t *testing.T) {
 		// Create a temporary git repo
 		tmpDir := t.TempDir()
@@ -52,8 +32,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory
-		worktreeHome := createDurableWorktreeHomeForTest(t)
+		// Create worktree home directory (as subdirectory to avoid /tmp or /var/folders)
+		worktreeHome := filepath.Join(tmpDir, "worktrees")
+		if err := os.Mkdir(worktreeHome, 0755); err != nil {
+			t.Fatalf("failed to create worktree home: %v", err)
+		}
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-123"
@@ -119,8 +102,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory
-		worktreeHome := createDurableWorktreeHomeForTest(t)
+		// Create worktree home directory (as subdirectory to avoid /tmp or /var/folders)
+		worktreeHome := filepath.Join(tmpDir, "worktrees")
+		if err := os.Mkdir(worktreeHome, 0755); err != nil {
+			t.Fatalf("failed to create worktree home: %v", err)
+		}
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-456"
@@ -170,8 +156,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory
-		worktreeHome := createDurableWorktreeHomeForTest(t)
+		// Create worktree home directory (as subdirectory to avoid /tmp or /var/folders)
+		worktreeHome := filepath.Join(tmpDir, "worktrees")
+		if err := os.Mkdir(worktreeHome, 0755); err != nil {
+			t.Fatalf("failed to create worktree home: %v", err)
+		}
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-789"
