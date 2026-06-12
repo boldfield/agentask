@@ -3054,6 +3054,102 @@ func TestExecuteRejectAbandonPullRequest(t *testing.T) {
 	}
 }
 
+func TestExecuteRejectReworkPreservesWorktree(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	tmpDir := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+	t.Setenv("AGENTASK_SKIP_PATH_VALIDATION", "1")
+
+	// Create a temporary git repo with worktree and branches
+	repoDir := t.TempDir()
+	cmds := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@example.com"},
+		{"git", "config", "user.name", "Test User"},
+		{"git", "commit", "--allow-empty", "-m", "initial"},
+		{"git", "branch", "work"},
+	}
+
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repoDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("setup failed: %v", err)
+		}
+	}
+
+	// Create worktree and wip branch
+	iid := "task-456"
+	worktreePath := filepath.Join(tmpDir, iid)
+	cmd := exec.Command("git", "-C", repoDir, "worktree", "add", worktreePath, "work")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to add worktree: %v", err)
+	}
+
+	cmd = exec.Command("git", "-C", repoDir, "branch", "wip/"+iid)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create wip branch: %v", err)
+	}
+
+	// Verify worktree and branches exist before reject
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Fatalf("worktree should exist before reject: %v", err)
+	}
+
+	cmd = exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "wip/"+iid)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("wip branch should exist before reject: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    iid,
+				State: "review",
+				Title: "Test Task",
+			})
+		} else if strings.HasPrefix(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/transition") && r.Method == http.MethodPost {
+			var req struct {
+				To   string
+				Note *string
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			// Rework should transition to "ready", not "failed"
+			if req.To != "ready" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	// Call reject with --note but WITHOUT --abandon (rework case)
+	err := executeReject(context.Background(), server.URL, "test-token", []string{
+		"--note", "needs rework",
+		"--repo", repoDir,
+		iid,
+	})
+	if err != nil {
+		t.Fatalf("executeReject failed: %v", err)
+	}
+
+	// Verify worktree still exists (rework must preserve it)
+	if _, err := os.Stat(worktreePath); err != nil {
+		t.Errorf("worktree should still exist after reject (rework): %v", err)
+	}
+
+	// Verify wip branch still exists (rework must preserve it)
+	cmd = exec.Command("git", "-C", repoDir, "rev-parse", "--verify", "wip/"+iid)
+	if err := cmd.Run(); err != nil {
+		t.Errorf("wip branch should still exist after reject (rework)")
+	}
+}
+
 func TestExecuteApproveLocalCommitSuccess(t *testing.T) {
 	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
