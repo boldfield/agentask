@@ -235,12 +235,27 @@ ensure_worktree() {
 }
 
 # Run one claude task, shielded from Ctrl-C, waiting until it truly finishes.
+# Captures claude's exit code and backs off on failure: a non-zero exit means claude
+# could not run (out of credits, auth, missing binary) — NOT that the task is bad. With
+# no backoff the loop would re-dispatch into a failing claude instantly and spin. The
+# backoff escalates with consecutive failures (capped) and self-heals when claude works
+# again (credits returned), so an overnight credit lapse pauses rather than hammers.
+CLAUDE_FAILS=0
 dispatch() {
   local prompt; prompt="$(cat "$PROMPT_FILE")"
   # >>> remove --dangerously-skip-permissions if you want interactive permission prompts <<<
   claude -p --dangerously-skip-permissions "$prompt" --model "$AGENT_MODEL" &
-  local pid=$!
-  while kill -0 "$pid" 2>/dev/null; do wait "$pid"; done
+  local pid=$! rc=0
+  while kill -0 "$pid" 2>/dev/null; do wait "$pid"; rc=$?; done
+  if [ "$rc" -ne 0 ]; then
+    CLAUDE_FAILS=$((CLAUDE_FAILS + 1))
+    local backoff=$((CLAUDE_FAILS * 30)); [ "$backoff" -gt 300 ] && backoff=300
+    echo "[$AGENT_ID] $(date '+%H:%M:%S') claude exited rc=$rc (likely out of credits/auth); consecutive failures=$CLAUDE_FAILS, backing off ${backoff}s" >&2
+    nap "$backoff"
+  else
+    CLAUDE_FAILS=0
+  fi
+  return "$rc"
 }
 
 nap() { sleep "$1" & wait $! 2>/dev/null; }
