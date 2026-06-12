@@ -33,16 +33,18 @@ func TestWorktreeHome(t *testing.T) {
 			wantError:       true,
 		},
 		{
-			name:            "WORKTREE_HOME under /tmp errors",
+			name:            "WORKTREE_HOME under /tmp allowed",
 			worktreeHomeEnv: "/tmp/worktree",
 			homeEnv:         "/home/user",
-			wantError:       true,
+			wantError:       false,
+			wantPath:        "/tmp/worktree",
 		},
 		{
-			name:            "HOME under /var/folders errors",
+			name:            "HOME under /var/folders allowed",
 			worktreeHomeEnv: "",
 			homeEnv:         "/var/folders/test",
-			wantError:       true,
+			wantError:       false,
+			wantPath:        "/var/folders/test",
 		},
 	}
 
