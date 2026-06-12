@@ -1132,6 +1132,7 @@ func (s *sqliteStore) GetTask(ctx context.Context, id string) (TaskWithDepsAndLi
 //     the new claimer resumes the existing mr/<id8> branch, so no work is lost)
 //   - all dependencies are done
 //   - not held (held = 0)
+//
 // IMPORTANT: reused in ListTasks and ClaimTask (in the UPDATE statement) and contains exactly
 // ONE '?' (the lease cutoff). If you change the '?' count, update all callers' arg lists.
 const claimableSQL = `(state = 'ready' OR (state = 'in_progress' AND lease_expires_at IS NOT NULL AND lease_expires_at < ?))
