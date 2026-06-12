@@ -1,7 +1,7 @@
 {
   "name": "agentask",
-  "description": "Skills for driving an Agentask board: collaboratively break an idea or feature into bite-size, model-pinned tasks (agentask-breakdown), and run the human review gate — queue, diff, approve/reject (review).",
-  "version": "0.1.0",
+  "description": "Skills for driving an Agentask board: break an idea or feature into bite-size, model-pinned tasks (agentask-breakdown); run the human review gate (review); see the board from a headless/sandbox session (agentask-board); and diagnose + safely operate a wedged board (agentask-ops).",
+  "version": "0.2.0",
   "author": {
     "name": "boldfield"
   },
