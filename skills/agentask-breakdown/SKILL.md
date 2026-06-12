@@ -1,31 +1,53 @@
 ---
 name: agentask-breakdown
-description: Use to turn an idea or a new feature into an Agentask board — collaboratively brainstorm the design, formalize it to a doc, create or locate the repo, decompose into model-pinned bite-size tasks, and register the project/document/tasks via the Agentask API. The skill proposes and takes positions but STOPS for the human's decision at every design choice, task boundary, and task's content; it never finalizes alone. Triggers on requests like "let's break this down for the board", "decompose this feature into Agentask tasks", or "scaffold a new project on Agentask".
+description: Use to turn a design into an executable Agentask board — decompose it into model-pinned, bite-size tasks and register the project/document/tasks via the Agentask API. The human brings the work: ALWAYS ask what to break down — never propose topics, ideas, or features to build. Works from an existing design/feature-spec document when the human has one (the common case — go straight to decomposing it); only brainstorms a design collaboratively when they don't. Proposes and takes positions on design choices and task boundaries but STOPS for the human's decision; never finalizes alone. Triggers on "break this down for the board", "decompose this doc into Agentask tasks", "put this feature on the board", "scaffold a project from this design".
 ---
 
 # Agentask design + breakdown
 
-Drive the collaborative workflow that turns intent into an executable Agentask board:
-**brainstorm → formalize a design doc → (greenfield) create the repo → decompose into
-bite-size, model-pinned tasks → register project/document/tasks via the API.** A model-pinned
-fleet then drains the board — Haiku implements, Opus reviews, the human merges.
+Drive the collaborative workflow that turns a design into an executable Agentask board. The human
+brings the intent — **often as a document they already have** — and you facilitate:
+**(start from their doc, or shape one with them) → decompose into bite-size, model-pinned tasks →
+register project/document/tasks via the API.** A model-pinned fleet then drains the board — Haiku
+implements, Opus reviews, the human merges.
 
 ## The one rule that overrides everything
 
-**Propose, take a position, then STOP for the human's decision.** At every design choice,
-every task boundary, and every task's spec you put forward a concrete recommendation with a
-one-line rationale — then you wait for the human to confirm or override. You **never** finalize
-the design, the task list, or any task's content on your own. This is collaborative authorship,
-not autonomous generation. When in doubt, surface the choice; do not absorb it.
+**Propose, take a position, then STOP for the human's decision.** At every design choice, every
+task boundary, and every task's spec you put forward a concrete recommendation with a one-line
+rationale — then you wait for the human to confirm or override. You **never** finalize the design,
+the task list, or any task's content on your own. This is collaborative authorship, not autonomous
+generation. When in doubt, surface the choice; do not absorb it.
 
-## Phase 0 — Configuration & mode
+**But you do NOT choose what to work on.** The human brings the problem — and usually a finished
+design document. **Never open by proposing ideas, topics, or features to build** — that is theirs to
+name, not yours to pick. Your proposing begins only *after* the human has said what we're building,
+and only on the design choices, task boundaries, and specs *within* it. If you were triggered with
+nothing specific, your first move is to **ask what to break down** — not to suggest one.
 
-- `AGENTASK_URL` and `AGENTASK_TOKEN` must be set (the running Agentask instance + bearer token).
-  Confirm both; if missing, ask the human. Every API call sends `Authorization: Bearer $AGENTASK_TOKEN`.
-- Pick the **mode**, asking if it isn't obvious:
-  - **Greenfield** — a new project needing a new repo + a `design` document.
-  - **Feature-on-existing** — a new capability on an existing Agentask project; a `feature_spec`
-    document, no new repo.
+## Phase 0 — Start here: ask what, and from where
+
+**Open by asking the human what they want to put on the board. Do NOT propose ideas or topics** —
+the work is theirs to name. If the skill was triggered with nothing specific, ask *"what do you want
+to break down?"* and wait.
+
+Then settle two things (ask whichever isn't already obvious from what they gave you):
+
+**Starting point — is there a design already?**
+- **From an existing document (the common case).** The human brings a design or feature-spec — a
+  file in the repo, a PR, a path, or pasted prose. **Read it**, reflect back your understanding of
+  the problem, the scope **and non-scope**, and the acceptance criteria, and get the human's
+  confirm/correct. Then go **straight to Phase 4 (Decompose)** — skip Phases 1–2; the design exists.
+  Only fill a genuine gap (e.g. missing acceptance criteria) by asking, not by inventing.
+- **From an idea, no document yet.** Run Phase 1 (brainstorm) → Phase 2 (formalize a doc) → decompose.
+
+**Target — where do the tasks land?**
+- **Greenfield** — a new project + new repo + a `design` document.
+- **Feature-on-existing** — a new capability on an existing Agentask project; a `feature_spec`
+  document, no new repo. (Locate the existing project + repo.)
+
+**Config:** `AGENTASK_URL` and `AGENTASK_TOKEN` must be set (the running Agentask instance + bearer
+token). Confirm both; if missing, ask. Every API call sends `Authorization: Bearer $AGENTASK_TOKEN`.
 
 **Endpoint shapes** (get these right): list/create under a project at
 `$AGENTASK_URL/projects/$PROJECT/tasks` and `.../documents`; every per-task call is at the ROOT,
@@ -33,6 +55,9 @@ not autonomous generation. When in doubt, surface the choice; do not absorb it.
 curl — inline `jq` quoting is error-prone, and the script keeps payloads correct.
 
 ## Phase 1 — Brainstorm the design (collaborative)
+
+> **Skip this and Phase 2 entirely when the human already has a design document** — you confirmed it
+> in Phase 0; go to Phase 4. Run them only when there is no doc yet.
 
 Iterate the problem and the shape of the solution *with* the human. Challenge assumptions, name
 failure modes, rank approaches and state the trade-offs — take positions. But settle nothing
@@ -42,6 +67,9 @@ Output: shared agreement on the problem, the solution approach, the scope **and 
 non-scope**, and the acceptance criteria that will define "done."
 
 ## Phase 2 — Formalize the design document
+
+> Only when Phase 1 ran (no pre-existing doc). If the human brought a document, it already plays
+> this role — register it as-is in Phase 5.
 
 Turn the agreed design into a prose document — greenfield → `DESIGN.md`; feature-on-existing → a
 feature-spec doc. It must contain:
@@ -89,7 +117,8 @@ Non-negotiable decomposition rules:
 Using `scripts/agentask.sh`:
 
 1. Create the project (greenfield) or confirm the existing one.
-2. Create the document (`kind` = `design` | `feature_spec`, with its repo ref).
+2. Register the document (`kind` = `design` | `feature_spec`, pointing at its repo ref) — or, if the
+   human's document is already registered on the board, just locate and reuse it. Don't duplicate.
 3. Bulk-create the tasks — dependencies by intra-batch `key`, plus `model` and `agent_merge`.
 4. **Promote milestone-by-milestone — NOT the whole backlog at once.** There is no `ready→backlog`
    demote; to halt a promoted task, transition it to `blocked` (reversible — `blocked→ready`
