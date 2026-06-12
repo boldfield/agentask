@@ -2206,3 +2206,142 @@ func TestExecuteApproveServerError(t *testing.T) {
 func ptrString(s string) *string {
 	return &s
 }
+
+func TestExecuteRejectFromReviewSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				State: "review",
+				Title: "Test Task",
+			})
+		} else if strings.HasPrefix(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/transition") && r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	err := executeReject(context.Background(), server.URL, "test-token", []string{"task-123", "--note", "needs rework"})
+	if err != nil {
+		t.Fatalf("executeReject failed: %v", err)
+	}
+}
+
+func TestExecuteRejectFromApprovedSuccess(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				State: "approved",
+				Title: "Test Task",
+			})
+		} else if strings.HasPrefix(r.URL.Path, "/tasks/") && strings.HasSuffix(r.URL.Path, "/transition") && r.Method == http.MethodPost {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	err := executeReject(context.Background(), server.URL, "test-token", []string{"task-123", "--note", "rejected"})
+	if err != nil {
+		t.Fatalf("executeReject failed: %v", err)
+	}
+}
+
+func TestExecuteRejectMissingNote(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				State: "review",
+				Title: "Test Task",
+			})
+		}
+	}))
+	defer server.Close()
+
+	err := executeReject(context.Background(), server.URL, "test-token", []string{"task-123"})
+	if err == nil {
+		t.Fatal("expected error for missing --note, got nil")
+	}
+	if !strings.Contains(err.Error(), "--note") {
+		t.Errorf("expected error to mention '--note', got: %v", err)
+	}
+}
+
+func TestExecuteRejectWrongState(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				State: "ready",
+				Title: "Test Task",
+			})
+		}
+	}))
+	defer server.Close()
+
+	err := executeReject(context.Background(), server.URL, "test-token", []string{"task-123", "--note", "bad state"})
+	if err == nil {
+		t.Fatal("expected error for task not in review or approved state, got nil")
+	}
+	if !strings.Contains(err.Error(), "expected review or approved") {
+		t.Errorf("expected error to mention 'expected review or approved', got: %v", err)
+	}
+}
+
+func TestExecuteRejectMissingTaskID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	err := executeReject(context.Background(), server.URL, "test-token", []string{"--note", "some note"})
+	if err == nil {
+		t.Fatal("expected error for missing task ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "task id required") {
+		t.Errorf("expected error to mention 'task id required', got: %v", err)
+	}
+}
+
+func TestExecuteRejectMissingURL(t *testing.T) {
+	err := executeReject(context.Background(), "", "test-token", []string{"task-123", "--note", "test"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_URL") {
+		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	}
+}
+
+func TestExecuteRejectMissingToken(t *testing.T) {
+	err := executeReject(context.Background(), "http://localhost:8080", "", []string{"task-123", "--note", "test"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
+		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
+func TestExecuteRejectServerError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
+			w.WriteHeader(http.StatusNotFound)
+			json.NewEncoder(w).Encode(map[string]string{"error": "task not found"})
+		}
+	}))
+	defer server.Close()
+
+	err := executeReject(context.Background(), server.URL, "test-token", []string{"nonexistent", "--note", "test"})
+	if err == nil {
+		t.Fatal("expected error for server error, got nil")
+	}
+	if !strings.Contains(err.Error(), "failed to get task") {
+		t.Errorf("expected error to mention 'failed to get task', got: %v", err)
+	}
+}
