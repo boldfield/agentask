@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # agent.sh — the unified Agentask fleet engine. One loop, parameterized:
 #   --model <tier>            the model this agent claims + runs (e.g. haiku, opus)
-#   --kind  <implement|review|merge>  implement = worker (prompts/build/implement.md); review = reviewer (prompts/build/review.md); merge = merger (non-LLM)
+#   --kind  <implement|review|merge>  implement = worker, review = reviewer, merge = merger (non-LLM).
+#                                      LLM prompts resolve as prompts/<delivery_mode>/<track>/<kind>.md.
 #   [slot]                    stable slot name -> persistent agent id + dedicated worktree(s)
 #
 # PROJECT SCOPE (from $AGENTASK_PROJECT):
@@ -17,7 +18,7 @@
 # FRESH each dispatch. STATE — env, agent ids, repo clones, worktrees — lives under $AGENTASK_HOME
 # (~/.agentask) and is NOT versioned. Ctrl-C is a GRACEFUL stop (in-flight task finishes; again = force-quit).
 #
-# NOTE: assumes each repo's default branch is `main` (matches prompts/build/implement.md). master-default repos
+# NOTE: assumes each repo's default branch is `main` (matches the implement prompt). master-default repos
 # need the prompt parameterized — not supported yet.
 #
 # NOTE: requires `agentask` CLI to be on PATH for board discovery and polling.
@@ -152,18 +153,15 @@ fi
 DELIVERY_MODE="${AGENTASK_DELIVERY_MODE:-pull_request}"
 case "$DELIVERY_MODE" in pull_request|local_commit) ;; *) echo "delivery mode must be pull_request or local_commit" >&2; exit 1 ;; esac
 
-# Prompt file is determined by task track (dynamically, see dispatch).
-# Helper to get prompt file path from track and kind, with local_commit override.
+# The prompt is keyed on all three axes — delivery_mode, track, kind — as PATH dimensions:
+#   prompts/<delivery_mode>/<track>/<kind>.md
+# No special-casing: a new mode/track/kind is just a file. A combo with no prompt (e.g.
+# local_commit + design) resolves to a missing path, and the caller already skips on "prompt not
+# found" — which is correct (no prompt = no such work).
 get_prompt_file() {
   local track="${1:-build}"
   local kind="$2"
-  # For local_commit mode, use dedicated prompts if available
-  if [ "$DELIVERY_MODE" = "local_commit" ] && [ "$kind" = "implement" ]; then
-    # Use the dedicated local_commit worker prompt
-    echo "$HARNESS_DIR/worker-prompt-localcommit.md"
-  else
-    echo "$HARNESS_DIR/prompts/$track/$kind.md"
-  fi
+  echo "$HARNESS_DIR/prompts/$DELIVERY_MODE/$track/$kind.md"
 }
 
 ID_DIR="$AGENTASK_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
