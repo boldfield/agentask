@@ -123,8 +123,50 @@ func SquashMerge(ctx context.Context, owner, repo string, prNumber int, token st
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		respBody, _ := io.ReadAll(resp.Body)
+		// A PR that a prior (interrupted) merge run already merged returns a non-2xx
+		// here (GitHub answers 405 "not mergeable" for an already-merged PR). Treat an
+		// already-merged PR as success so a retried merge job converges instead of
+		// looping forever. Verify via the merged flag rather than trusting the status
+		// code, so genuinely non-mergeable PRs (conflicts, failing checks) still error.
+		if merged, mErr := prAlreadyMerged(ctx, owner, repo, prNumber, token); mErr == nil && merged {
+			return nil
+		}
 		return fmt.Errorf("merge failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	return nil
+}
+
+// prAlreadyMerged reports whether the given PR has already been merged, using
+// GitHub's GET /pulls/{n}/merge endpoint: 204 means merged, 404 means not merged.
+// Any other status (or a transport error) returns an error so the caller can fall
+// back to surfacing the original merge failure rather than masking it.
+func prAlreadyMerged(ctx context.Context, owner, repo string, prNumber int, token string) (bool, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d/merge", GitHubBaseURL, owner, repo, prNumber)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return false, fmt.Errorf("failed to create merge-status request: %w", err)
+	}
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	if token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false, fmt.Errorf("failed to check merge status: %w", err)
+	}
+	defer resp.Body.Close()
+
+	switch resp.StatusCode {
+	case http.StatusNoContent: // 204 — PR is merged
+		return true, nil
+	case http.StatusNotFound: // 404 — PR exists but is not merged
+		return false, nil
+	default:
+		respBody, _ := io.ReadAll(resp.Body)
+		return false, fmt.Errorf("unexpected merge-status %d: %s", resp.StatusCode, string(respBody))
+	}
 }

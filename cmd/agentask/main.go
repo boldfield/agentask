@@ -878,6 +878,11 @@ func executeMerge(ctx context.Context, baseURL, token string, args []string) err
 		return fmt.Errorf("failed to get merge task: %w", err)
 	}
 
+	// Idempotent fast path: a prior run already finalized this merge task.
+	if mergeTask.State == "done" {
+		return nil
+	}
+
 	if mergeTask.TargetTaskID == nil {
 		return fmt.Errorf("merge task has no target_task_id")
 	}
@@ -889,49 +894,65 @@ func executeMerge(ctx context.Context, baseURL, token string, args []string) err
 		return fmt.Errorf("failed to get parent task: %w", err)
 	}
 
-	if parentTask.State != "approved" {
-		return fmt.Errorf("parent task state is %q, expected approved", parentTask.State)
-	}
-
 	if !parentTask.AgentMerge {
 		return fmt.Errorf("parent task has agent_merge=false")
 	}
 
-	var prURL string
-	for _, link := range parentTask.Links {
-		if link.Kind == "pr" {
-			prURL = link.Value
-			break
+	// `agentask merge` MUST be safely re-runnable: a merge job that merged the PR but
+	// died before finalizing the merge task gets reclaimed and runs again, so a retry
+	// has to converge instead of erroring. The parent task advances to 'done' as part
+	// of a successful merge, so its state tells us whether the merge still needs doing:
+	//   - approved: PR not yet merged -> do the squash merge, then advance the parent.
+	//   - done:     a prior run already merged the PR -> skip the merge, just finalize.
+	//   - other:    not a valid precondition to merge from.
+	// (The old code required parent=="approved" and erred otherwise, which made a
+	// partially-completed run UNrecoverable: once the parent reached 'done', every
+	// retry died here before it could finalize the merge task — a permanent zombie.)
+	switch parentTask.State {
+	case "approved":
+		var prURL string
+		for _, link := range parentTask.Links {
+			if link.Kind == "pr" {
+				prURL = link.Value
+				break
+			}
 		}
-	}
 
-	if prURL == "" {
-		return fmt.Errorf("parent task has no pr link")
-	}
-
-	owner, repo, prNumber, err := parsePRURL(prURL)
-	if err != nil {
-		return fmt.Errorf("failed to parse PR URL: %w", err)
-	}
-
-	forgeToken, err := forge.OwnerToken(owner)
-	if err != nil {
-		return fmt.Errorf("failed to get forge token: %w", err)
-	}
-
-	if err := forge.SquashMerge(ctx, owner, repo, prNumber, forgeToken); err != nil {
-		return fmt.Errorf("failed to squash merge PR: %w", err)
-	}
-
-	// Transition parent task to done. Refresh its state first to handle retries safely.
-	parentTask, err = client.GetTask(ctx, parentTaskID)
-	if err != nil {
-		return fmt.Errorf("failed to refresh parent task state: %w", err)
-	}
-	if parentTask.State != "done" {
-		if err := client.TransitionTask(ctx, parentTaskID, "done", nil); err != nil {
-			return fmt.Errorf("failed to transition parent task to done: %w", err)
+		if prURL == "" {
+			return fmt.Errorf("parent task has no pr link")
 		}
+
+		owner, repo, prNumber, err := parsePRURL(prURL)
+		if err != nil {
+			return fmt.Errorf("failed to parse PR URL: %w", err)
+		}
+
+		forgeToken, err := forge.OwnerToken(owner)
+		if err != nil {
+			return fmt.Errorf("failed to get forge token: %w", err)
+		}
+
+		if err := forge.SquashMerge(ctx, owner, repo, prNumber, forgeToken); err != nil {
+			return fmt.Errorf("failed to squash merge PR: %w", err)
+		}
+
+		// Transition parent task to done. Refresh its state first to handle retries safely.
+		parentTask, err = client.GetTask(ctx, parentTaskID)
+		if err != nil {
+			return fmt.Errorf("failed to refresh parent task state: %w", err)
+		}
+		if parentTask.State != "done" {
+			if err := client.TransitionTask(ctx, parentTaskID, "done", nil); err != nil {
+				return fmt.Errorf("failed to transition parent task to done: %w", err)
+			}
+		}
+
+	case "done":
+		// PR already merged and parent already finalized by a prior run; fall through
+		// to finalize this merge task.
+
+	default:
+		return fmt.Errorf("parent task state is %q, expected approved or done", parentTask.State)
 	}
 
 	// Transition merge task to done. Refresh its state first to handle retries safely.
