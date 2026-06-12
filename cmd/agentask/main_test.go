@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -2343,5 +2344,177 @@ func TestExecuteRejectServerError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "failed to get task") {
 		t.Errorf("expected error to mention 'failed to get task', got: %v", err)
+	}
+}
+
+// setupRepoForWtEnsure creates a temporary git repo for testing wt-ensure
+func setupRepoForWtEnsure(t *testing.T) string {
+	tmpDir := t.TempDir()
+
+	cmds := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@example.com"},
+		{"git", "config", "user.name", "Test User"},
+		{"git", "commit", "--allow-empty", "-m", "initial"},
+	}
+
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = tmpDir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("setup failed: %v", err)
+		}
+	}
+
+	cmd := exec.Command("git", "-C", tmpDir, "update-ref", "refs/remotes/origin/main", "HEAD")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("setup failed to create origin/main: %v", err)
+	}
+
+	return tmpDir
+}
+
+func TestExecuteWtEnsurePullRequestMode(t *testing.T) {
+	// Don't set AGENTASK_DELIVERY_MODE, defaults to pull_request
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tuiclient.TaskDetail{ID: "task-123", Title: "Test Task"})
+	}))
+	defer server.Close()
+
+	err := executeWtEnsure(context.Background(), server.URL, "test-token", []string{"task-123", "--repo", "/tmp/repo"})
+	if err == nil {
+		t.Fatal("expected error in pull_request mode, got nil")
+	}
+	if !strings.Contains(err.Error(), "local_commit") {
+		t.Errorf("expected error to mention 'local_commit', got: %v", err)
+	}
+}
+
+func TestExecuteWtEnsureLocalCommitMode(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	repoDir := setupRepoForWtEnsure(t)
+	wtHome := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				Title: "Test Task Feature",
+			})
+		}
+	}))
+	defer server.Close()
+
+	buf := &bytes.Buffer{}
+	oldStdout := os.Stdout
+	r, w, _ := os.Pipe()
+	os.Stdout = w
+
+	err := executeWtEnsure(context.Background(), server.URL, "test-token", []string{"task-123", "--repo", repoDir})
+	w.Close()
+	os.Stdout = oldStdout
+
+	if err != nil {
+		t.Fatalf("executeWtEnsure failed: %v", err)
+	}
+
+	// Read output
+	if _, err := buf.ReadFrom(r); err != nil {
+		t.Fatalf("failed to read output: %v", err)
+	}
+
+	output := buf.String()
+	if output == "" {
+		t.Error("expected output (worktree path), got empty string")
+	}
+}
+
+func TestExecuteWtEnsureIdempotent(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	repoDir := setupRepoForWtEnsure(t)
+	wtHome := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-456",
+				Title: "Another Task",
+			})
+		}
+	}))
+	defer server.Close()
+
+	// First call
+	err := executeWtEnsure(context.Background(), server.URL, "test-token", []string{"task-456", "--repo", repoDir})
+	if err != nil {
+		t.Fatalf("first executeWtEnsure failed: %v", err)
+	}
+
+	// Second call - should not error (idempotent)
+	err = executeWtEnsure(context.Background(), server.URL, "test-token", []string{"task-456", "--repo", repoDir})
+	if err != nil {
+		t.Fatalf("second executeWtEnsure failed (not idempotent): %v", err)
+	}
+}
+
+func TestExecuteWtEnsureMissingTaskID(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	err := executeWtEnsure(context.Background(), server.URL, "test-token", []string{"--repo", "/tmp/repo"})
+	if err == nil {
+		t.Fatal("expected error for missing task ID, got nil")
+	}
+	if !strings.Contains(err.Error(), "task ID is required") {
+		t.Errorf("expected error to mention 'task ID is required', got: %v", err)
+	}
+}
+
+func TestExecuteWtEnsureMissingRepo(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("AGENTASK_REPO", "")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(tuiclient.TaskDetail{ID: "task-123", Title: "Test Task"})
+	}))
+	defer server.Close()
+
+	err := executeWtEnsure(context.Background(), server.URL, "test-token", []string{"task-123"})
+	if err == nil {
+		t.Fatal("expected error for missing repo, got nil")
+	}
+	// Error should mention --repo or AGENTASK_REPO requirement
+	if !strings.Contains(err.Error(), "--repo") && !strings.Contains(err.Error(), "AGENTASK_REPO") {
+		t.Errorf("expected error to mention '--repo' or 'AGENTASK_REPO', got: %v", err)
+	}
+}
+
+func TestExecuteWtEnsureMissingURL(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	err := executeWtEnsure(context.Background(), "", "test-token", []string{"task-123", "--repo", "/tmp/repo"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_URL") {
+		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	}
+}
+
+func TestExecuteWtEnsureMissingToken(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	err := executeWtEnsure(context.Background(), "http://localhost:8080", "", []string{"task-123", "--repo", "/tmp/repo"})
+	if err == nil {
+		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+	}
+	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
+		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
 	}
 }
