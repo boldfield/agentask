@@ -2,10 +2,13 @@ package main
 
 import (
 	"context"
+	"flag"
 	"fmt"
 	"io"
+	"os"
 	"os/exec"
 
+	"github.com/boldfield/agentask/internal/localcommit"
 	"github.com/boldfield/agentask/internal/tuiclient"
 )
 
@@ -17,17 +20,20 @@ func executeDiff(ctx context.Context, baseURL, token string, args []string, out 
 		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
 	}
 
-	taskID := ""
-	for _, arg := range args {
-		if arg != "--json" {
-			taskID = arg
-			break
-		}
+	// Parse flags
+	fs := flag.NewFlagSet("diff", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fullFlag := fs.Bool("full", false, "show full commit (local_commit mode only)")
+	repoFlag := fs.String("repo", "", "repository directory")
+	positionals, err := parseFlagsWithPositionals(fs, args)
+	if err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
 	}
 
-	if taskID == "" {
+	if len(positionals) < 1 {
 		return fmt.Errorf("task id required")
 	}
+	taskID := positionals[0]
 
 	client := tuiclient.NewHTTPClient(baseURL, token)
 	task, err := client.GetTask(ctx, taskID)
@@ -35,7 +41,45 @@ func executeDiff(ctx context.Context, baseURL, token string, args []string, out 
 		return fmt.Errorf("failed to get task: %w", err)
 	}
 
-	// Find the PR link
+	// Local commit mode
+	if localcommit.IsLocalCommit() {
+		// Find the commit link
+		var commitSHA string
+		for _, link := range task.Links {
+			if link.Kind == "commit" {
+				commitSHA = link.Value
+				break
+			}
+		}
+
+		if commitSHA == "" {
+			return fmt.Errorf("task has no commit link")
+		}
+
+		// Resolve repoDir from --repo flag or AGENTASK_REPO
+		repoDir := *repoFlag
+		if repoDir == "" {
+			repoDir = os.Getenv("AGENTASK_REPO")
+		}
+		if repoDir == "" {
+			return fmt.Errorf("--repo flag or AGENTASK_REPO environment variable required")
+		}
+
+		var output string
+		if *fullFlag {
+			output, err = localcommit.ShowCommit(repoDir, commitSHA)
+		} else {
+			output, err = localcommit.DiffBase(repoDir, commitSHA)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to get diff/show: %w", err)
+		}
+
+		fmt.Fprint(out, output)
+		return nil
+	}
+
+	// PR mode
 	var prURL string
 	for _, link := range task.Links {
 		if link.Kind == "pr" {

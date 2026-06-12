@@ -2493,6 +2493,180 @@ func TestExecuteDiffMissingToken(t *testing.T) {
 	}
 }
 
+func TestExecuteDiffLocalCommitBaseDiff(t *testing.T) {
+	// Create a temporary git repo with a commit
+	tmpDir := t.TempDir()
+	runCmd := func(dir string, args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git command failed: %v", err)
+		}
+	}
+
+	// Initialize repo with main branch
+	runCmd(tmpDir, "git", "init")
+	runCmd(tmpDir, "git", "config", "user.email", "test@example.com")
+	runCmd(tmpDir, "git", "config", "user.name", "Test User")
+
+	// Create initial commit on main
+	if err := os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("initial\n"), 0644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	runCmd(tmpDir, "git", "add", "file.txt")
+	runCmd(tmpDir, "git", "commit", "-m", "initial commit")
+
+	// Create origin/main ref
+	runCmd(tmpDir, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+
+	// Create a new commit for the diff
+	if err := os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("initial\nnew line\n"), 0644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	runCmd(tmpDir, "git", "add", "file.txt")
+	runCmd(tmpDir, "git", "commit", "-m", "add line")
+
+	// Get the commit SHA
+	cmd := exec.Command("git", "-C", tmpDir, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get commit SHA: %v", err)
+	}
+	commitSHA := strings.TrimSpace(string(out))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-1",
+				State: "in_progress",
+				Links: []tuiclient.TaskLink{
+					{Kind: "commit", Value: commitSHA},
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	// Set up environment for local_commit mode
+	oldMode := os.Getenv("AGENTASK_DELIVERY_MODE")
+	t.Cleanup(func() { os.Setenv("AGENTASK_DELIVERY_MODE", oldMode) })
+	os.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+
+	buf := &bytes.Buffer{}
+	err = executeDiff(context.Background(), server.URL, "test-token", []string{"--repo", tmpDir, "task-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeDiff failed: %v", err)
+	}
+
+	output := buf.String()
+	// The diff should show the new line we added
+	if !strings.Contains(output, "new line") {
+		t.Errorf("expected 'new line' in diff output, got: %s", output)
+	}
+}
+
+func TestExecuteDiffLocalCommitFull(t *testing.T) {
+	// Create a temporary git repo with a commit
+	tmpDir := t.TempDir()
+	runCmd := func(dir string, args ...string) {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = dir
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git command failed: %v", err)
+		}
+	}
+
+	// Initialize repo with main branch
+	runCmd(tmpDir, "git", "init")
+	runCmd(tmpDir, "git", "config", "user.email", "test@example.com")
+	runCmd(tmpDir, "git", "config", "user.name", "Test User")
+
+	// Create initial commit on main
+	if err := os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("initial\n"), 0644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	runCmd(tmpDir, "git", "add", "file.txt")
+	runCmd(tmpDir, "git", "commit", "-m", "initial commit")
+
+	// Create origin/main ref
+	runCmd(tmpDir, "git", "update-ref", "refs/remotes/origin/main", "HEAD")
+
+	// Create a new commit for the show
+	if err := os.WriteFile(filepath.Join(tmpDir, "file.txt"), []byte("initial\nnew line\n"), 0644); err != nil {
+		t.Fatalf("failed to write file: %v", err)
+	}
+	runCmd(tmpDir, "git", "add", "file.txt")
+	runCmd(tmpDir, "git", "commit", "-m", "add line")
+
+	// Get the commit SHA
+	cmd := exec.Command("git", "-C", tmpDir, "rev-parse", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get commit SHA: %v", err)
+	}
+	commitSHA := strings.TrimSpace(string(out))
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-1",
+				State: "in_progress",
+				Links: []tuiclient.TaskLink{
+					{Kind: "commit", Value: commitSHA},
+				},
+			})
+		}
+	}))
+	defer server.Close()
+
+	// Set up environment for local_commit mode
+	oldMode := os.Getenv("AGENTASK_DELIVERY_MODE")
+	t.Cleanup(func() { os.Setenv("AGENTASK_DELIVERY_MODE", oldMode) })
+	os.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+
+	buf := &bytes.Buffer{}
+	err = executeDiff(context.Background(), server.URL, "test-token", []string{"--repo", tmpDir, "--full", "task-1"}, buf)
+	if err != nil {
+		t.Fatalf("executeDiff failed: %v", err)
+	}
+
+	output := buf.String()
+	// The show should contain the commit message
+	if !strings.Contains(output, "add line") {
+		t.Errorf("expected 'add line' (commit message) in show output, got: %s", output)
+	}
+}
+
+func TestExecuteDiffLocalCommitMissingCommitLink(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/tasks/") {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-1",
+				State: "in_progress",
+				Links: []tuiclient.TaskLink{},
+			})
+		}
+	}))
+	defer server.Close()
+
+	// Set up environment for local_commit mode
+	oldMode := os.Getenv("AGENTASK_DELIVERY_MODE")
+	t.Cleanup(func() { os.Setenv("AGENTASK_DELIVERY_MODE", oldMode) })
+	os.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+
+	buf := &bytes.Buffer{}
+	err := executeDiff(context.Background(), server.URL, "test-token", []string{"--repo", "/tmp", "task-1"}, buf)
+	if err == nil {
+		t.Fatal("expected error for task with no commit link, got nil")
+	}
+	if !strings.Contains(err.Error(), "no commit link") {
+		t.Errorf("expected error to mention 'no commit link', got: %v", err)
+	}
+}
+
 func TestExecuteApproveSuccess(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
