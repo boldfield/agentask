@@ -4,8 +4,13 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
+
+func sanitizeTestName(name string) string {
+	return strings.ReplaceAll(name, "/", "-")
+}
 
 func TestCleanupAbandon(t *testing.T) {
 	t.Run("removes worktree and wip branch", func(t *testing.T) {
@@ -31,7 +36,7 @@ func TestCleanupAbandon(t *testing.T) {
 
 		// Create worktree home directory (use non-temporary path to satisfy validation)
 		cwd, _ := os.Getwd()
-		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+t.Name())
+		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+sanitizeTestName(t.Name()))
 		os.MkdirAll(worktreeHome, 0755)
 		t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
@@ -101,7 +106,7 @@ func TestCleanupAbandon(t *testing.T) {
 
 		// Create worktree home directory (use non-temporary path to satisfy validation)
 		cwd, _ := os.Getwd()
-		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+t.Name())
+		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+sanitizeTestName(t.Name()))
 		os.MkdirAll(worktreeHome, 0755)
 		t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
@@ -155,7 +160,7 @@ func TestCleanupAbandon(t *testing.T) {
 
 		// Create worktree home directory (use non-temporary path to satisfy validation)
 		cwd, _ := os.Getwd()
-		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+t.Name())
+		worktreeHome := filepath.Join(cwd, "test-cleanup-worktree-home-"+sanitizeTestName(t.Name()))
 		os.MkdirAll(worktreeHome, 0755)
 		t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)

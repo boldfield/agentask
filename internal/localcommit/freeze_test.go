@@ -261,3 +261,66 @@ func TestFreeze_AlreadyRemovedWorktree(t *testing.T) {
 		t.Fatal("wip/task-123 should be deleted after Freeze")
 	}
 }
+
+func TestFreeze_PrefixCollision(t *testing.T) {
+	// Setup: wi/auth-v2 is checked out but Freeze is called with slug="auth"
+	// The guard should NOT trip because wi/auth (exact) is not checked out
+	mainDir := t.TempDir()
+	// Use current working directory for worktree home (validation rejects /tmp and /var/folders)
+	cwd, _ := os.Getwd()
+	worktreeHome := filepath.Join(cwd, "test-worktree-home-prefix")
+	os.MkdirAll(worktreeHome, 0755)
+	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
+	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+
+	runCmd(t, mainDir, "git", "init")
+	runCmd(t, mainDir, "git", "config", "user.email", "test@example.com")
+	runCmd(t, mainDir, "git", "config", "user.name", "Test User")
+
+	// Create initial commit
+	runCmd(t, mainDir, "git", "commit", "--allow-empty", "-m", "initial")
+	initialCommit := runCmd(t, mainDir, "git", "rev-parse", "HEAD")
+
+	// Create fake origin/main
+	runCmd(t, mainDir, "git", "branch", "-f", "origin/main", "main")
+
+	// Create wi/auth-v2 branch at initial commit
+	runCmd(t, mainDir, "git", "branch", "-f", "wi/auth-v2", initialCommit)
+
+	// Create a second worktree with wi/auth-v2 checked out
+	worktreeDir := filepath.Join(worktreeHome, "worktree-v2")
+	runCmd(t, mainDir, "git", "worktree", "add", worktreeDir, "wi/auth-v2")
+
+	// Create wip/task-456 with a new commit
+	runCmd(t, mainDir, "git", "commit", "--allow-empty", "-m", "wip commit for auth")
+	wipCommit := runCmd(t, mainDir, "git", "rev-parse", "HEAD")
+	runCmd(t, mainDir, "git", "branch", "-f", "wip/task-456", wipCommit)
+
+	// Call Freeze with slug="auth" - should NOT fail even though wi/auth-v2 is checked out
+	slug := "auth"
+	iid := "task-456"
+	err := Freeze(mainDir, slug, iid)
+	if err != nil {
+		t.Fatalf("Freeze should not fail when wi/auth-v2 is checked out but slug=auth: %v", err)
+	}
+
+	// Verify wi/auth was created
+	if !branchExists(t, mainDir, "wi/auth") {
+		t.Fatal("wi/auth should exist after Freeze")
+	}
+
+	// Verify wip/task-456 was deleted
+	if branchExists(t, mainDir, "wip/task-456") {
+		t.Fatal("wip/task-456 should be deleted after Freeze")
+	}
+
+	// Verify wi/auth-v2 and its worktree are still intact (the guard didn't block)
+	if !branchExists(t, mainDir, "wi/auth-v2") {
+		t.Fatal("wi/auth-v2 should still exist")
+	}
+	cmd := exec.Command("git", "-C", mainDir, "worktree", "list", "--porcelain")
+	output, _ := cmd.Output()
+	if !strings.Contains(string(output), worktreeDir) {
+		t.Fatal("worktree with wi/auth-v2 should still exist")
+	}
+}

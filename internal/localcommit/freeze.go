@@ -23,9 +23,12 @@ func Freeze(repoDir, slug, iid string) error {
 		if strings.HasPrefix(line, "worktree ") {
 			currentWorktreePath = strings.TrimPrefix(line, "worktree ")
 		}
-		if strings.Contains(line, targetBranch) && currentWorktreePath != "" {
-			checkedOutPath = currentWorktreePath
-			break
+		if strings.HasPrefix(line, "branch ") && currentWorktreePath != "" {
+			branchRef := strings.TrimSpace(strings.TrimPrefix(line, "branch "))
+			if branchRef == targetBranch {
+				checkedOutPath = currentWorktreePath
+				break
+			}
 		}
 	}
 
