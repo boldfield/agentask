@@ -576,8 +576,9 @@ func (m *BoardModel) fetchTasks() tea.Cmd {
 	}
 }
 
-// bucketTasksByState groups tasks into buckets by state, filtering out review-kind tasks
-// from the done column. This ensures the done column shows only implement deliverables.
+// bucketTasksByState groups tasks into buckets by state, filtering out review-kind
+// and merge-kind tasks from the done column. This ensures the done column shows only
+// implement deliverables, not the bookkeeping tasks the server spawns alongside them.
 func bucketTasksByState(tasks []tuiclient.Task) map[string][]tuiclient.Task {
 	bucketed := make(map[string][]tuiclient.Task)
 	for _, state := range stateOrder {
@@ -588,8 +589,8 @@ func bucketTasksByState(tasks []tuiclient.Task) map[string][]tuiclient.Task {
 		if _, exists := bucketed[task.State]; !exists {
 			continue
 		}
-		// Skip review-kind tasks from the done column
-		if task.State == stateDone && task.Kind == "review" {
+		// Skip review-kind and merge-kind tasks from the done column
+		if task.State == stateDone && (task.Kind == "review" || task.Kind == "merge") {
 			continue
 		}
 		bucketed[task.State] = append(bucketed[task.State], task)

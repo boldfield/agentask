@@ -2548,21 +2548,23 @@ func TestBoardModel_ReviewHelpBar(t *testing.T) {
 	}
 }
 
-// TestBucketTasksByState tests that review-kind tasks are excluded from the done column.
+// TestBucketTasksByState tests that review-kind and merge-kind tasks are excluded from
+// the done column.
 func TestBucketTasksByState(t *testing.T) {
-	// Create a mixed set of tasks with both implement and review kinds
+	// Create a mixed set of tasks with implement, review, and merge kinds
 	tasks := []tuiclient.Task{
 		{ID: "backlog-1", Title: "Task 1", State: "backlog", Kind: "implement"},
 		{ID: "ready-1", Title: "Task 2", State: "ready", Kind: "implement"},
 		{ID: "review-1", Title: "Review: Task 1", State: "in_progress", Kind: "review"},
 		{ID: "impl-1", Title: "Implement Feature", State: "done", Kind: "implement"},
 		{ID: "review-2", Title: "Review: Task 2", State: "done", Kind: "review"},
+		{ID: "merge-1", Title: "Merge: Task 1", State: "done", Kind: "merge"},
 		{ID: "impl-2", Title: "Fix Bug", State: "done", Kind: "implement"},
 	}
 
 	bucketed := bucketTasksByState(tasks)
 
-	// Check that done column has only 2 tasks (the implement ones, not the review)
+	// Check that done column has only 2 tasks (the implement ones, not review or merge)
 	if len(bucketed["done"]) != 2 {
 		t.Errorf("Expected done column to have 2 tasks, got %d: %v", len(bucketed["done"]), bucketed["done"])
 	}
@@ -2588,6 +2590,9 @@ func TestBucketTasksByState(t *testing.T) {
 	}
 	if doneTaskIDs["review-2"] {
 		t.Errorf("Expected review-2 to be filtered out from done column")
+	}
+	if doneTaskIDs["merge-1"] {
+		t.Errorf("Expected merge-1 to be filtered out from done column")
 	}
 
 	// Verify other columns are not affected
