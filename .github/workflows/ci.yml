@@ -19,6 +19,16 @@ jobs:
           go-version: '1.25'
           cache: true
 
+      # Tests in internal/localcommit shell out to `git`: they `git init` a temp repo and
+      # reference `main`/`origin/main`. GitHub runners default `init.defaultBranch` to
+      # `master`, so those tests fail with "not a valid object name: 'main'". Align the
+      # runner's git with this repo's branch convention (main) and give it an identity.
+      - name: Configure git for tests
+        run: |
+          git config --global init.defaultBranch main
+          git config --global user.email "ci@agentask.local"
+          git config --global user.name "agentask CI"
+
       - run: make check
 
       - run: make build
