@@ -8,6 +8,9 @@ import (
 )
 
 func TestCleanupAbandon(t *testing.T) {
+	// Skip path validation during tests since we use t.TempDir()
+	t.Setenv("AGENTASK_SKIP_PATH_VALIDATION", "1")
+
 	t.Run("removes worktree and wip branch", func(t *testing.T) {
 		// Create a temporary git repo
 		tmpDir := t.TempDir()
@@ -29,8 +32,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory
-		worktreeHome := t.TempDir()
+		// Create worktree home directory (as subdirectory to avoid /tmp or /var/folders)
+		worktreeHome := filepath.Join(tmpDir, "worktrees")
+		if err := os.Mkdir(worktreeHome, 0755); err != nil {
+			t.Fatalf("failed to create worktree home: %v", err)
+		}
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-123"
@@ -96,8 +102,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory
-		worktreeHome := t.TempDir()
+		// Create worktree home directory (as subdirectory to avoid /tmp or /var/folders)
+		worktreeHome := filepath.Join(tmpDir, "worktrees")
+		if err := os.Mkdir(worktreeHome, 0755); err != nil {
+			t.Fatalf("failed to create worktree home: %v", err)
+		}
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-456"
@@ -147,8 +156,11 @@ func TestCleanupAbandon(t *testing.T) {
 			}
 		}
 
-		// Create worktree home directory
-		worktreeHome := t.TempDir()
+		// Create worktree home directory (as subdirectory to avoid /tmp or /var/folders)
+		worktreeHome := filepath.Join(tmpDir, "worktrees")
+		if err := os.Mkdir(worktreeHome, 0755); err != nil {
+			t.Fatalf("failed to create worktree home: %v", err)
+		}
 		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-789"
