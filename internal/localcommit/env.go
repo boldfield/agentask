@@ -21,3 +21,12 @@ func DeliveryMode() string {
 func IsLocalCommit() bool {
 	return DeliveryMode() == "local_commit"
 }
+
+// WorktreeHome returns the durable worktree root directory.
+// It reads AGENTASK_WORKTREE_HOME, with fallback to AGENTASK_HOME.
+func WorktreeHome() string {
+	if home := os.Getenv("AGENTASK_WORKTREE_HOME"); home != "" {
+		return home
+	}
+	return os.Getenv("AGENTASK_HOME")
+}
