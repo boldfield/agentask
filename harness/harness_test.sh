@@ -105,6 +105,30 @@ else
   test_fail "fleet.sh doesn't export AGENTASK_DELIVERY_MODE"
 fi
 
+# Test 11: Verify fleet.sh invokes agent.sh directly with --kind and --model
+echo "Test 11: fleet.sh invokes agent.sh directly with flags"
+if grep -q '"$HARNESS_DIR/agent.sh" --kind "$KIND" $MODEL_ARG "$slot"' "$FLEET_SCRIPT"; then
+  test_pass "fleet.sh invokes agent.sh directly with --kind, --model, and slot"
+else
+  test_fail "fleet.sh doesn't invoke agent.sh directly or missing flags"
+fi
+
+# Test 12: Verify local_commit mode skips clone in single-project
+echo "Test 12: local_commit mode guards post-dispatch git commands"
+if grep -q '\[ -n "\$WT" \] &&' "$SCRIPT_TO_TEST"; then
+  test_pass "agent.sh guards post-dispatch git commands with WT check"
+else
+  test_fail "agent.sh missing WT guard on post-dispatch git commands"
+fi
+
+# Test 13: Verify multi-project rejects local_commit mode
+echo "Test 13: multi-project mode rejects local_commit"
+if grep -A 5 'MULTI-PROJECT MODE' "$SCRIPT_TO_TEST" | grep -q 'local_commit mode requires single-project'; then
+  test_pass "agent.sh rejects multi-project with local_commit"
+else
+  test_fail "agent.sh doesn't reject multi-project with local_commit"
+fi
+
 echo ""
 echo "=== Test Summary ==="
 echo "Total: $test_count | Passed: $pass_count | Failed: $fail_count"

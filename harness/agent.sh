@@ -290,6 +290,7 @@ trap cleanup EXIT
 
 # ============================== SINGLE-PROJECT MODE ==============================
 if [ "$MULTI" = 0 ]; then
+  WT=""  # Initialize WT; set only in pull_request mode
   # local_commit mode: use AGENTASK_REPO directly (CLI-managed worktree), skip clone
   if [ "$DELIVERY_MODE" = "local_commit" ]; then
     : "${AGENTASK_WORKTREE_HOME:?AGENTASK_WORKTREE_HOME required for local_commit mode}"
@@ -341,8 +342,8 @@ if [ "$MULTI" = 0 ]; then
       export AGENT_MODEL="$task_model"
       dispatch
       [ -n "$MODEL" ] && export AGENT_MODEL="$MODEL"   # restore original model for slot identity (if initially provided)
-      git -C "$WT" fetch origin --quiet 2>/dev/null || true
-      git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
+      [ -n "$WT" ] && git -C "$WT" fetch origin --quiet 2>/dev/null || true
+      [ -n "$WT" ] && git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
       [ "$STOP" -eq 1 ] && break
     else
       echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable ($KIND); sleeping 30s"; nap 30
@@ -352,6 +353,12 @@ if [ "$MULTI" = 0 ]; then
 fi
 
 # ============================== MULTI-PROJECT MODE ==============================
+# local_commit mode requires single-project (works with a pre-set worktree); multi-project clones multiple repos.
+if [ "$DELIVERY_MODE" = "local_commit" ]; then
+  echo "[$AGENT_ID] local_commit mode requires SINGLE-project mode; AGENTASK_PROJECT must be set" >&2
+  exit 1
+fi
+
 ALLOW="${AGENTASK_PROJECTS:-}"   # optional comma-separated id allowlist
 in_allow() { [ -z "$ALLOW" ] && return 0; case ",$ALLOW," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 

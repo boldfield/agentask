@@ -49,9 +49,9 @@ done
 case "$DELIVERY_MODE" in pull_request|local_commit) ;; *) echo "delivery mode must be pull_request or local_commit" >&2; exit 1 ;; esac
 
 case "$KIND" in
-  implement) AGENT_SCRIPT="worker.sh" SLOT_PREFIX="worker" ;;
-  review)    AGENT_SCRIPT="reviewer.sh"; SLOT_PREFIX="reviewer" ;;
-  merge)     AGENT_SCRIPT="merger.sh";   SLOT_PREFIX="merger" ;;
+  implement) SLOT_PREFIX="worker" ;;
+  review)    SLOT_PREFIX="reviewer" ;;
+  merge)     SLOT_PREFIX="merger" ;;
   *) echo "kind must be implement|review|merge" >&2; exit 1 ;;
 esac
 
@@ -81,7 +81,7 @@ for i in $(seq 1 "$COUNT"); do
   slot="${SLOT_PREFIX}-$i"
   echo "[fleet] starting slot $slot"
   # shellcheck disable=SC2086
-  "$HARNESS_DIR/$AGENT_SCRIPT" $MODEL_ARG "$slot" &
+  "$HARNESS_DIR/agent.sh" --kind "$KIND" $MODEL_ARG "$slot" &
   PIDS+=($!)
 done
 
