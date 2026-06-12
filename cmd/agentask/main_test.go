@@ -2907,6 +2907,269 @@ func TestExecuteRejectServerError(t *testing.T) {
 	}
 }
 
+func TestExecuteApproveLocalCommitSuccess(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	tmpDir := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+
+	// Create main repo
+	mainRepo := t.TempDir()
+	initGitRepo(t, mainRepo)
+
+	// Create initial commit on main
+	cmd := exec.Command("git", "-C", mainRepo, "commit", "--allow-empty", "-m", "initial")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create fake origin/main
+	cmd = exec.Command("git", "-C", mainRepo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create origin/main: %v", err)
+	}
+
+	// Create wip/task-123 branch with a new commit
+	cmd = exec.Command("git", "-C", mainRepo, "commit", "--allow-empty", "-m", "wip work")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create wip commit: %v", err)
+	}
+
+	cmd = exec.Command("git", "-C", mainRepo, "branch", "-f", "wip/task-123", "HEAD")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create wip branch: %v", err)
+	}
+
+	// Capture the SHA of wip/task-123 before freeze (the freeze will delete the branch)
+	wipShaCmd := exec.Command("git", "-C", mainRepo, "rev-parse", "wip/task-123")
+	expectedWipSha, err := wipShaCmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get wip/task-123 SHA: %v", err)
+	}
+
+	// Create a worktree directory
+	wtPath := filepath.Join(tmpDir, "task-123")
+	if err := os.MkdirAll(wtPath, 0755); err != nil {
+		t.Fatalf("failed to create worktree dir: %v", err)
+	}
+
+	// Mock the server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/tasks/task-123" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				State: "approved",
+				Title: "Test Task Title",
+			})
+		} else if r.Method == "POST" && r.URL.Path == "/tasks/task-123/transition" {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	// Call executeApprove
+	err = executeApprove(context.Background(), server.URL, "test-token", []string{
+		"--repo", mainRepo,
+		"task-123",
+	})
+	if err != nil {
+		t.Fatalf("executeApprove failed: %v", err)
+	}
+
+	// Verify wi/test-task-title was created and points to the wip commit
+	miShaCmd := exec.Command("git", "-C", mainRepo, "rev-parse", "wi/test-task-title")
+	actualMiSha, err := miShaCmd.Output()
+	if err != nil {
+		// List branches to debug
+		debugCmd := exec.Command("git", "-C", mainRepo, "branch", "-a")
+		debugOut, _ := debugCmd.Output()
+		t.Fatalf("wi/test-task-title should exist after Freeze. Branches: %s", string(debugOut))
+	}
+	if strings.TrimSpace(string(actualMiSha)) != strings.TrimSpace(string(expectedWipSha)) {
+		t.Errorf("wi/test-task-title (SHA %s) should point to wip/task-123 (SHA %s)", strings.TrimSpace(string(actualMiSha)), strings.TrimSpace(string(expectedWipSha)))
+	}
+
+	// Verify wip/task-123 was deleted
+	cmd = exec.Command("git", "-C", mainRepo, "rev-parse", "--verify", "--quiet", "wip/task-123")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("wip/task-123 should be deleted after Freeze")
+	}
+}
+
+func TestExecuteApproveLocalCommitFootgun(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	tmpDir := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+
+	// Create main repo
+	mainRepo := t.TempDir()
+	initGitRepo(t, mainRepo)
+
+	// Create initial commit on main
+	cmd := exec.Command("git", "-C", mainRepo, "commit", "--allow-empty", "-m", "initial")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create fake origin/main
+	cmd = exec.Command("git", "-C", mainRepo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create origin/main: %v", err)
+	}
+
+	// Create wi/test-task-title branch at initial commit
+	initialSha := getGitSHA(t, mainRepo, "HEAD")
+	cmd = exec.Command("git", "-C", mainRepo, "branch", "-f", "wi/test-task-title", initialSha)
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create wi branch: %v", err)
+	}
+
+	// Create wip/task-123 with a new commit
+	cmd = exec.Command("git", "-C", mainRepo, "commit", "--allow-empty", "-m", "wip work")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create wip commit: %v", err)
+	}
+
+	cmd = exec.Command("git", "-C", mainRepo, "branch", "-f", "wip/task-123", "HEAD")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create wip branch: %v", err)
+	}
+
+	// Create a worktree with wi/test-task-title checked out
+	wtPath := filepath.Join(tmpDir, "worktree")
+	cmd = exec.Command("git", "-C", mainRepo, "worktree", "add", wtPath, "wi/test-task-title")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create worktree: %v", err)
+	}
+
+	// Mock the server
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/tasks/task-123" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				State: "approved",
+				Title: "Test Task Title",
+			})
+		}
+	}))
+	defer server.Close()
+
+	// Call executeApprove - should fail with footgun error
+	err := executeApprove(context.Background(), server.URL, "test-token", []string{
+		"--repo", mainRepo,
+		"task-123",
+	})
+	if err == nil {
+		t.Fatal("expected footgun error, got nil")
+	}
+
+	if !strings.Contains(err.Error(), "is checked out at") {
+		t.Errorf("error should mention 'is checked out at', got: %v", err)
+	}
+
+	// Verify wi/test-task-title is still at initial commit (unchanged)
+	cmd = exec.Command("git", "-C", mainRepo, "rev-parse", "wi/test-task-title")
+	currentSha, _ := cmd.Output()
+	if strings.TrimSpace(string(currentSha)) != initialSha {
+		t.Errorf("wi/test-task-title should be unchanged after failed Freeze")
+	}
+
+	// Verify wip/task-123 still exists
+	cmd = exec.Command("git", "-C", mainRepo, "rev-parse", "--verify", "--quiet", "wip/task-123")
+	if err := cmd.Run(); err != nil {
+		t.Fatal("wip/task-123 should still exist after failed Freeze")
+	}
+}
+
+func TestExecuteApproveFreezeOnly(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	tmpDir := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+
+	// Create main repo
+	mainRepo := t.TempDir()
+	initGitRepo(t, mainRepo)
+
+	// Create initial commit on main
+	cmd := exec.Command("git", "-C", mainRepo, "commit", "--allow-empty", "-m", "initial")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	// Create fake origin/main
+	cmd = exec.Command("git", "-C", mainRepo, "update-ref", "refs/remotes/origin/main", "HEAD")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create origin/main: %v", err)
+	}
+
+	// Create wip/task-123 with a new commit
+	cmd = exec.Command("git", "-C", mainRepo, "commit", "--allow-empty", "-m", "wip work")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create wip commit: %v", err)
+	}
+
+	cmd = exec.Command("git", "-C", mainRepo, "branch", "-f", "wip/task-123", "HEAD")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create wip branch: %v", err)
+	}
+
+	// Capture the SHA of wip/task-123 before freeze
+	wipShaCmd := exec.Command("git", "-C", mainRepo, "rev-parse", "wip/task-123")
+	expectedWipShaFreezeOnly, err := wipShaCmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get wip/task-123 SHA: %v", err)
+	}
+
+	// Create a worktree directory
+	wtPath := filepath.Join(tmpDir, "task-123")
+	if err := os.MkdirAll(wtPath, 0755); err != nil {
+		t.Fatalf("failed to create worktree dir: %v", err)
+	}
+
+	// Mock the server
+	transitionCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/tasks/task-123" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				State: "approved",
+				Title: "Test Task Title",
+			})
+		} else if r.Method == "POST" && r.URL.Path == "/tasks/task-123/transition" {
+			transitionCalled = true
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	// Call executeApprove with --freeze-only
+	err = executeApprove(context.Background(), server.URL, "test-token", []string{
+		"--repo", mainRepo,
+		"--freeze-only",
+		"task-123",
+	})
+	if err != nil {
+		t.Fatalf("executeApprove with --freeze-only failed: %v", err)
+	}
+
+	// Verify transition was NOT called
+	if transitionCalled {
+		t.Fatal("transition should not be called with --freeze-only")
+	}
+
+	// Verify wi/test-task-title was created and points to the wip commit
+	miShaCmd := exec.Command("git", "-C", mainRepo, "rev-parse", "wi/test-task-title")
+	actualMiSha, err := miShaCmd.Output()
+	if err != nil {
+		t.Fatal("wi/test-task-title should exist after Freeze")
+	}
+	if strings.TrimSpace(string(actualMiSha)) != strings.TrimSpace(string(expectedWipShaFreezeOnly)) {
+		t.Errorf("wi/test-task-title (SHA %s) should point to wip/task-123 (SHA %s)", strings.TrimSpace(string(actualMiSha)), strings.TrimSpace(string(expectedWipShaFreezeOnly)))
+	}
+}
+
 // setupRepoForWtEnsure creates a temporary git repo for testing wt-ensure
 func setupRepoForWtEnsure(t *testing.T) string {
 	tmpDir := t.TempDir()
