@@ -138,7 +138,7 @@ curl -s "${A[@]}" -X POST "$AGENTASK_URL/tasks/$REVIEW_TASK_ID/claim" -d "{\"age
 
 The review task's `spec` carries the **Implementation PR** URL and the **Parent task** id (also in
 `target_task_id`). GET the parent task too — its `spec` is the acceptance criteria you review
-against, and its `agent_merge` flag + `pr` link matter for the merge step.
+against, and its `pr` link is the PR you review. Reviewers never merge — your output is the verdict.
 
 ### Review as merged with main
 
