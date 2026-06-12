@@ -148,12 +148,22 @@ else
   SLOT="${SLOT:-${AGENT_SLOT:-$DEFAULT_SLOT}}"
 fi
 
+# Delivery mode check
+DELIVERY_MODE="${AGENTASK_DELIVERY_MODE:-pull_request}"
+case "$DELIVERY_MODE" in pull_request|local_commit) ;; *) echo "delivery mode must be pull_request or local_commit" >&2; exit 1 ;; esac
+
 # Prompt file is determined by task track (dynamically, see dispatch).
-# Helper to get prompt file path from track and kind.
+# Helper to get prompt file path from track and kind, with local_commit override.
 get_prompt_file() {
   local track="${1:-build}"
   local kind="$2"
-  echo "$HARNESS_DIR/prompts/$track/$kind.md"
+  # For local_commit mode, use dedicated prompts if available
+  if [ "$DELIVERY_MODE" = "local_commit" ] && [ "$kind" = "implement" ]; then
+    # Use the dedicated local_commit worker prompt
+    echo "$HARNESS_DIR/worker-prompt-localcommit.md"
+  else
+    echo "$HARNESS_DIR/prompts/$track/$kind.md"
+  fi
 }
 
 ID_DIR="$AGENTASK_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
@@ -280,24 +290,35 @@ trap cleanup EXIT
 
 # ============================== SINGLE-PROJECT MODE ==============================
 if [ "$MULTI" = 0 ]; then
-  MAIN_REPO="${AGENTASK_MAIN_REPO:-$AGENTASK_REPO}"
-  WT="$AGENTASK_HOME/wt-$SLOT"
-  # Guard: refuse if MAIN_REPO doesn't match the pinned project's repo.
-  _proj_repo=$(agentask project "$AGENTASK_PROJECT" --json | jq -r '.repo // ""')
-  _origin=$(git -C "$MAIN_REPO" remote get-url origin 2>/dev/null || echo "")
-  if [ -n "$_proj_repo" ] && [ "$(norm_repo "$_proj_repo")" != "$(norm_repo "$_origin")" ]; then
-    echo "[$AGENT_ID] REFUSING: project $AGENTASK_PROJECT repo is '$(norm_repo "$_proj_repo")' but AGENTASK_REPO ($MAIN_REPO) points at '$(norm_repo "$_origin")'." >&2
-    exit 1
+  WT=""  # Initialize WT; set only in pull_request mode
+  # local_commit mode: use AGENTASK_REPO directly (CLI-managed worktree), skip clone
+  if [ "$DELIVERY_MODE" = "local_commit" ]; then
+    : "${AGENTASK_WORKTREE_HOME:?AGENTASK_WORKTREE_HOME required for local_commit mode}"
+    MAIN_REPO="$AGENTASK_REPO"
+    export AGENTASK_WORKTREE_HOME
+    cd "$MAIN_REPO" || { echo "[$AGENT_ID] failed to cd to AGENTASK_REPO ($MAIN_REPO)" >&2; exit 1; }
+    AGENT_MODEL_STR="${MODEL:+$MODEL/}$KIND"
+    echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) SINGLE (local_commit) @ project $AGENTASK_PROJECT @ $MAIN_REPO; polling"
+  else
+    # pull_request mode: standard clone + worktree setup
+    MAIN_REPO="${AGENTASK_MAIN_REPO:-$AGENTASK_REPO}"
+    WT="$AGENTASK_HOME/wt-$SLOT"
+    # Guard: refuse if MAIN_REPO doesn't match the pinned project's repo.
+    _proj_repo=$(agentask project "$AGENTASK_PROJECT" --json | jq -r '.repo // ""')
+    _origin=$(git -C "$MAIN_REPO" remote get-url origin 2>/dev/null || echo "")
+    if [ -n "$_proj_repo" ] && [ "$(norm_repo "$_proj_repo")" != "$(norm_repo "$_origin")" ]; then
+      echo "[$AGENT_ID] REFUSING: project $AGENTASK_PROJECT repo is '$(norm_repo "$_proj_repo")' but AGENTASK_REPO ($MAIN_REPO) points at '$(norm_repo "$_origin")'." >&2
+      exit 1
+    fi
+    [ -n "$_proj_repo" ] && apply_owner_token "$(norm_repo "$_proj_repo" | cut -d/ -f1)"   # gh auth for the pinned project's owner
+    git -C "$MAIN_REPO" fetch origin --quiet || true
+    git -C "$MAIN_REPO" worktree prune
+    [ -e "$WT" ] && { git -C "$MAIN_REPO" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"; }
+    git -C "$MAIN_REPO" worktree add --detach "$WT" origin/main
+    export AGENTASK_REPO="$WT"; cd "$WT" || { echo "worktree cd failed"; exit 1; }
+    AGENT_MODEL_STR="${MODEL:+$MODEL/}$KIND"
+    echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) SINGLE @ project $AGENTASK_PROJECT @ $WT; polling"
   fi
-  [ -n "$_proj_repo" ] && apply_owner_token "$(norm_repo "$_proj_repo" | cut -d/ -f1)"   # gh auth for the pinned project's owner
-  git -C "$MAIN_REPO" fetch origin --quiet || true
-  git -C "$MAIN_REPO" worktree prune
-  [ -e "$WT" ] && { git -C "$MAIN_REPO" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"; }
-  git -C "$MAIN_REPO" worktree add --detach "$WT" origin/main
-  export AGENTASK_REPO="$WT"; cd "$WT" || { echo "worktree cd failed"; exit 1; }
-
-  AGENT_MODEL_STR="${MODEL:+$MODEL/}$KIND"
-  echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) SINGLE @ project $AGENTASK_PROJECT @ $WT; polling"
   while true; do
     [ "$STOP" -eq 1 ] && break
     if has_claimable_work "$AGENTASK_PROJECT"; then
@@ -321,8 +342,8 @@ if [ "$MULTI" = 0 ]; then
       export AGENT_MODEL="$task_model"
       dispatch
       [ -n "$MODEL" ] && export AGENT_MODEL="$MODEL"   # restore original model for slot identity (if initially provided)
-      git -C "$WT" fetch origin --quiet 2>/dev/null || true
-      git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
+      [ -n "$WT" ] && git -C "$WT" fetch origin --quiet 2>/dev/null || true
+      [ -n "$WT" ] && git -C "$WT" checkout --detach --force origin/main --quiet 2>/dev/null || true
       [ "$STOP" -eq 1 ] && break
     else
       echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable ($KIND); sleeping 30s"; nap 30
@@ -332,6 +353,12 @@ if [ "$MULTI" = 0 ]; then
 fi
 
 # ============================== MULTI-PROJECT MODE ==============================
+# local_commit mode requires single-project (works with a pre-set worktree); multi-project clones multiple repos.
+if [ "$DELIVERY_MODE" = "local_commit" ]; then
+  echo "[$AGENT_ID] local_commit mode requires SINGLE-project mode; AGENTASK_PROJECT must be set" >&2
+  exit 1
+fi
+
 ALLOW="${AGENTASK_PROJECTS:-}"   # optional comma-separated id allowlist
 in_allow() { [ -z "$ALLOW" ] && return 0; case ",$ALLOW," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
