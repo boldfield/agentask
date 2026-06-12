@@ -33,7 +33,7 @@ func validatePath(path string) error {
 		return err
 	}
 
-	if strings.HasPrefix(abs, "/tmp") || strings.HasPrefix(abs, "/var/folders") {
+	if strings.HasPrefix(abs, "/tmp") {
 		return fmt.Errorf("worktree home cannot be under temporary filesystem: %s", abs)
 	}
 
