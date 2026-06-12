@@ -98,12 +98,12 @@ The inter-phase contract is the set of named `ProjectState` fields each phase re
 
 | Phase | Reads | Writes | Side effects |
 |---|---|---|---|
-| **scaffold** (NEW, pre-design) | candidate | `ProjectID`, `DocumentID`, `Metadata["repo_slug"]`, `Metadata["repo_owner"]` | create repo `<owner>/<slug>` with **initial commit = README + canonical Makefile + CI** (no `DESIGN.md`); register Agentask project + design doc |
+| **scaffold** (NEW, pre-design) | candidate | `ProjectID`, `DocumentID`, `Metadata["repo_title"]` (= `slugify(candidate.Name)`), `Metadata["built_repo_path"]` | create repo `<owner>/<slug>` with **initial commit = README + canonical Makefile + CI** (no `DESIGN.md`); register Agentask project + design doc. **Use `repo_title` — the existing key every downstream phase reads (queue/tagrelease/abandon/discover); `repo_slug` is read by nothing.** |
 | **design** | `ProjectID`, `DocumentID`, candidate | `Design` (merged `DESIGN.md` text), `Metadata[design_task_id]` | seed `track=design` task; poll to `done`; read merged `DESIGN.md` file |
 | **design-gate** | `Design` | (gate verdict) | — |
 | **decompose** | `Design`, `ProjectID` | (build tasks) | seed build tasks `depends_on` the contract |
 
-- `Metadata["repo_slug"] = slugify(candidate.Name)` — pinned deterministic helper (§1.5, F1).
+- `Metadata["repo_title"] = slugify(candidate.Name)` (NEW mode) / `= target_repo` (EXTEND mode) — the repo-name key every downstream phase reads. `slugify` is the pinned deterministic helper (§1.5, F1).
 - `Design` = merged `DESIGN.md` file content, **no JSON header**.
 
 ### 1.4 Harness prompt contract (Option B — generic core, layered extension)
@@ -140,7 +140,7 @@ this design defines it; **EXISTING** = the current declaration, which the task a
 |---|---|---|
 | `slugify` (F1, NEW) | `func slugify(name string) string` in `internal/founder` — lowercase, hyphenate, strip non-alnum, collapse/trim dashes; deterministic. | F1 → F2 |
 | Phase enum (F3, NEW) | add `PhaseScaffold Phase = "scaffold"` to `types.go`. | — |
-| `scaffold.Execute` (F2) | implements EXISTING `PhaseHandler.Execute(ctx, *ProjectState) (Phase, error)`, returns `PhaseDesign`. Calls EXISTING `GHClientInterface.CreatePrivateRepo(ctx, owner, repo)`, `PushInitialCommit(ctx, owner, repo, repoPath, message)`; `AgentaskClientInterface.CreateProject(ctx, name, repo)(*Project,error)`, `CreateDocument(ctx, projectID, kind, title, ref)(*Document,error)`. **Correction:** writes `state.Metadata["repo_slug"|"repo_owner"]` — `ProjectState` has **no** `RepoSlug`/`RepoOwner` fields (it uses `Metadata`, like today's `repo_title`). | F2 ← F1 |
+| `scaffold.Execute` (F2) | implements EXISTING `PhaseHandler.Execute(ctx, *ProjectState) (Phase, error)`, returns `PhaseDesign`. Calls EXISTING `GHClientInterface.CreatePrivateRepo(ctx, owner, repo)`, `PushInitialCommit(ctx, owner, repo, repoPath, message)`; `AgentaskClientInterface.CreateProject(ctx, name, repo)(*Project,error)`, `CreateDocument(ctx, projectID, kind, title, ref)(*Document,error)`. **Correction (twice over):** writes `state.Metadata["repo_title"] = repoName` + `["built_repo_path"]` — `ProjectState` has **no** struct fields for these (uses `Metadata`), AND the key is **`repo_title`**, the existing key `queue_phase.go:46` / `tagrelease_phase.go:62` / `abandon_phase.go` / `discover.go` all read (they `PhaseAbandon` if it's missing). `repo_slug` was an invented key nothing reads — using it hard-abandons the pipeline at tag-release and queue. | F2 ← F1 |
 | Factory + transitions (F3) | factory `Create(PhaseScaffold)`→scaffold; `select` returns `PhaseScaffold` (was `PhaseDesign`); scaffold returns `PhaseDesign`. | F3 ← F2 |
 | `readDesignFromTask` (F4) | EXISTING sig `(d *DesignPhase) readDesignFromTask(ctx, *ProjectState, *agentaskclient.Task) error`; new body uses EXISTING `RepoCloner.CloneRepo(ctx, owner, repo, targetPath) error` → read `DESIGN.md` → `state.Design`; drop `task.Result`. | F4 ← S1f |
 | decompose parse (F5) | replace `extractInterfaceContract` (`## Behavior`→`## Command Surface`), `validateSingleContract`, `extractDesignMarkdown` (drop JSON strip). Internal; tested vs §1.1 fixture. | F5 ← S1f |
@@ -271,10 +271,13 @@ must automate, so the pattern — not just this instance — needs to live in th
    fields) AND *operation contracts* (the exact call signatures — function/method signatures, API
    endpoints, CLI args + exit codes). A shared data fixture only lets a *parser* be tested in
    isolation; two tasks on opposite sides of a *call* also need the signature pinned or they compile
-   against guesses and don't fit. **Pin operation signatures by reading the real code, never by
-   inventing them** — doing so for this design corrected the merge verb's argument, corrected a
-   non-existent struct field, and surfaced a hidden prerequisite task (the forge-helper extraction)
-   that no data contract would have revealed. A task may only produce or consume a pinned contract;
+   against guesses and don't fit. **Pin every contract name — signatures AND data-contract identifiers
+   (metadata keys, section headings, struct fields) — from the real code via grep, never invent
+   them.** This is the single most repeated failure: inventing `repo_slug` (the code reads
+   `repo_title`), under-naming the `api.go` kind-allowlist, missing the `queue_phase` consumer.
+   Doing it right corrected the merge verb's argument and a non-existent struct field, and surfaced
+   the hidden forge-helper task; doing it wrong hard-abandoned the pipeline. **Grep all consumers of
+   a name before pinning it, across every repo.** A task may only produce or consume a pinned contract;
    if it needs one that isn't pinned, the contract list is amended first.
 2. **Ship a shared fixture per contract.** Each contract gets a concrete fixture so every *consumer*
    task is verifiable in isolation against the fixture, not against the producer.
