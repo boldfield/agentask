@@ -62,6 +62,12 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
      conflict with main — sync `origin/main` and resolve before resubmitting").
    - Clean merge → run `make check` and `make test` **on the merged result**, and read the full diff
      (`gh pr diff <pr-url>`). Any failure → reject.
+   - **CI is the source of truth — check it, don't trust your local run.** Run
+     `gh pr checks "<pr-url>"`. If any check has **FAILED**, reject (note which check + the failure):
+     your local environment differs from CI (CI's git defaults `init.defaultBranch` to `master`, has
+     no `gh` auth, etc.), so a green local run over a red CI means the test is non-portable — a defect
+     to reject, not approve. If checks are still **pending**, wait and re-check before deciding; never
+     approve over a known-red CI.
    - **Interactive / terminal-UI changes (e.g. `cmd/agentask-tui`, any Bubble Tea `Update`/`View`
      code): reading the diff + green `make check`/`make test` is NOT sufficient** — a TUI routinely
      passes both while rendering a blank screen, because logic and *display* are separate paths. You
