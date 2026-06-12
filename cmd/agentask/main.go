@@ -671,8 +671,15 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 
 		wtPath := filepath.Join(wtHome, taskID)
 
+		// Resolve tip for rework detection: use MR branch if it exists, else origin/main
+		slug := localcommit.Slugify(task.Title)
+		tip, err := localcommit.ResolveTip(wtPath, slug)
+		if err != nil {
+			return fmt.Errorf("failed to resolve tip: %w", err)
+		}
+
 		isRework := false
-		cmd := exec.Command("git", "-C", wtPath, "rev-list", "--count", "origin/main..HEAD")
+		cmd := exec.Command("git", "-C", wtPath, "rev-list", "--count", tip+"..HEAD")
 		var stdout bytes.Buffer
 		cmd.Stdout = &stdout
 		if err := cmd.Run(); err == nil {

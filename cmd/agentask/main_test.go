@@ -1175,6 +1175,140 @@ func TestExecuteSubmitLocalCommitWithMessageOverride(t *testing.T) {
 	}
 }
 
+func TestExecuteSubmitLocalCommitStackedItems(t *testing.T) {
+	// Test: item B stacked on item A (same document) should create NEW commit, not amend item A's commit
+	// Both items have the same slug since they're on the same document
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	tmpDir := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+
+	tmpRepo := t.TempDir()
+	initGitRepo(t, tmpRepo)
+
+	// Simulate item A's frozen commit: create wi/document-foo branch with a commit
+	// (slug from "Document Foo" is "document-foo")
+	if err := exec.Command("git", "-C", tmpRepo, "checkout", "-b", "wi/document-foo").Run(); err != nil {
+		t.Fatalf("failed to create wi/document-foo: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(tmpRepo, "doc.txt"), []byte("item A"), 0644); err != nil {
+		t.Fatalf("failed to create doc file: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpRepo, "add", "-A").Run(); err != nil {
+		t.Fatalf("failed to add files: %v", err)
+	}
+	if err := exec.Command("git", "-C", tmpRepo, "commit", "-m", "Item A").Run(); err != nil {
+		t.Fatalf("failed to commit: %v", err)
+	}
+
+	// Create worktree for item B cloned from wi/foo
+	wtPath := filepath.Join(tmpDir, "task-B")
+	if err := os.MkdirAll(wtPath, 0755); err != nil {
+		t.Fatalf("failed to create worktree dir: %v", err)
+	}
+
+	cloneCmd := exec.Command("git", "clone", "-b", "wi/document-foo", tmpRepo, wtPath)
+	cloneCmd.Dir = tmpDir
+	if err := cloneCmd.Run(); err != nil {
+		t.Fatalf("failed to clone repo: %v", err)
+	}
+
+	setupGitConfig(t, wtPath)
+
+	// Create wip/task-B branch from wi/foo
+	if err := exec.Command("git", "-C", wtPath, "checkout", "-b", "wip/task-B").Run(); err != nil {
+		t.Fatalf("failed to create wip/task-B: %v", err)
+	}
+
+	// Make changes for item B
+	if err := os.WriteFile(filepath.Join(wtPath, "task-b.txt"), []byte("item B"), 0644); err != nil {
+		t.Fatalf("failed to create item B file: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/tasks/task-B" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-B",
+				Title: "Document Foo", // slug is "document-foo" which should NOT match wi/foo, falling back to origin/main
+			})
+		} else if r.Method == "POST" && r.URL.Path == "/tasks/task-B/submit" {
+			var req struct {
+				AgentID string
+				Result  string
+				Links   []struct {
+					Kind  string
+					Value string
+				}
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if len(req.Links) != 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if req.Links[0].Kind != "commit" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if len(req.Links[0].Value) != 40 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "item B done",
+		"task-B",
+	})
+	if err != nil {
+		t.Fatalf("executeSubmit failed: %v", err)
+	}
+
+	// Verify: commit message is "Document Foo"
+	cmd := exec.Command("git", "-C", wtPath, "log", "-1", "--format=%s")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get commit message: %v", err)
+	}
+	if string(output) != "Document Foo\n" {
+		t.Errorf("expected commit message 'Document Foo', got %q", string(output))
+	}
+
+	// Verify: only 1 commit on top of wi/document-foo (proves it created new commit, not amended)
+	cmd = exec.Command("git", "-C", wtPath, "rev-list", "--count", "wi/document-foo..HEAD")
+	output, err = cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to count commits: %v", err)
+	}
+	if string(output) != "1\n" {
+		t.Errorf("expected 1 commit on top of wi/document-foo, got %q", string(output))
+	}
+
+	// Verify: log shows both commits in correct order
+	cmd = exec.Command("git", "-C", wtPath, "log", "--oneline")
+	output, err = cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get commit log: %v", err)
+	}
+	outputStr := string(output)
+	if !strings.Contains(outputStr, "Document Foo") {
+		t.Errorf("expected log to contain 'Document Foo', got: %s", outputStr)
+	}
+	if !strings.Contains(outputStr, "Item A") {
+		t.Errorf("expected log to contain 'Item A', got: %s", outputStr)
+	}
+}
+
 func TestExecuteTasksTable(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/projects/proj-1/tasks" {
@@ -2806,4 +2940,13 @@ func setupGitConfig(t *testing.T, repoPath string) {
 			t.Fatalf("git config failed: %v", err)
 		}
 	}
+}
+
+func getGitSHA(t *testing.T, repoPath, ref string) string {
+	cmd := exec.Command("git", "-C", repoPath, "rev-parse", ref)
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get SHA for %s: %v", ref, err)
+	}
+	return strings.TrimSpace(string(output))
 }
