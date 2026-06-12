@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,6 +11,8 @@ import (
 	"log"
 	"net/url"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -618,6 +621,7 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 	prFlag := fs.String("pr", "", "PR URL")
 	branchFlag := fs.String("branch", "", "branch name")
 	noOpFlag := fs.Bool("no-op", false, "mark as already-satisfied (no-op)")
+	messageFlag := fs.String("message", "", "commit message override (local_commit mode)")
 	agentFlag := fs.String("agent", "", "agent ID")
 	positionals, err := parseFlagsWithPositionals(fs, args)
 	if err != nil {
@@ -645,19 +649,66 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 		return fmt.Errorf("--no-op cannot be combined with --pr or --branch")
 	}
 
+	client := tuiclient.NewHTTPClient(baseURL, token)
+
 	var links []tuiclient.LinkInput
-	if *noOpFlag {
+
+	if localcommit.IsLocalCommit() {
+		task, err := client.GetTask(ctx, taskID)
+		if err != nil {
+			return fmt.Errorf("failed to get task: %w", err)
+		}
+
+		message := *messageFlag
+		if message == "" {
+			message = task.Title
+		}
+
+		wtHome, err := localcommit.WorktreeHome()
+		if err != nil {
+			return fmt.Errorf("failed to get worktree home: %w", err)
+		}
+
+		wtPath := filepath.Join(wtHome, taskID)
+
+		isRework := false
+		cmd := exec.Command("git", "-C", wtPath, "rev-list", "--count", "origin/main..HEAD")
+		var stdout bytes.Buffer
+		cmd.Stdout = &stdout
+		if err := cmd.Run(); err == nil {
+			commitCount := strings.TrimSpace(stdout.String())
+			if commitCount != "0" && commitCount != "" {
+				isRework = true
+			}
+		}
+
+		var sha string
+		if isRework {
+			sha, err = localcommit.AmendAll(wtPath, message)
+		} else {
+			sha, err = localcommit.CommitAll(wtPath, message)
+		}
+		if err != nil {
+			return fmt.Errorf("failed to commit: %w", err)
+		}
+
 		links = []tuiclient.LinkInput{
-			{Kind: "no_op", Value: "already-satisfied"},
+			{Kind: "commit", Value: sha},
 		}
 	} else {
-		if *prFlag != "" && *branchFlag != "" {
+		if *noOpFlag {
 			links = []tuiclient.LinkInput{
-				{Kind: "pr", Value: *prFlag},
-				{Kind: "branch", Value: *branchFlag},
+				{Kind: "no_op", Value: "already-satisfied"},
 			}
-		} else if *prFlag != "" || *branchFlag != "" {
-			return fmt.Errorf("--pr and --branch must be provided together")
+		} else {
+			if *prFlag != "" && *branchFlag != "" {
+				links = []tuiclient.LinkInput{
+					{Kind: "pr", Value: *prFlag},
+					{Kind: "branch", Value: *branchFlag},
+				}
+			} else if *prFlag != "" || *branchFlag != "" {
+				return fmt.Errorf("--pr and --branch must be provided together")
+			}
 		}
 	}
 
@@ -669,7 +720,6 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 		verdict = verdictFlag
 	}
 
-	client := tuiclient.NewHTTPClient(baseURL, token)
 	if err := client.SubmitTask(ctx, taskID, agentID, *resultFlag, verdict, links); err != nil {
 		return fmt.Errorf("failed to submit task: %w", err)
 	}

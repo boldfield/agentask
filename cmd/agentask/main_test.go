@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -920,6 +921,257 @@ func TestExecuteSubmitMissingAgent(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "agent ID is required") {
 		t.Errorf("expected error to mention agent ID, got: %v", err)
+	}
+}
+
+func TestExecuteSubmitLocalCommitFirstSubmit(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	tmpDir := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+
+	tmpRepo := t.TempDir()
+	initGitRepo(t, tmpRepo)
+
+	wtPath := filepath.Join(tmpDir, "task-123")
+	if err := os.MkdirAll(wtPath, 0755); err != nil {
+		t.Fatalf("failed to create worktree dir: %v", err)
+	}
+
+	cmd := exec.Command("git", "clone", tmpRepo, wtPath)
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to clone repo: %v", err)
+	}
+
+	setupGitConfig(t, wtPath)
+
+	if err := os.WriteFile(filepath.Join(wtPath, "test.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/tasks/task-123" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				Title: "Test Task Title",
+			})
+		} else if r.Method == "POST" && r.URL.Path == "/tasks/task-123/submit" {
+			var req struct {
+				AgentID string
+				Result  string
+				Links   []struct {
+					Kind  string
+					Value string
+				}
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if len(req.Links) != 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if req.Links[0].Kind != "commit" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if len(req.Links[0].Value) != 40 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "implementation done",
+		"task-123",
+	})
+	if err != nil {
+		t.Fatalf("executeSubmit failed: %v", err)
+	}
+
+	cmd = exec.Command("git", "-C", wtPath, "log", "-1", "--format=%s")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get commit message: %v", err)
+	}
+	if string(output) != "Test Task Title\n" {
+		t.Errorf("expected commit message 'Test Task Title', got %q", string(output))
+	}
+}
+
+func TestExecuteSubmitLocalCommitRework(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	tmpDir := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+
+	tmpRepo := t.TempDir()
+	initGitRepo(t, tmpRepo)
+
+	wtPath := filepath.Join(tmpDir, "task-123")
+	if err := os.MkdirAll(wtPath, 0755); err != nil {
+		t.Fatalf("failed to create worktree dir: %v", err)
+	}
+
+	cmd := exec.Command("git", "clone", tmpRepo, wtPath)
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to clone repo: %v", err)
+	}
+
+	setupGitConfig(t, wtPath)
+
+	if err := os.WriteFile(filepath.Join(wtPath, "test.txt"), []byte("v1"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	sha1Cmd := exec.Command("git", "-C", wtPath, "add", "-A")
+	if err := sha1Cmd.Run(); err != nil {
+		t.Fatalf("failed to add files: %v", err)
+	}
+	sha1Cmd = exec.Command("git", "-C", wtPath, "commit", "-m", "first commit")
+	if err := sha1Cmd.Run(); err != nil {
+		t.Fatalf("failed to create initial commit: %v", err)
+	}
+
+	if err := os.WriteFile(filepath.Join(wtPath, "test.txt"), []byte("v2"), 0644); err != nil {
+		t.Fatalf("failed to modify test file: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/tasks/task-123" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				Title: "Updated Task Title",
+			})
+		} else if r.Method == "POST" && r.URL.Path == "/tasks/task-123/submit" {
+			var req struct {
+				AgentID string
+				Result  string
+				Links   []struct {
+					Kind  string
+					Value string
+				}
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if len(req.Links) != 1 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if req.Links[0].Kind != "commit" {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			if len(req.Links[0].Value) != 40 {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "rework done",
+		"task-123",
+	})
+	if err != nil {
+		t.Fatalf("executeSubmit failed: %v", err)
+	}
+
+	cmd = exec.Command("git", "-C", wtPath, "log", "-1", "--format=%s")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get commit message: %v", err)
+	}
+	if string(output) != "Updated Task Title\n" {
+		t.Errorf("expected commit message 'Updated Task Title', got %q", string(output))
+	}
+
+	cmd = exec.Command("git", "-C", wtPath, "rev-list", "--count", "origin/main..HEAD")
+	output, err = cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to count commits: %v", err)
+	}
+	if string(output) != "1\n" {
+		t.Errorf("expected 1 commit on top of origin/main, got %q", string(output))
+	}
+}
+
+func TestExecuteSubmitLocalCommitWithMessageOverride(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	tmpDir := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+
+	tmpRepo := t.TempDir()
+	initGitRepo(t, tmpRepo)
+
+	wtPath := filepath.Join(tmpDir, "task-123")
+	if err := os.MkdirAll(wtPath, 0755); err != nil {
+		t.Fatalf("failed to create worktree dir: %v", err)
+	}
+
+	cmd := exec.Command("git", "clone", tmpRepo, wtPath)
+	cmd.Dir = tmpDir
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to clone repo: %v", err)
+	}
+
+	setupGitConfig(t, wtPath)
+
+	if err := os.WriteFile(filepath.Join(wtPath, "test.txt"), []byte("hello"), 0644); err != nil {
+		t.Fatalf("failed to create test file: %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/tasks/task-123" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-123",
+				Title: "Original Task Title",
+			})
+		} else if r.Method == "POST" && r.URL.Path == "/tasks/task-123/submit" {
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	oldAgent := os.Getenv("AGENT_ID")
+	defer os.Setenv("AGENT_ID", oldAgent)
+	os.Setenv("AGENT_ID", "test-agent")
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "done",
+		"--message", "Custom commit message",
+		"task-123",
+	})
+	if err != nil {
+		t.Fatalf("executeSubmit failed: %v", err)
+	}
+
+	cmd = exec.Command("git", "-C", wtPath, "log", "-1", "--format=%s")
+	output, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("failed to get commit message: %v", err)
+	}
+	if string(output) != "Custom commit message\n" {
+		t.Errorf("expected commit message 'Custom commit message', got %q", string(output))
 	}
 }
 
@@ -2516,5 +2768,42 @@ func TestExecuteWtEnsureMissingToken(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
 		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	}
+}
+
+func initGitRepo(t *testing.T, repoPath string) {
+	cmds := [][]string{
+		{"git", "init"},
+		{"git", "config", "user.email", "test@example.com"},
+		{"git", "config", "user.name", "Test User"},
+		{"git", "commit", "--allow-empty", "-m", "initial"},
+	}
+
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repoPath
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git setup failed: %v", err)
+		}
+	}
+
+	cmd := exec.Command("git", "-C", repoPath, "update-ref", "refs/remotes/origin/main", "HEAD")
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("failed to create origin/main: %v", err)
+	}
+}
+
+func setupGitConfig(t *testing.T, repoPath string) {
+	cmds := [][]string{
+		{"git", "config", "user.email", "test@example.com"},
+		{"git", "config", "user.name", "Test User"},
+	}
+
+	for _, args := range cmds {
+		cmd := exec.Command(args[0], args[1:]...)
+		cmd.Dir = repoPath
+		if err := cmd.Run(); err != nil {
+			t.Fatalf("git config failed: %v", err)
+		}
 	}
 }
