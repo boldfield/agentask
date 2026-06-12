@@ -190,11 +190,95 @@ export AGENTASK_REPO="~/projects/<repo>"
 
 For multi-project mode and advanced configuration, see [`harness/README.md`](./harness/README.md).
 
+### Running inside an `sbx` sandbox (`sbx.sh`)
+
+To boot the **entire stack — server + fleet — self-contained inside an `sbx` sandbox**, use
+[`harness/sbx.sh`](./harness/sbx.sh). One command starts the agentask server (local SQLite DB + a
+fixed local token), polls `/healthz` until it's up, and launches N workers + N reviewers — keeping
+**all state under `/tmp/agentask`** (nothing touches `~/.agentask`, your repos, or GitHub).
+
+```bash
+# Drain a project backed by a LOCAL git repo (local_commit mode — the CLI commits; no PR/forge):
+bash harness/sbx.sh --project <uuid> --repo <path-to-local-git-repo>
+
+# …or a fully self-contained throwaway demo (creates its own repo + project + board):
+bash harness/sbx.sh --seed-demo
+
+# Manage it without Ctrl-C (handy when launched from inside an agent):
+bash harness/sbx.sh status
+bash harness/sbx.sh stop
+```
+
+Workers and reviewers are **model-dynamic** (each runs `claude` with the task's own model). Inside a
+sandbox, a nested `claude -p` needs `--allow-dangerously-skip-permissions` alongside
+`--dangerously-skip-permissions`; `sbx.sh` supplies it via the `AGENT_CLAUDE_FLAGS` env var that
+`agent.sh` appends (empty and harmless outside the sandbox). See
+[`harness/README.md`](./harness/README.md#running-inside-an-sbx-sandbox-sbxsh) for the full flag,
+delivery-mode, and shutdown reference.
+
+## Skills
+
+Agentask ships two [Claude Code](https://docs.claude.com/claude-code) **skills** (`SKILL.md` agents)
+covering the two human-facing ends of the workflow — turning intent into a board, and draining the
+review gate. They live alongside the model-pinned fleet: `agentask-breakdown` fills the board, the
+workers and reviewers drain it, and `review` is how the human inspects and gates the `approved` lane.
+Each triggers on natural-language requests inside an interactive `claude` session.
+
+### `agentask-breakdown` — intent → board
+
+[`skills/agentask-breakdown/`](./skills/agentask-breakdown/SKILL.md) drives the collaborative front
+of the pipeline: **brainstorm the design → formalize a `design`/`feature_spec` doc → (greenfield)
+create the repo → decompose into bite-size, model-pinned tasks → register the project, document, and
+tasks via the API.** It proposes and takes positions but **stops for the human's decision** at every
+design choice, task boundary, and spec — it never finalizes alone. Its decomposition rules encode the
+system's conventions: no code in a spec, every coding task is Haiku-sized (decompose finer rather than
+escalate to a bigger model), and same-file tasks are dependency-ordered to avoid the merge-conflict
+trap. Ships helper scripts (`scripts/agentask.sh`, `scripts/create-repo.sh`). Triggers on requests
+like *"let's break this down for the board"* or *"decompose this feature into Agentask tasks"*.
+
+### `review` — the human merge gate
+
+[`.claude/skills/review/`](./.claude/skills/review/SKILL.md) is a conversational wrapper for the
+**human review gate**: show the queue of tasks awaiting a decision (`agentask pending`), show one
+task's diff (`agentask diff`), and — **only on the human's explicit instruction** — record the
+verdict (`agentask approve` / `agentask reject --note …`). It never forms its own opinion; the human
+supplies the judgment and the CLI does the mechanics (the state transition, and in `local_commit`
+mode the branch freeze + worktree cleanup). Triggers on *"what's waiting for review?"*, *"show me the
+diff for <task>"*, *"approve <task>"*, or *"reject <task> because …"*.
+
+### Installing
+
+A Claude Code skill is just a directory containing a `SKILL.md`; Claude Code auto-discovers them
+under `~/.claude/skills/` (personal, available everywhere) and `<repo>/.claude/skills/` (project,
+available only in that repo). Once discovered, a skill triggers on requests matching its
+`description` — no separate enable step. Both skills need `AGENTASK_URL` and `AGENTASK_TOKEN` in your
+environment (and, for `review` in `local_commit` mode, `AGENTASK_REPO`).
+
+- **`review`** is already a **project skill** (it lives in this repo's `.claude/skills/`), so it's
+  available automatically whenever you run `claude` from the Agentask checkout — nothing to install.
+
+- **`agentask-breakdown`** ships under [`skills/`](./skills/) so you can install it wherever you
+  scaffold boards (often a *different* repo). Copy or symlink it into a skills path:
+
+  ```bash
+  # personal — available in every project:
+  cp -r skills/agentask-breakdown ~/.claude/skills/agentask-breakdown
+  # …or symlink to track upstream changes:
+  ln -s "$PWD/skills/agentask-breakdown" ~/.claude/skills/agentask-breakdown
+
+  # …or scope it to one project instead:
+  cp -r skills/agentask-breakdown /path/to/project/.claude/skills/agentask-breakdown
+  ```
+
+  Its helper scripts (`scripts/agentask.sh`, `scripts/create-repo.sh`) travel with the directory;
+  keep them executable (`chmod +x`).
+
 ## Documentation
 
 - [`DESIGN.md`](./DESIGN.md) — MVP design document with detailed state machine, atomic claiming, and review semantics.
 - [`docs/api.md`](./docs/api.md) — Complete REST API reference with all endpoints, request/response formats, and examples.
-- [`harness/README.md`](./harness/README.md) — Worker and reviewer harness design, configuration, multi-project mode, and GitHub auth.
+- [`harness/README.md`](./harness/README.md) — Worker and reviewer harness design, configuration, multi-project mode, GitHub auth, and running self-contained inside an `sbx` sandbox (`sbx.sh`).
+- [`skills/agentask-breakdown/SKILL.md`](./skills/agentask-breakdown/SKILL.md) & [`.claude/skills/review/SKILL.md`](./.claude/skills/review/SKILL.md) — Claude Code skills for decomposing intent onto the board and driving the human review gate.
 - [`docs/features/`](./docs/features/) — Feature specifications for deeper Agentask subsystems.
 
 ## Status
