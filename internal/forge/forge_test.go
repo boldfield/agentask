@@ -225,6 +225,16 @@ func TestSquashMerge(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// On a failed merge, SquashMerge follows up with a GET to the merge-status
+				// endpoint to check for an already-merged PR. Mirror tt.statusCode for that
+				// GET so error cases stay errors (404 -> not merged; other -> check errors,
+				// both preserve the original merge failure), and skip the PUT-only asserts.
+				if r.Method == http.MethodGet {
+					w.WriteHeader(tt.statusCode)
+					w.Write([]byte(tt.responseBody))
+					return
+				}
+
 				// Verify the request details
 				if r.Method != http.MethodPut {
 					t.Errorf("expected PUT, got %s", r.Method)
@@ -275,6 +285,67 @@ func TestSquashMerge(t *testing.T) {
 				t.Errorf("SquashMerge() error = %v, wantErr %v", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+// TestSquashMergeAlreadyMerged verifies idempotency: when the PUT merge fails because
+// the PR is already merged (GitHub answers 405), SquashMerge confirms via the
+// merge-status endpoint (204 = merged) and returns nil so a retried merge job
+// converges instead of looping.
+func TestSquashMergeAlreadyMerged(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			// Already-merged PR: GitHub returns 405 Method Not Allowed.
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			w.Write([]byte(`{"message": "Pull Request is not mergeable"}`))
+		case http.MethodGet:
+			// Merge-status check: 204 means the PR is merged.
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := SquashMerge(ctx, "testuser", "testrepo", 42, "test-token"); err != nil {
+		t.Errorf("expected nil error for an already-merged PR, got: %v", err)
+	}
+}
+
+// TestSquashMergeFailsWhenNotMergeable verifies that a genuine non-mergeable PR (PUT
+// 405, and the merge-status check confirms NOT merged with 404) still surfaces an
+// error rather than being masked by the idempotency path.
+func TestSquashMergeFailsWhenNotMergeable(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPut:
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			w.Write([]byte(`{"message": "Pull Request is not mergeable"}`))
+		case http.MethodGet:
+			w.WriteHeader(http.StatusNotFound) // not merged
+		default:
+			t.Errorf("unexpected method %s", r.Method)
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	if err := SquashMerge(ctx, "testuser", "testrepo", 42, "test-token"); err == nil {
+		t.Error("expected error for a non-mergeable PR that is not already merged")
 	}
 }
 

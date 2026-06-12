@@ -1816,55 +1816,108 @@ func TestExecuteMergeForgeFails(t *testing.T) {
 	}
 }
 
-// TestExecuteMergeIdempotent tests that the command handles already-done tasks gracefully
+// TestExecuteMergeIdempotent tests that a merge task already in 'done' is a no-op:
+// the command returns nil without re-merging or transitioning anything.
 func TestExecuteMergeIdempotent(t *testing.T) {
-	// Create a mock forge server
+	forgePutCalled := false
 	forgeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/merge") {
+			forgePutCalled = true
 			w.WriteHeader(http.StatusOK)
 			json.NewEncoder(w).Encode(map[string]interface{}{"merged": true})
 		}
 	}))
 	defer forgeServer.Close()
 
-	// Temporarily replace the GitHub base URL
 	oldBaseURL := forge.GitHubBaseURL
 	forge.GitHubBaseURL = forgeServer.URL
 	t.Cleanup(func() { forge.GitHubBaseURL = oldBaseURL })
 
-	// Create a mock agentask API server where tasks are already done
-	// (simulating a successful previous run)
+	transitionCalled := false
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/tasks/") {
-			if strings.HasSuffix(r.URL.Path, "/merge-123") {
-				json.NewEncoder(w).Encode(tuiclient.TaskDetail{
-					ID:           "merge-123",
-					State:        "done",
-					TargetTaskID: ptrString("parent-456"),
-				})
-			} else if strings.HasSuffix(r.URL.Path, "/parent-456") {
-				json.NewEncoder(w).Encode(tuiclient.TaskDetail{
-					ID:         "parent-456",
-					State:      "done",
-					AgentMerge: true,
-					Links: []tuiclient.TaskLink{
-						{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/174"},
-					},
-				})
-			}
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/merge-123") {
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:           "merge-123",
+				State:        "done",
+				TargetTaskID: ptrString("parent-456"),
+			})
 		} else if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/transition") {
+			transitionCalled = true
 			w.WriteHeader(http.StatusOK)
 		}
 	}))
 	defer apiServer.Close()
 
-	// Should fail because parent task is not in "approved" state
+	// A merge task already in 'done' should be a clean no-op (idempotent).
 	err := executeMerge(context.Background(), apiServer.URL, "test-token", []string{"merge-123"})
-	if err == nil {
-		t.Fatal("expected error when parent task is not in approved state")
+	if err != nil {
+		t.Fatalf("expected no-op success for an already-done merge task, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "expected approved") {
-		t.Errorf("expected error about parent state, got: %v", err)
+	if forgePutCalled {
+		t.Error("expected no forge merge call for an already-done merge task")
+	}
+	if transitionCalled {
+		t.Error("expected no transition for an already-done merge task")
+	}
+}
+
+// TestExecuteMergeFinalizesAfterPartialRun reproduces the zombie-merge bug: a prior
+// run merged the PR and advanced the parent to 'done' but died before finalizing the
+// merge task, leaving it 'in_progress'. The retry must NOT re-merge (the parent is
+// already done) and must finalize the merge task to 'done' instead of erroring.
+func TestExecuteMergeFinalizesAfterPartialRun(t *testing.T) {
+	forgePutCalled := false
+	forgeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPut && strings.Contains(r.URL.Path, "/merge") {
+			forgePutCalled = true
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer forgeServer.Close()
+
+	oldBaseURL := forge.GitHubBaseURL
+	forge.GitHubBaseURL = forgeServer.URL
+	t.Cleanup(func() { forge.GitHubBaseURL = oldBaseURL })
+
+	mergeTransitionedTo := ""
+	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/merge-123") {
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:           "merge-123",
+				State:        "in_progress",
+				TargetTaskID: ptrString("parent-456"),
+			})
+		} else if r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/parent-456") {
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:         "parent-456",
+				State:      "done", // prior run already merged + finalized the parent
+				AgentMerge: true,
+				Links: []tuiclient.TaskLink{
+					{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/174"},
+				},
+			})
+		} else if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/transition") {
+			var body struct {
+				To string `json:"to"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			if strings.Contains(r.URL.Path, "/merge-123/") {
+				mergeTransitionedTo = body.To
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer apiServer.Close()
+
+	err := executeMerge(context.Background(), apiServer.URL, "test-token", []string{"merge-123"})
+	if err != nil {
+		t.Fatalf("expected partial-run retry to converge, got: %v", err)
+	}
+	if forgePutCalled {
+		t.Error("expected no re-merge when parent is already done")
+	}
+	if mergeTransitionedTo != "done" {
+		t.Errorf("expected merge task transitioned to done, got %q", mergeTransitionedTo)
 	}
 }
 
