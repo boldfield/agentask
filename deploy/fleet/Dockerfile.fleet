@@ -26,13 +26,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       python3 python3-pip python3-venv \
  && rm -rf /var/lib/apt/lists/*
 
-# gh CLI (for clone/push + PR ops in pull_request mode).
-RUN curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg \
-      -o /usr/share/keyrings/githubcli-archive-keyring.gpg \
- && echo "deb [arch=$(dpkg --print-architecture) signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" \
-      > /etc/apt/sources.list.d/github-cli.list \
- && apt-get update && apt-get install -y --no-install-recommends gh \
- && rm -rf /var/lib/apt/lists/*
+# gh CLI (for clone/push + PR ops in pull_request mode). Installed from the release tarball rather
+# than the github apt repo: that repo would force a SECOND `apt-get update`, which trips a known
+# buildkit GPG-verification flake ("invalid signature") under the docker-container driver. The
+# tarball is also arch-clean for the future arm64 build. Latest tag resolved via the redirect.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    ver="$(curl -fsSLI -o /dev/null -w '%{url_effective}' https://github.com/cli/cli/releases/latest | sed 's#.*/tag/v##')"; \
+    curl -fsSL "https://github.com/cli/cli/releases/download/v${ver}/gh_${ver}_linux_${arch}.tar.gz" -o /tmp/gh.tgz; \
+    tar -xzf /tmp/gh.tgz -C /tmp; \
+    install "/tmp/gh_${ver}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh*
 
 # Go (for Go tools, incl. agentask itself).
 COPY --from=golang:1.25-bookworm /usr/local/go /usr/local/go
