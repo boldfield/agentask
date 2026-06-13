@@ -19,6 +19,14 @@ spec:
         app.kubernetes.io/name: agentask-fleet
         app.kubernetes.io/component: merger
     spec:
+      # Run as a numeric non-root uid (the image's `agent` user = 1000). `runAsNonRoot` alone fails
+      # against an image whose USER is a NAME — the kubelet can't verify a name is non-root. `fsGroup`
+      # makes the emptyDir HOME writable by the group.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
       # Prefer arm64 (Pis) but allow amd64 as overflow. (Within a single-arch cluster this is a no-op;
       # it only matters if a cluster is mixed-arch.)
       affinity:
