@@ -53,8 +53,13 @@ func Freeze(repoDir, slug, iid string) error {
 	cmd = exec.Command("git", "-C", repoDir, "worktree", "remove", worktreePath)
 	cmd.Run() // Ignore error - it might already be removed
 
-	// Step 4: Delete the wip/<iid> branch
-	cmd = exec.Command("git", "-C", repoDir, "branch", "-d", wipBranch)
+	// Step 4: Delete the wip/<iid> branch. Use -D (force), not -d (safe): -d checks reachability
+	// from the CHECKED-OUT branch (HEAD — typically `main`), where the wip commit is NOT reachable,
+	// so it refuses with "not fully merged" and the freeze fails deterministically on the first real
+	// item. Step 2 just advanced wi/<slug> onto this exact commit, so it is provably preserved on the
+	// MR branch — deleting the wip *label* loses nothing, and -d's safety check is both wrong (wrong
+	// branch) and unnecessary here.
+	cmd = exec.Command("git", "-C", repoDir, "branch", "-D", wipBranch)
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("failed to delete WIP branch: %w", err)
 	}

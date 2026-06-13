@@ -92,6 +92,53 @@ func TestFreeze_FirstFreeze(t *testing.T) {
 	_ = mainCommit // Use it to avoid unused warning
 }
 
+func TestFreeze_WipNotOnCheckedOutBranch(t *testing.T) {
+	// The real-world condition: the wip commit lives ONLY on wip/<iid> (made in the item's
+	// worktree off origin/main); the shared repo has `main` checked out and `main` does NOT contain
+	// that commit. `git branch -d` checks reachability from HEAD (main) and would refuse ("not fully
+	// merged"); the freeze must still delete wip/<iid> because step 2 already preserved the commit on
+	// wi/<slug>. This is the case the earlier tests missed (they committed the wip on main itself).
+	repoDir := t.TempDir()
+	cwd, _ := os.Getwd()
+	worktreeHome := filepath.Join(cwd, "test-worktree-home-notmerged")
+	os.MkdirAll(worktreeHome, 0755)
+	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
+	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+
+	runCmd(t, repoDir, "git", "init")
+	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
+	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
+
+	runCmd(t, repoDir, "git", "checkout", "-b", "main")
+	runCmd(t, repoDir, "git", "commit", "--allow-empty", "-m", "initial")
+	mainCommit := runCmd(t, repoDir, "git", "rev-parse", "HEAD")
+	runCmd(t, repoDir, "git", "branch", "-f", "origin/main", "main")
+
+	// Make the wip commit on wip/<iid>, NOT on main, then return HEAD to main.
+	runCmd(t, repoDir, "git", "checkout", "-b", "wip/task-789", "main")
+	runCmd(t, repoDir, "git", "commit", "--allow-empty", "-m", "wip commit")
+	wipCommit := runCmd(t, repoDir, "git", "rev-parse", "HEAD")
+	runCmd(t, repoDir, "git", "checkout", "main")
+
+	// Precondition: HEAD is main, and main does NOT contain the wip commit.
+	if runCmd(t, repoDir, "git", "rev-parse", "HEAD") != mainCommit {
+		t.Fatal("HEAD should be on main at the initial commit")
+	}
+	if exec.Command("git", "-C", repoDir, "merge-base", "--is-ancestor", wipCommit, "main").Run() == nil {
+		t.Fatal("setup wrong: wip commit must NOT be reachable from main")
+	}
+
+	if err := Freeze(repoDir, "my-feature", "task-789"); err != nil {
+		t.Fatalf("Freeze failed (the -d-vs-HEAD bug?): %v", err)
+	}
+	if getBranch(t, repoDir, "wi/my-feature") != wipCommit {
+		t.Errorf("wi/my-feature should point at the wip commit")
+	}
+	if branchExists(t, repoDir, "wip/task-789") {
+		t.Fatal("wip/task-789 should be deleted even though it isn't on the checked-out branch")
+	}
+}
+
 func TestFreeze_FFAdvance(t *testing.T) {
 	// Setup: wi/<slug> exists as ancestor of wip/<iid>
 	repoDir := t.TempDir()
