@@ -33,8 +33,10 @@ done
 HARNESS_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 
 AGENTASK_HOME="${AGENTASK_HOME:-$HOME/.agentask}"
+# Source the env file if present (local fleet). In k8s the config arrives via the container env and
+# there is no file — so don't hard-fail when it's absent.
 # shellcheck source=/dev/null
-source "$AGENTASK_HOME/env"
+[ -f "$AGENTASK_HOME/env" ] && source "$AGENTASK_HOME/env"
 
 # --- parse args ---
 MODEL="" KIND="" SLOT=""
@@ -198,7 +200,7 @@ repo_slug() { norm_repo "$1" | tr '/' '-'; }                                    
 # ok). The worker uses the matching token to clone/push/gh for that owner's repos; with no entry it
 # falls back to the operator's default gh auth. Git creds stay in the worker, never in Agentask.
 # (chmod 600 it — it holds tokens.)
-FORGE_TOKENS="$AGENTASK_HOME/forge-tokens"
+FORGE_TOKENS="${FORGE_TOKENS:-$AGENTASK_HOME/forge-tokens}"
 token_for_owner() {
   [ -f "$FORGE_TOKENS" ] || return 0
   # case-insensitive owner match — GitHub owners are case-insensitive (fAIctory == faictory), and the

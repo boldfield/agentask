@@ -1,0 +1,28 @@
+# syntax=docker/dockerfile:1
+# Agentask MERGER fleet image — just enough to run `agent.sh --kind merge`.
+# The merger is non-LLM and repo-less: `agentask merge` squash-merges via REST (internal/forge), so
+# this needs NO claude, NO build toolchain, NO clone — only the agentask CLI + bash/jq. Tiny + multi-arch.
+ARG GO_VERSION=1.25
+
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION} AS builder
+ARG TARGETOS TARGETARCH
+WORKDIR /src
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+ARG VERSION=dev
+RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
+    go build -ldflags "-X main.version=${VERSION}" -o /out/agentask ./cmd/agentask
+
+FROM alpine:3.20
+RUN apk add --no-cache bash jq ca-certificates coreutils git \
+ && adduser -D -h /home/agent agent
+COPY --from=builder /out/agentask /usr/local/bin/agentask
+COPY harness/ /harness/
+COPY deploy/fleet/fleet-entrypoint.sh /usr/local/bin/fleet-entrypoint.sh
+RUN chmod +x /usr/local/bin/fleet-entrypoint.sh /harness/agent.sh
+USER agent
+ENV HOME=/home/agent \
+    AGENTASK_HOME=/home/agent/.agentask
+ENTRYPOINT ["/usr/local/bin/fleet-entrypoint.sh"]
+CMD ["--kind", "merge"]

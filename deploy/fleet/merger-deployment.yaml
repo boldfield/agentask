@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: merger
+  namespace: agentask-fleet
+  labels:
+    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/component: merger
+spec:
+  # Matches the local fleet (1–2 mergers). Mergers are cheap and non-LLM, so the arm64 Pi cluster
+  # is the ideal home — apply this manifest to the `summercamp-lab` (Pi) cluster.
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: merger
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentask-fleet
+        app.kubernetes.io/component: merger
+    spec:
+      # Prefer arm64 (Pis) but allow amd64 as overflow. (Within a single-arch cluster this is a no-op;
+      # it only matters if a cluster is mixed-arch.)
+      affinity:
+        nodeAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              preference:
+                matchExpressions:
+                  - { key: kubernetes.io/arch, operator: In, values: ["arm64"] }
+      containers:
+        - name: merger
+          image: docker.summercamp.eastharbor.casa:32050/agentask/merger:latest
+          args: ["--kind", "merge"]
+          env:
+            # All fleet pods reach the server via its PUBLIC ingress, so placement is decoupled from
+            # the server's cluster (lab pods can't use cp's cluster-DNS service name).
+            - name: AGENTASK_URL
+              value: "https://agentask.summercamp.eastharbor.casa"
+            - name: AGENTASK_PROJECT
+              value: "all" # multi-project: drain merge tasks across every board
+            - name: HOME
+              value: /home/agent
+            - name: AGENTASK_HOME
+              value: /home/agent/.agentask
+            - name: AGENTASK_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: agentask-fleet
+                  key: token
+          volumeMounts:
+            - { name: home, mountPath: /home/agent }
+            - { name: forge-tokens, mountPath: /etc/fleet, readOnly: true }
+          resources:
+            requests: { cpu: "50m", memory: "64Mi" }
+            limits: { cpu: "250m", memory: "128Mi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            runAsNonRoot: true
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - { name: home, emptyDir: {} }
+        - name: forge-tokens
+          secret:
+            secretName: agentask-forge-tokens

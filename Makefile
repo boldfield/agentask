@@ -1,6 +1,11 @@
-.PHONY: build run test tidy tui check release deploy
+.PHONY: build run test tidy tui check release deploy merger-image
 
 VERSION ?= $(shell git describe --tags --always --dirty)
+
+# --- fleet images (internal registry, multi-arch for the amd64 + arm64 clusters) ---
+FLEET_REGISTRY  ?= docker.summercamp.eastharbor.casa:32050
+FLEET_TAG       ?= latest
+FLEET_PLATFORMS ?= linux/amd64,linux/arm64
 
 build:
 	mkdir -p bin
@@ -37,6 +42,15 @@ release:
 	git tag $(VERSION)
 	git push origin $(VERSION)
 	@echo "Released ghcr.io/boldfield/agentask:$(VERSION) (linux/amd64); deploy with: make deploy VERSION=$(VERSION)"
+
+# Build + push the multi-arch MERGER fleet image to the internal registry. Requires `docker buildx`
+# (and, if the registry is insecure, a buildx/daemon config that allows pushing to it).
+merger-image:
+	docker buildx build --platform $(FLEET_PLATFORMS) \
+	  --build-arg VERSION=$(VERSION) \
+	  -t $(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG) \
+	  -f deploy/fleet/Dockerfile.merger --push .
+	@echo "Pushed $(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG) ($(FLEET_PLATFORMS))"
 
 deploy:
 	@echo "Resolving image digest for ghcr.io/boldfield/agentask:$(VERSION)..."
