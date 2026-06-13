@@ -19,13 +19,16 @@ next, on a separate, heavier image.
 ## Build + push the merger image (multi-arch)
 
 ```bash
+make fleet-builder                     # ONCE: buildx builder that can push to the insecure (HTTP) registry
 make merger-image                      # buildx → docker.summercamp.eastharbor.casa:32050/agentask/merger:latest
 make merger-image FLEET_TAG=v1         # pin a tag
 ```
 
-Requires `docker buildx` and that your builder can push to the internal registry (if it's insecure,
-configure buildx/daemon to allow it). The build is `linux/amd64,linux/arm64` so the same tag runs on
-both clusters.
+The internal registry serves **HTTP**, and multi-arch `--push` requires the `docker-container`
+buildx driver — so a `daemon.json` `insecure-registries` entry is **not** enough; buildkit itself
+must be told the registry is http. `make fleet-builder` creates a builder with that config (a
+`buildkitd.toml` + `docker buildx create --driver docker-container`). `merger-image` then builds
+`linux/amd64,linux/arm64` so the same tag runs on both clusters.
 
 ## Deploy the merger (to the Pi cluster)
 

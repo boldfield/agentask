@@ -1,4 +1,4 @@
-.PHONY: build run test tidy tui check release deploy merger-image
+.PHONY: build run test tidy tui check release deploy fleet-builder merger-image
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 
@@ -6,6 +6,7 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 FLEET_REGISTRY  ?= docker.summercamp.eastharbor.casa:32050
 FLEET_TAG       ?= latest
 FLEET_PLATFORMS ?= linux/amd64,linux/arm64
+FLEET_BUILDER   ?= agentask-fleet
 
 build:
 	mkdir -p bin
@@ -43,10 +44,20 @@ release:
 	git push origin $(VERSION)
 	@echo "Released ghcr.io/boldfield/agentask:$(VERSION) (linux/amd64); deploy with: make deploy VERSION=$(VERSION)"
 
-# Build + push the multi-arch MERGER fleet image to the internal registry. Requires `docker buildx`
-# (and, if the registry is insecure, a buildx/daemon config that allows pushing to it).
+# One-time: create a buildx builder that can push to the INSECURE (HTTP) internal registry.
+# Multi-arch `--push` needs the docker-container driver, so a daemon.json insecure-registries entry
+# isn't enough — buildkit itself must mark the registry as http. Re-run any time to recreate it.
+fleet-builder:
+	@printf '[registry."%s"]\n  http = true\n  insecure = true\n' '$(FLEET_REGISTRY)' > /tmp/agentask-buildkitd.toml
+	-docker buildx rm $(FLEET_BUILDER) 2>/dev/null
+	docker buildx create --name $(FLEET_BUILDER) --driver docker-container \
+	  --config /tmp/agentask-buildkitd.toml --bootstrap
+	@echo "buildx builder '$(FLEET_BUILDER)' ready (insecure HTTP push to $(FLEET_REGISTRY))"
+
+# Build + push the multi-arch MERGER fleet image to the internal registry.
+# Requires `docker buildx` and the builder from `make fleet-builder` (run that once first).
 merger-image:
-	docker buildx build --platform $(FLEET_PLATFORMS) \
+	docker buildx build --builder $(FLEET_BUILDER) --platform $(FLEET_PLATFORMS) \
 	  --build-arg VERSION=$(VERSION) \
 	  -t $(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG) \
 	  -f deploy/fleet/Dockerfile.merger --push .
