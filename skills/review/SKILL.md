@@ -76,7 +76,14 @@ Useful flags:
 - `--full` — full commit rather than diff-against-base (local_commit mode).
 - `--repo <dir>` — repository directory (local_commit mode; defaults to `$AGENTASK_REPO`).
 
-Present the diff to the human and let them read it.
+**Show the RAW diff, verbatim — never summarize, analyze, or judge it.** Output exactly what
+`agentask diff` prints, so the human reads the actual changes. Do **NOT** replace the diff with a
+bulleted summary, a "what this adds" checklist, or any assessment ("looks good", "the defect is
+fixed", "this is the clean scaffold the reviewers wanted") — that is forming an opinion of the diff,
+which this skill never does. The human reads the diff and decides; your job is to put the real bytes
+in front of them, not a précis of them. If the diff is long, say so and offer to page it, but still
+show it. The only acceptable framing is neutral orientation the human asked for (e.g. "commit
+`<sha>`, N files") — never an evaluation of the change.
 
 ## Phase 3 — Record the human's decision
 
@@ -139,6 +146,9 @@ re-approve without it — the state guard will keep rejecting you.
 
 ## The gates you do not cross
 
+- **When asked to show a diff, you show the diff — raw and verbatim.** You never summarize it,
+  characterize its quality, list what it "adds", or say whether it passes. Presenting is not
+  assessing; "show me the diff" means show the diff, not your reading of it.
 - You never form or impose your own verdict. You run `approve`/`reject` only to record a decision
   the human has explicitly stated, and you never invent a `--note` reason — it comes from the human.
 - In `pull_request` mode you never run the actual PR merge yourself; `approve` records the board
