@@ -16,12 +16,13 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 
 FROM alpine:3.20
 RUN apk add --no-cache bash jq ca-certificates coreutils git \
- && adduser -D -h /home/agent agent
+ && adduser -D -u 1000 -h /home/agent agent
 COPY --from=builder /out/agentask /usr/local/bin/agentask
 COPY harness/ /harness/
 COPY deploy/fleet/fleet-entrypoint.sh /usr/local/bin/fleet-entrypoint.sh
 RUN chmod +x /usr/local/bin/fleet-entrypoint.sh /harness/agent.sh
-USER agent
+# Numeric USER (not the name) so `runAsNonRoot` can verify non-root without a pod-spec runAsUser.
+USER 1000
 ENV HOME=/home/agent \
     AGENTASK_HOME=/home/agent/.agentask
 ENTRYPOINT ["/usr/local/bin/fleet-entrypoint.sh"]
