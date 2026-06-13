@@ -56,10 +56,43 @@ involved.
   is insecure/no-auth, Talos needs the registry allow-listed in machine config; the cp cluster
   already pulls from it). If pulls fail with TLS/forbidden, that's the thing to fix.
 
-## What's NOT here yet (next phase: workers + reviewers)
+## Workers + reviewers (amd64 / cp cluster)
 
-- A heavier `Dockerfile.fleet` (claude + node + git/gh + go/rust/python toolchains + the harness),
-  modeled on `nightshift/k8s/nightshift/Dockerfile`.
-- Subscription auth via `claude setup-token` → a `claude-oauth` secret → `CLAUDE_CODE_OAUTH_TOKEN`
-  env on each worker/reviewer pod (fans out cleanly; no shared credentials file).
-- worker + reviewer Deployments (4 + 4, matching the laptop fleet), on the amd64 cluster.
+These run `claude -p` against a real build, so they use the heavier `Dockerfile.fleet` (claude CLI +
+Go/Rust/Python/C toolchains + git/gh + the harness + agentask CLI). **amd64-only for now** — the
+arm64 (Pi) build comes later with the cross-arch build/test dimension. The merger stays multi-arch
+and keeps running on the Pis.
+
+### 1. Build + push the fleet image
+
+```sh
+make fleet-builder   # once, if you haven't already (insecure-registry buildx builder)
+make fleet-image     # builds linux/amd64, pushes to the internal registry
+```
+
+### 2. Subscription auth secret (token never goes through git/logs)
+
+Each worker/reviewer authenticates claude with a long-lived **`claude setup-token`** value (a
+subscription OAuth token, NOT an API key). Generate it on your laptop and create the secret directly
+so the value never transits anything else:
+
+```sh
+claude setup-token   # prints a token; copy it
+kubectl --context admin@summercamp-cp -n agentask-fleet \
+  create secret generic claude-oauth --from-literal=token='<paste-token>'
+```
+
+The `agentask-fleet` (server API token) and `agentask-forge-tokens` secrets from the merger setup are
+reused — create them in this namespace on the cp cluster too if they aren't there yet.
+
+### 3. Deploy
+
+```sh
+kubectl --context admin@summercamp-cp apply -f deploy/fleet/namespace.yaml
+kubectl --context admin@summercamp-cp apply -f deploy/fleet/worker-deployment.yaml
+kubectl --context admin@summercamp-cp apply -f deploy/fleet/reviewer-deployment.yaml
+```
+
+4 workers + 4 reviewers, matching the laptop fleet. They poll the public server, claim
+`implement` / `review` tasks across all boards, clone+build in an ephemeral `emptyDir` HOME, and
+open/PR-review as usual. `replicas` is the only knob to match local concurrency.

@@ -1,0 +1,65 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: reviewer
+  namespace: agentask-fleet
+  labels:
+    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/component: reviewer
+spec:
+  # Matches the laptop fleet (4 reviewers). Apply to the amd64 (cp) cluster — reviewers reproduce the
+  # build as-merged-with-main, so they need the same toolchain + memory as workers. Model-dynamic:
+  # each claims any review task and runs claude with the task's own model (no --model pin).
+  replicas: 4
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: reviewer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentask-fleet
+        app.kubernetes.io/component: reviewer
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+      containers:
+        - name: reviewer
+          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:latest
+          args: ["--kind", "review"]
+          env:
+            - name: AGENTASK_URL
+              value: "https://agentask.summercamp.eastharbor.casa"
+            - name: AGENTASK_PROJECT
+              value: "all"
+            - name: AGENTASK_DELIVERY_MODE
+              value: "pull_request"
+            - name: HOME
+              value: /home/agent
+            - name: AGENTASK_HOME
+              value: /home/agent/.agentask
+            - name: AGENTASK_TOKEN
+              valueFrom: { secretKeyRef: { name: agentask-fleet, key: token } }
+            - name: CLAUDE_CODE_OAUTH_TOKEN
+              valueFrom: { secretKeyRef: { name: claude-oauth, key: token } }
+            - name: CARGO_BUILD_JOBS
+              value: "2"
+            - name: GOMAXPROCS
+              value: "2"
+          volumeMounts:
+            - { name: home, mountPath: /home/agent }
+            - { name: forge-tokens, mountPath: /etc/fleet, readOnly: true }
+          resources:
+            requests: { cpu: "500m", memory: "2Gi" }
+            limits: { cpu: "2", memory: "6Gi" }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+      volumes:
+        - name: home
+          emptyDir: { sizeLimit: 20Gi }
+        - name: forge-tokens
+          secret:
+            secretName: agentask-forge-tokens

@@ -1,4 +1,4 @@
-.PHONY: build run test tidy tui check release deploy fleet-builder merger-image
+.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 
@@ -62,6 +62,15 @@ merger-image:
 	  -t $(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG) \
 	  -f deploy/fleet/Dockerfile.merger --push .
 	@echo "Pushed $(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG) ($(FLEET_PLATFORMS))"
+
+# Build + push the heavy WORKER/REVIEWER fleet image (claude + toolchains). amd64-only for now (the
+# cp cluster); arm64 comes with the cross-arch build/test dimension. Needs `make fleet-builder` once.
+fleet-image:
+	docker buildx build --builder $(FLEET_BUILDER) --platform linux/amd64 \
+	  --build-arg VERSION=$(VERSION) \
+	  -t $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG) \
+	  -f deploy/fleet/Dockerfile.fleet --push .
+	@echo "Pushed $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG) (linux/amd64)"
 
 deploy:
 	@echo "Resolving image digest for ghcr.io/boldfield/agentask:$(VERSION)..."
