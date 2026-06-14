@@ -27,21 +27,30 @@ contract core** — always present, every section below, in this order — **plu
 sections your task spec requires**. The contract core is the **INTERFACE contract** — *what the tool
 does and how it is invoked* — **NOT an implementation plan**: no internal architecture, data
 structures, file layout, or build steps. The core is tool-agnostic: no Foreman/pipeline knowledge,
-no merge assumptions. Fill every core section:
+no merge assumptions. Fill every core section.
+
+**Your task spec determines the tool's SHAPE.** It names what kind of thing this tool is and, for the
+shape-sensitive sections below, tells you the section's NAME and what it must contain. Follow the
+spec's vocabulary exactly; do NOT impose conventions — flags, exit codes, a command line — the spec
+did not establish. The section *roles* below are universal; how each is *expressed* comes from the spec.
 
 - **Charter** — ONE sentence: the tool's purpose + its primary user + the ONE headline use case.
-- **Command Surface** — every command, flag, and argument the tool exposes (name, what it takes,
-  what it does). This is the complete invocation vocabulary.
-- **Output schema/format** — the EXACT shape of what the tool emits. Do NOT assume JSON — many tools
-  print human text, write files, or just set an exit code. State precisely which it is and give the
-  literal shape (fields/columns/lines/exit codes), with a concrete sample.
-- **Default no-flag behavior** — what running the tool with NO flags does. It MUST demonstrate the
-  headline use case from the Charter, shown with a worked example (command in, output out).
-- **Canonical invocations** — 3–5 real, runnable examples spanning the command surface, each with
-  the command and its resulting output.
-- **Acceptance criteria** — a checklist where **each criterion is bound to exactly ONE command/flag**,
-  and **every command and flag in the Command Surface appears in at least one criterion**. A reader
-  must be able to verify the built tool against this list mechanically.
+- **The interface section** — the complete vocabulary by which the tool is driven: the inputs it
+  accepts, the actions it exposes, and where its output appears. **Name this section and fill it
+  exactly as your task spec directs** — e.g. a command-line tool's commands/flags/arguments under a
+  `## Command Surface`, or another shape's controls/affordances under the heading the spec names (each
+  element: what it takes, what it does). This is the complete invocation vocabulary for THIS tool.
+- **Output schema/format** — the EXACT shape of what the tool emits, in whatever form the spec
+  establishes (stdout text, files written, exit codes, rendered output), with a concrete sample. Do
+  NOT assume JSON.
+- **Default behavior** — what the tool does on its primary path (the spec defines what the primary
+  path is for this tool), shown with a worked example. It MUST demonstrate the headline use case from
+  the Charter.
+- **Canonical invocations** — 3–5 real, runnable examples spanning the interface, each with its input
+  and resulting output.
+- **Acceptance criteria** — a checklist where **each criterion is bound to exactly ONE element of the
+  interface section**, and **every element of the interface section appears in at least one
+  criterion**. A reader must be able to verify the built tool against this list mechanically.
 
 Then include this section **verbatim** (the coherence reviewer rejects your design unless all four
 hold — these are their checks word-for-word; copy them exactly, do not paraphrase):
@@ -63,8 +72,9 @@ requires no extra sections, the contract core alone is complete. Do not invent s
 not ask for, and add no Foreman/pipeline or merge knowledge of your own — that stays out of the core.
 
 Before you submit, **self-check** your `DESIGN.md` against those four requirements AND the template
-above: one tool only; every acceptance criterion exercises that one contract; the default no-flag
-invocation demonstrates the Charter's headline use case; there is no second/competing contract
+above: one tool only; every acceptance criterion exercises that one contract; the default behavior
+(the tool's primary path, as your spec defines it) demonstrates the Charter's headline use case;
+there is no second/competing contract
 or alternate mode smuggled in; and every additional section your spec required is present. If any
 fail, fix the design — do not submit a design that would be rejected.
 
@@ -125,8 +135,9 @@ on sensing elapsed time.
    up to date so the PR merges cleanly. If the merge conflicts, resolve it (keep both sides' intent),
    `git add` the resolved files, and complete the merge. THEN **self-check** your `DESIGN.md` against
    the four Coherence requirements and the template (every section filled; each acceptance criterion
-   bound to one command/flag; every command+flag covered; default no-flag invocation demonstrates the
-   headline). If the repo has them, heartbeat, run `make check`, heartbeat — confirm your doc-only
+   bound to one interface element; every interface element covered; the default behavior — the tool's
+   primary path as your spec defines it — demonstrates the headline). If the
+   repo has them, heartbeat, run `make check`, heartbeat — confirm your doc-only
    change leaves the build/tests green (you added a Markdown file; they should stay green). Do NOT
    proceed until the merge is clean and the self-check passes; fix whatever fails — heartbeat again
    before any lengthy fix-and-rerun cycle.

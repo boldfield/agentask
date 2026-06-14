@@ -29,27 +29,35 @@ submitting — these are the two sides of one contract, so you apply the SAME fo
 (4) NO second/competing contract or mode hiding
 ```
 
+**First, read what the parent spec requires.** The parent task's spec establishes the tool's SHAPE —
+what kind of thing it is, what its interface section is named, and what that section must contain.
+Apply the four checks **against the shape the spec requires**, in that shape's own vocabulary. Do NOT
+impose conventions the spec did not establish — e.g. do not reject a design for lacking flags, exit
+codes, or a command line if its interface is not a command line. "Invocation" means whatever the
+spec's interface establishes (a command line, an in-page interaction, an API call). Judge the design
+on the interface and output the spec defines, not on a shape you expected.
+
 Read each check as a question against the design under review:
 
 - **(1) exactly one tool / one contract.** Does the `DESIGN.md` describe a single tool with a single
-  command surface and output contract — or has it merged two tools into one document? A Charter that
-  names one purpose but a Command Surface that splits into two unrelated invocation vocabularies is a
-  fail.
-- **(2) every criterion exercises THIS contract.** Does every acceptance criterion bind to a
-  command/flag/output that is actually part of the one contract (same commands, flags, and schema)?
-  Criteria that test a different tool, a different output shape, or flags that appear nowhere in the
-  Command Surface are a fail.
-- **(3) the default invocation demonstrates the headline.** Does the default, no-flag invocation
-  demonstrate the Charter's ONE headline use case (with a worked example)? A default that does
-  something incidental — help text, an unrelated subcommand, nothing — while the headline hides behind
-  a flag is a fail.
+  interface section and output contract — or has it merged two tools into one document? A Charter that
+  names one purpose but an interface section that splits into two unrelated vocabularies is a fail.
+- **(2) every criterion exercises THIS contract.** Does every acceptance criterion bind to an element
+  of the one interface section (the commands/flags/controls/outputs that section actually defines)?
+  Criteria that test a different tool, a different output shape, or an element that appears nowhere in
+  the interface section are a fail.
+- **(3) the default invocation demonstrates the headline.** Does the tool's default behavior — its
+  primary path, as the spec defines it — demonstrate the Charter's ONE headline use case (with a
+  worked example)? A default that does something incidental — help text, an unrelated subcommand, an
+  empty result, nothing — while the headline hides behind a secondary affordance is a fail.
 - **(4) NO second/competing contract or mode hiding.** Is there a second mode, alternate output
   format, or competing contract smuggled into a later section that contradicts the one established up
   front? Any "but it can also…" that introduces a rival contract is a fail.
 
-**Apply these four checks to the contract CORE only** — the sections `## Charter`, `## Command
-Surface`, `## Output schema/format`, `## Default no-flag behavior`, `## Canonical invocations`,
-`## Acceptance criteria`, and `## Coherence requirements`. A conforming `DESIGN.md` MAY append
+**Apply these four checks to the contract CORE only** — the sections `## Charter`, the interface
+section (named as the parent spec directs), `## Output schema/format`, `## Default behavior`,
+`## Canonical invocations`, `## Acceptance criteria`, and `## Coherence requirements`. A conforming
+`DESIGN.md` MAY append
 **consumer-extension sections** supplied by the design task's spec — e.g. `## Problem`,
 `## Goals / Non-goals`, `## Hermetic build constraints`, `## Test expectations`. **TOLERATE them:**
 their presence is NEVER grounds to reject, and they do NOT count as a "second/competing contract"
