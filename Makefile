@@ -1,4 +1,4 @@
-.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image
+.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image fleet-deploy merger-deploy
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 
@@ -7,6 +7,12 @@ FLEET_REGISTRY  ?= docker.summercamp.eastharbor.casa:32050
 FLEET_TAG       ?= latest
 FLEET_PLATFORMS ?= linux/amd64,linux/arm64
 FLEET_BUILDER   ?= agentask-fleet
+
+# Cluster contexts + namespace for fleet rollouts. Worker/reviewer run on the amd64 cp
+# cluster; the merger runs on the arm64 lab (Pi) cluster. Override per-environment.
+CP_CONTEXT      ?= admin@summercamp-cp
+LAB_CONTEXT     ?= admin@summercamp-lab
+FLEET_NAMESPACE ?= agentask-fleet
 
 build:
 	mkdir -p bin
@@ -71,6 +77,35 @@ fleet-image:
 	  -t $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG) \
 	  -f deploy/fleet/Dockerfile.fleet --push .
 	@echo "Pushed $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG) (linux/amd64)"
+
+# Build + push the fleet image, then roll the cp-cluster worker + reviewer onto it. Like
+# `make deploy`, this pins the resolved image DIGEST (not the reused :latest tag) into the
+# pod spec — that spec change is what forces a rollout and a fresh pull. Assumes the
+# deployments already exist (first-time setup — namespace, secrets, apply — is in
+# deploy/fleet/README.md). To re-roll WITHOUT rebuilding, instead run:
+#   kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout restart deploy/worker deploy/reviewer
+fleet-deploy: fleet-image
+	@echo "Resolving digest for $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG)..."
+	@DIGEST=$$(docker buildx imagetools inspect --builder $(FLEET_BUILDER) "$(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG)" 2>/dev/null | awk '/^Digest:/{print $$2; exit}'); \
+	if ! echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then echo "ERROR: could not resolve fleet image digest (got '$$DIGEST')"; exit 1; fi; \
+	REF="$(FLEET_REGISTRY)/agentask/fleet@$$DIGEST"; \
+	echo "Deploying $$REF to worker + reviewer ($(CP_CONTEXT))"; \
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/worker   worker="$$REF"; \
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/reviewer reviewer="$$REF"; \
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/worker   --timeout=300s; \
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/reviewer --timeout=300s
+
+# Build + push the multi-arch merger image, then roll the lab-cluster merger onto it
+# (digest-pinned, same mechanism as fleet-deploy). Re-roll without rebuild:
+#   kubectl --context $(LAB_CONTEXT) -n $(FLEET_NAMESPACE) rollout restart deploy/merger
+merger-deploy: merger-image
+	@echo "Resolving digest for $(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG)..."
+	@DIGEST=$$(docker buildx imagetools inspect --builder $(FLEET_BUILDER) "$(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG)" 2>/dev/null | awk '/^Digest:/{print $$2; exit}'); \
+	if ! echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then echo "ERROR: could not resolve merger image digest (got '$$DIGEST')"; exit 1; fi; \
+	REF="$(FLEET_REGISTRY)/agentask/merger@$$DIGEST"; \
+	echo "Deploying $$REF to merger ($(LAB_CONTEXT))"; \
+	kubectl --context $(LAB_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/merger merger="$$REF"; \
+	kubectl --context $(LAB_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/merger --timeout=300s
 
 deploy:
 	@echo "Resolving image digest for ghcr.io/boldfield/agentask:$(VERSION)..."
