@@ -1,4 +1,4 @@
-.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image fleet-deploy merger-deploy
+.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image fleet-deploy merger-deploy versions
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 
@@ -13,6 +13,11 @@ FLEET_BUILDER   ?= agentask-fleet
 CP_CONTEXT      ?= admin@summercamp-cp
 LAB_CONTEXT     ?= admin@summercamp-lab
 FLEET_NAMESPACE ?= agentask-fleet
+
+# Server deployment (the agentask API). SERVER_CONTEXT empty = use the CURRENT kube
+# context, matching `make deploy` (which sets no --context).
+SERVER_CONTEXT   ?=
+SERVER_NAMESPACE ?= agentask
 
 build:
 	mkdir -p bin
@@ -115,3 +120,24 @@ deploy:
 	echo "Deploying ghcr.io/boldfield/agentask@$$DIGEST"; \
 	kubectl -n agentask set image deploy/agentask agentask="ghcr.io/boldfield/agentask@$$DIGEST"; \
 	kubectl -n agentask rollout status deploy/agentask --timeout=180s
+
+# Read-only: show the image (digest or tag) and ready replicas each deployment is currently
+# running, across all deployments / both clusters. The server uses the CURRENT kube context
+# (like `make deploy`); worker/reviewer use $(CP_CONTEXT); merger uses $(LAB_CONTEXT). An
+# unreachable cluster or missing deployment degrades to a "(unreachable / not found)" row
+# rather than failing the whole command.
+versions:
+	@printf '%-10s %-22s %-15s %-58s %s\n' DEPLOYMENT CONTEXT NAMESPACE IMAGE READY
+	@for spec in \
+	  "$(SERVER_CONTEXT)|$(SERVER_NAMESPACE)|agentask" \
+	  "$(CP_CONTEXT)|$(FLEET_NAMESPACE)|worker" \
+	  "$(CP_CONTEXT)|$(FLEET_NAMESPACE)|reviewer" \
+	  "$(LAB_CONTEXT)|$(FLEET_NAMESPACE)|merger"; do \
+	  ctx="$${spec%%|*}"; r="$${spec#*|}"; ns="$${r%%|*}"; dep="$${r#*|}"; \
+	  cf=""; [ -n "$$ctx" ] && cf="--context $$ctx"; \
+	  img="$$(kubectl $$cf -n "$$ns" get deploy "$$dep" -o jsonpath='{.spec.template.spec.containers[0].image}' 2>/dev/null)"; \
+	  rdy="$$(kubectl $$cf -n "$$ns" get deploy "$$dep" -o jsonpath='{.status.readyReplicas}/{.status.replicas}' 2>/dev/null)"; \
+	  if [ -z "$$img" ]; then img="(unreachable / not found)"; rdy="-"; fi; \
+	  ctxshow="$$ctx"; [ -z "$$ctx" ] && ctxshow="(current)"; \
+	  printf '%-10s %-22s %-15s %-58s %s\n' "$$dep" "$$ctxshow" "$$ns" "$$img" "$$rdy"; \
+	done
