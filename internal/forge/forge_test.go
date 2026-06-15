@@ -526,3 +526,48 @@ func TestPostPRComment(t *testing.T) {
 		})
 	}
 }
+
+func TestNeedsRework(t *testing.T) {
+	cases := map[string]bool{
+		"dirty":    true,  // real merge conflict
+		"behind":   true,  // out of date under require-up-to-date
+		"clean":    false, // mergeable
+		"blocked":  false, // failing required checks/reviews, not a code conflict
+		"unstable": false,
+		"draft":    false,
+		"unknown":  false, // not yet computed
+		"":         false,
+	}
+	for state, want := range cases {
+		if got := NeedsRework(state); got != want {
+			t.Errorf("NeedsRework(%q) = %v, want %v", state, got, want)
+		}
+	}
+}
+
+func TestPRMergeability(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Errorf("expected GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		// mergeable computed (non-null) so the state is authoritative on the first try.
+		fmt.Fprint(w, `{"mergeable": false, "mergeable_state": "dirty"}`)
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	state, err := PRMergeability(context.Background(), "owner", "repo", 123, "test-token")
+	if err != nil {
+		t.Fatalf("PRMergeability() error = %v, want nil", err)
+	}
+	if state != "dirty" {
+		t.Errorf("PRMergeability() = %q, want %q", state, "dirty")
+	}
+	if !NeedsRework(state) {
+		t.Errorf("NeedsRework(%q) = false, want true", state)
+	}
+}

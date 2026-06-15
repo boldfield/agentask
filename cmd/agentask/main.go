@@ -1074,6 +1074,14 @@ func executeMerge(ctx context.Context, baseURL, token string, args []string) err
 		}
 
 		if err := forge.SquashMerge(ctx, owner, repo, prNumber, forgeToken); err != nil {
+			// A real merge conflict (or an out-of-date head under require-branches-up-to-date)
+			// cannot be fixed by retrying the merge — the PR must be REWORKED: synced with the
+			// base branch and resolved. Detect that via the PR's mergeable_state and bounce the
+			// parent task back to 'ready' so a worker reclaims and reworks it. Transient/other
+			// failures fall through to the error and the merge job retries as before.
+			if state, mErr := forge.PRMergeability(ctx, owner, repo, prNumber, forgeToken); mErr == nil && forge.NeedsRework(state) {
+				return bounceForRework(ctx, client, parentTaskID, mergeTaskID, owner, repo, prNumber, forgeToken, state)
+			}
 			return fmt.Errorf("failed to squash merge PR: %w", err)
 		}
 
@@ -1093,6 +1101,20 @@ func executeMerge(ctx context.Context, baseURL, token string, args []string) err
 		// to finalize this merge task.
 
 	default:
+		// The parent isn't in a mergeable state. If it's actively being reworked — e.g. a
+		// prior conflict bounce already moved it back to ready/in_progress/review — then THIS
+		// merge task is stale: retire it (a fresh merge task spawns when the reworked parent
+		// is re-approved) instead of erroring forever. This also closes the crash window where
+		// the parent was bounced but this merge task wasn't yet retired. Any other state is
+		// genuinely unexpected and surfaces as an error.
+		reworkStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true}
+		if reworkStates[parentTask.State] {
+			note := fmt.Sprintf("Retired stale merge task: parent is %q (being reworked), not approved; a new merge task spawns on re-approval.", parentTask.State)
+			if err := client.TransitionTask(ctx, mergeTaskID, "failed", &note); err != nil {
+				return fmt.Errorf("failed to retire stale merge task: %w", err)
+			}
+			return nil
+		}
 		return fmt.Errorf("parent task state is %q, expected approved or done", parentTask.State)
 	}
 
@@ -1107,6 +1129,39 @@ func executeMerge(ctx context.Context, baseURL, token string, args []string) err
 		}
 	}
 
+	return nil
+}
+
+// bounceForRework handles a PR that cannot be merged because it conflicts with (or is
+// behind) its base branch. The merge can't be retried into success, so the parent task
+// is bounced approved->ready for a worker to rework (sync the base in + resolve), a PR
+// comment records why (the worker's rework reads the latest PR comment), and this
+// now-stale merge task is retired. A fresh merge task spawns when the reworked parent is
+// re-approved.
+//
+// Order matters for crash-safety: the parent is bounced FIRST, so if the process dies
+// before retiring the merge task, the merge task's lease lapses, it is reclaimed, and
+// executeMerge's default case sees the parent already in a rework state and retires it
+// (rather than re-attempting a doomed merge).
+func bounceForRework(ctx context.Context, client *tuiclient.HTTPClient, parentTaskID, mergeTaskID, owner, repo string, prNumber int, forgeToken, mergeableState string) error {
+	reason := fmt.Sprintf("merge conflict with the base branch (mergeable_state=%q)", mergeableState)
+	note := fmt.Sprintf("Bounced for rework: %s. The rework must `git fetch origin && git merge origin/main`, resolve conflicts, and resubmit the PR.", reason)
+
+	// Best-effort PR comment so the worker's rework reads this as the latest actionable
+	// comment. The worker's unconditional merge-with-main resolves the conflict regardless,
+	// so a failed comment (e.g. token lacks scope) does not break the bounce.
+	_ = forge.PostPRComment(ctx, owner, repo, prNumber, forgeToken, "🔀 merge bot: CHANGES REQUESTED — "+note)
+
+	// Bounce the parent (approved -> ready) so a worker reclaims and reworks it.
+	if err := client.TransitionTask(ctx, parentTaskID, "ready", &note); err != nil {
+		return fmt.Errorf("failed to bounce parent task for rework: %w", err)
+	}
+
+	// Retire this merge task; a new one spawns when the reworked parent is re-approved.
+	retire := fmt.Sprintf("Retired after %s: parent bounced to ready for rework.", reason)
+	if err := client.TransitionTask(ctx, mergeTaskID, "failed", &retire); err != nil {
+		return fmt.Errorf("failed to retire merge task after conflict bounce: %w", err)
+	}
 	return nil
 }
 
