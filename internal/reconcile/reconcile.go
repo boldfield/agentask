@@ -14,8 +14,8 @@ type Reconciler interface {
 
 // Runner orchestrates multiple reconcilers on a fixed interval.
 type Runner struct {
-	interval   time.Duration
-	logger     *slog.Logger
+	interval    time.Duration
+	logger      *slog.Logger
 	reconcilers []Reconciler
 }
 

@@ -11,9 +11,9 @@ import (
 
 // fakeReconciler is a test implementation of Reconciler.
 type fakeReconciler struct {
-	name          string
-	callCount     int
-	shouldError   bool
+	name        string
+	callCount   int
+	shouldError bool
 }
 
 func (f *fakeReconciler) Name() string {
