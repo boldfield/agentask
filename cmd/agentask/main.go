@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -24,6 +25,8 @@ import (
 	"github.com/boldfield/agentask/internal/api"
 	"github.com/boldfield/agentask/internal/forge"
 	"github.com/boldfield/agentask/internal/localcommit"
+	"github.com/boldfield/agentask/internal/notify"
+	"github.com/boldfield/agentask/internal/reconcile"
 	"github.com/boldfield/agentask/internal/store"
 	"github.com/boldfield/agentask/internal/tuiclient"
 )
@@ -173,6 +176,27 @@ func runServer() {
 		log.Fatalf("failed to parse AGENTASK_EVENT_TERMINAL_RETENTION_DAYS: %v", err)
 	}
 
+	// Parse notification configuration
+	notifyURL := os.Getenv("NOTIFY_URL")
+	notifyToken := os.Getenv("NOTIFY_TOKEN")
+	notifyIntervalStr := os.Getenv("NOTIFY_INTERVAL")
+	if notifyIntervalStr == "" {
+		notifyIntervalStr = "30s"
+	}
+	notifyInterval, err := time.ParseDuration(notifyIntervalStr)
+	if err != nil {
+		log.Fatalf("failed to parse NOTIFY_INTERVAL: %v", err)
+	}
+
+	notifyFailedWindowStr := os.Getenv("NOTIFY_FAILED_WINDOW")
+	if notifyFailedWindowStr == "" {
+		notifyFailedWindowStr = "1h"
+	}
+	notifyFailedWindow, err := time.ParseDuration(notifyFailedWindowStr)
+	if err != nil {
+		log.Fatalf("failed to parse NOTIFY_FAILED_WINDOW: %v", err)
+	}
+
 	// Open the store
 	s, err := store.Open(dbPath, allowedModels)
 	if err != nil {
@@ -196,6 +220,23 @@ func runServer() {
 	// Set up graceful shutdown with signal handling
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	// Set up notification reconciler if enabled
+	if notifyURL != "" {
+		if notifyToken == "" {
+			log.Fatal("NOTIFY_TOKEN environment variable not set")
+		}
+
+		logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+		notifyClient := notify.NewClient(notifyURL, notifyToken, nil, logger)
+		reconciler := notify.NewNotifyReconciler(s, notifyClient, notifyFailedWindow, time.Now, logger)
+		runner := reconcile.NewRunner(notifyInterval, logger, reconciler)
+
+		go func() {
+			runner.Run(sigCtx)
+		}()
+	}
 
 	// Create HTTP server
 	httpServer := &http.Server{
