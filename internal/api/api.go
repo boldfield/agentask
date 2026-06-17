@@ -70,6 +70,11 @@ func New(s store.Store, authToken string, leaseTTL time.Duration, maxReviewRound
 	return server
 }
 
+// Handler returns the HTTP handler for the API server.
+func (s *Server) Handler() http.Handler {
+	return s.mux
+}
+
 // ListenAndServe starts the HTTP server on the given address.
 func (s *Server) ListenAndServe(addr string) error {
 	return http.ListenAndServe(addr, s.mux)

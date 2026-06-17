@@ -9,12 +9,15 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net/http"
 	"net/url"
 	"os"
 	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -190,10 +193,32 @@ func runServer() {
 	// Create API server
 	apiServer := api.New(s, authToken, leaseTTL, maxReviewRounds, escalationThresholds)
 
-	// Start HTTP server
+	// Set up graceful shutdown with signal handling
+	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer cancel()
+
+	// Create HTTP server
+	httpServer := &http.Server{
+		Addr:    addr,
+		Handler: apiServer.Handler(),
+	}
+
+	// Start HTTP server in a goroutine
 	log.Printf("listening on %s", addr)
-	if err := apiServer.ListenAndServe(addr); err != nil {
-		log.Fatalf("server error: %v", err)
+	go func() {
+		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("server error: %v", err)
+		}
+	}()
+
+	// Wait for interrupt signal
+	<-sigCtx.Done()
+
+	// Gracefully shutdown the server
+	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer shutdownCancel()
+	if err := httpServer.Shutdown(shutdownCtx); err != nil {
+		log.Fatalf("shutdown error: %v", err)
 	}
 }
 
