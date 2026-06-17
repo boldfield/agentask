@@ -99,6 +99,50 @@ Tasks can carry typed links:
 
 Links are indexed and can be queried in reverse (e.g., find the task for a given PR URL).
 
+## Notifications
+
+Agentask includes an in-process notification loop that notifies external systems when a task
+requires human attention. The notifier is **level-triggered** and runs at regular intervals,
+checking for tasks in terminal states and POSTing to a configurable webhook.
+
+**When notifications are sent:**
+
+The notifier monitors tasks in three states and sends notifications to the `NOTIFY_URL` endpoint
+(if configured). The state-to-event mapping and recency rules are:
+
+| Task State | Event              | Priority | Notes                                                     |
+|------------|--------------------|----|----------------------------------------------|
+| `approved` | `agentask-review`  | P2 | Task has passed review and awaits human merge decision    |
+| `blocked`  | `agentask-blocked` | P2 | Task was blocked and requires human intervention          |
+| `failed`   | `agentask-failed`  | P3 | Task failed; only notified within `NOTIFY_FAILED_WINDOW` (default 1h, recency-windowed) |
+
+The notifier is a **no-op** when `NOTIFY_URL` is unset — notifications are simply not sent, and
+no errors are logged.
+
+**Configuration:**
+
+Set the following environment variables to enable notifications:
+
+- `NOTIFY_URL` (required): The webhook URL to POST notifications to. If unset, notifications are
+  disabled entirely. Example: `https://your-notifier.example.com/notify`.
+- `NOTIFY_TOKEN` (required if `NOTIFY_URL` is set): Bearer token used to authenticate requests
+  to the webhook. Sent as the `Authorization: Bearer <token>` header.
+- `NOTIFY_INTERVAL` (optional, default `30s`): How often the notifier checks for tasks in need
+  of notification. Duration format: `30s`, `1m`, etc.
+- `NOTIFY_FAILED_WINDOW` (optional, default `1h`): Time window within which a failed task triggers
+  notifications. Tasks that failed more than this duration ago are not notified. Duration format:
+  `1h`, `30m`, etc.
+
+**Example:**
+
+```bash
+export NOTIFY_URL="https://notifier.example.com/notify"
+export NOTIFY_TOKEN="your-secret-token"
+export NOTIFY_INTERVAL="30s"
+export NOTIFY_FAILED_WINDOW="1h"
+./bin/agentask server
+```
+
 ## How to Run It
 
 ### Build
