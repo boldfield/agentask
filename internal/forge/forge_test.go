@@ -159,6 +159,40 @@ func TestOwnerToken_UserHomeDirError(t *testing.T) {
 	}
 }
 
+func TestOwnerToken_ForgeTokensEnvVar(t *testing.T) {
+	// Create a temporary directory and file at a custom path
+	tmpDir, err := os.MkdirTemp("", "forge-test-env-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	customTokenFile := filepath.Join(tmpDir, "custom-forge-tokens")
+	if err := os.WriteFile(customTokenFile, []byte("alice=custom-token\n"), 0644); err != nil {
+		t.Fatalf("failed to write custom token file: %v", err)
+	}
+
+	// Set FORGE_TOKENS environment variable
+	oldForgeTokens := os.Getenv("FORGE_TOKENS")
+	os.Setenv("FORGE_TOKENS", customTokenFile)
+	defer func() {
+		if oldForgeTokens == "" {
+			os.Unsetenv("FORGE_TOKENS")
+		} else {
+			os.Setenv("FORGE_TOKENS", oldForgeTokens)
+		}
+	}()
+
+	// OwnerToken should read from the custom path (and not try to access the home dir)
+	got, err := OwnerToken("alice")
+	if err != nil {
+		t.Errorf("OwnerToken() error = %v, want nil", err)
+	}
+	if got != "custom-token" {
+		t.Errorf("OwnerToken() = %q, want %q", got, "custom-token")
+	}
+}
+
 func TestSquashMerge(t *testing.T) {
 	tests := []struct {
 		name         string
