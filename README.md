@@ -207,8 +207,11 @@ export FORGE_TOKENS="/path/to/forge-tokens"
 ```
 
 If unset, the reconciler defaults to `~/.agentask/forge-tokens`. If no tokens file exists, the
-reconciler silently skips PR reconciliation (no errors logged); this is useful for development
-or deployments where GitHub integration is not needed.
+reconciler proceeds with unauthenticated GitHub API calls: for public repos this may succeed
+(subject to GitHub's 60 req/hr unauthenticated rate limit), but for private repos the requests
+fail with 401/404 errors that are logged each reconcile cycle. If you do not need GitHub
+integration (development or local deployments), create an empty tokens file or set
+`FORGE_TOKENS` to point to an empty file.
 
 ## How to Run It
 
