@@ -3154,6 +3154,58 @@ func TestBoardModel_FailFlow(t *testing.T) {
 	if !strings.Contains(output, "blocked(0)") {
 		t.Errorf("Expected blocked(0) after fail, got:\n%s", output)
 	}
+	if !strings.Contains(output, "failed(1)") {
+		t.Errorf("Expected failed(1) after fail, got:\n%s", output)
+	}
+}
+
+// TestBoardModel_AbandonedTaskVisible verifies that a task in abandoned state is visible on the board
+// and renders the abandoned(N) column with the correct count.
+func TestBoardModel_AbandonedTaskVisible(t *testing.T) {
+	mockClient := &tuiclient.MockClient{}
+
+	config := &tuiconfig.Config{
+		URL:          "http://test",
+		Token:        "test",
+		Actor:        "testuser",
+		PollInterval: 100 * time.Millisecond,
+	}
+	project := tuiclient.Project{ID: "project-1", Name: "Test"}
+
+	model := NewBoardModel(mockClient, config, project)
+	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	model = m.(*BoardModel)
+
+	// Simulate fetch with one abandoned task
+	bucketed := make(map[string][]tuiclient.Task)
+	for _, state := range stateOrder {
+		bucketed[state] = []tuiclient.Task{}
+	}
+	bucketed["abandoned"] = []tuiclient.Task{
+		{ID: "abandoned-task-1", Title: "Abandoned Task", State: "abandoned"},
+	}
+
+	m, _ = model.Update(tasksFetchedMsg{tasks: bucketed})
+	model = m.(*BoardModel)
+
+	// Navigate to the abandoned column (index 8).
+	// Starting from in_progress (index 2), press right 6 times.
+	for i := 0; i < 6; i++ {
+		m, _ = model.Update(tea.KeyMsg{Type: tea.KeyRight})
+		model = m.(*BoardModel)
+	}
+
+	output := model.View()
+
+	// Verify the abandoned column is visible with the correct count
+	if !strings.Contains(output, "abandoned(1)") {
+		t.Errorf("Expected 'abandoned(1)' in output, got:\n%s", output)
+	}
+
+	// Verify the abandoned task is rendered
+	if !strings.Contains(output, "Abandoned Task") {
+		t.Errorf("Expected abandoned task title in output, got:\n%s", output)
+	}
 }
 
 // TestDetail_ViewportOffsetClamping verifies that initDetailViewport clamps the carried-over

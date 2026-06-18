@@ -113,9 +113,11 @@ const (
 	stateApproved   = "approved"
 	stateDone       = "done"
 	stateBlocked    = "blocked"
+	stateFailed     = "failed"
+	stateAbandoned  = "abandoned"
 )
 
-var stateOrder = []string{stateBacklog, stateReady, stateInProgress, stateReview, stateApproved, stateDone, stateBlocked}
+var stateOrder = []string{stateBacklog, stateReady, stateInProgress, stateReview, stateApproved, stateDone, stateBlocked, stateFailed, stateAbandoned}
 var stateColors = map[string]lipgloss.Color{
 	stateBacklog:    lipgloss.Color("8"),
 	stateReady:      lipgloss.Color("4"),
@@ -124,6 +126,8 @@ var stateColors = map[string]lipgloss.Color{
 	stateApproved:   lipgloss.Color("6"),
 	stateDone:       lipgloss.Color("2"),
 	stateBlocked:    lipgloss.Color("1"),
+	stateFailed:     lipgloss.Color("9"),
+	stateAbandoned:  lipgloss.Color("8"),
 }
 
 // NewBoardModel creates a new board model and starts the initial fetch.
