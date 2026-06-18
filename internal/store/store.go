@@ -1782,9 +1782,9 @@ func (s *sqliteStore) SubmitTask(ctx context.Context, taskID, agentID, result st
 					return TaskWithDepsAndLinks{}, fmt.Errorf("failed to tally review tasks: %w", err)
 				}
 
-				// Guard: if parent is in a terminal state (failed/blocked), do not resurrect it
+				// Guard: if parent is in a terminal state (failed/blocked/abandoned), do not resurrect it
 				var newParentState string
-				isTerminal := parentState == "failed" || parentState == "blocked"
+				isTerminal := parentState == "failed" || parentState == "blocked" || parentState == "abandoned"
 
 				if !isTerminal {
 					// Determine the new parent state based on the tally
@@ -2064,6 +2064,7 @@ func (s *sqliteStore) AddReview(ctx context.Context, taskID, actor, verdict stri
 //   - to='blocked': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved)
 //   - to='failed': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved) or 'blocked' (retire a dead blocked task)
 //   - to='superseded': allowed from any ACTIVE state (backlog, ready, in_progress, review, approved)
+//   - to='abandoned': allowed ONLY from 'approved' (terminal state)
 //   - anything else: ErrConflict
 //
 // Returns the updated Task on success.
@@ -2072,9 +2073,9 @@ func (s *sqliteStore) AddReview(ctx context.Context, taskID, actor, verdict stri
 // Returns ValidationError if 'to' state is invalid.
 func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, note *string) (Task, error) {
 	// Validate 'to' state
-	validTargets := map[string]bool{"done": true, "ready": true, "blocked": true, "failed": true, "superseded": true}
+	validTargets := map[string]bool{"done": true, "ready": true, "blocked": true, "failed": true, "superseded": true, "abandoned": true}
 	if !validTargets[to] {
-		return Task{}, invalid("INVALID_TARGET_STATE", "target state must be one of: done, ready, blocked, failed, superseded")
+		return Task{}, invalid("INVALID_TARGET_STATE", "target state must be one of: done, ready, blocked, failed, superseded, abandoned")
 	}
 
 	// Strip raw control characters from the free-text note before storage.
@@ -2136,6 +2137,12 @@ func (s *sqliteStore) TransitionTask(ctx context.Context, taskID, to string, not
 		// Allowed from any active state (backlog, ready, in_progress, review, approved)
 		activeStates := map[string]bool{"backlog": true, "ready": true, "in_progress": true, "review": true, "approved": true}
 		if activeStates[taskState] {
+			canTransition = true
+		}
+
+	case "abandoned":
+		// Allowed only from 'approved'
+		if taskState == "approved" {
 			canTransition = true
 		}
 	}
@@ -2770,7 +2777,7 @@ func (s *sqliteStore) UpdateTaskDependsOn(ctx context.Context, taskID string, de
 
 // PruneEvents removes old events according to retention policy.
 // Events older than retentionDays are deleted unconditionally.
-// For tasks in terminal states (done/failed/archived), events older than terminalRetentionDays are deleted.
+// For tasks in terminal states (done/failed/archived/abandoned), events older than terminalRetentionDays are deleted.
 // Events for active (non-terminal) tasks are never pruned.
 // Returns the number of rows deleted.
 // PruneEvents deletes events for terminal tasks older than terminalRetentionDays,
@@ -2786,7 +2793,7 @@ func (s *sqliteStore) PruneEvents(ctx context.Context, terminalRetentionDays int
 		WHERE
 			task_id IN (
 				SELECT id FROM task
-				WHERE state IN ('done', 'failed', 'archived')
+				WHERE state IN ('done', 'failed', 'archived', 'abandoned')
 			)
 			AND created_at < ?
 	`, terminalCutoff)
