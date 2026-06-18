@@ -9,11 +9,11 @@ import (
 )
 
 type taskTx interface {
-	TransitionTask(ctx context.Context, id, toState string, note *string) error
+	TransitionTask(ctx context.Context, id, toState string, note *string) (store.Task, error)
 }
 
 func applyMerged(ctx context.Context, tx taskTx, n notify.Notifier, task store.Task) error {
-	err := tx.TransitionTask(ctx, task.ID, "done", nil)
+	_, err := tx.TransitionTask(ctx, task.ID, "done", nil)
 	if err != nil {
 		return err
 	}
@@ -31,3 +31,5 @@ func applyMerged(ctx context.Context, tx taskTx, n notify.Notifier, task store.T
 
 	return nil
 }
+
+var _ taskTx = store.Store(nil)

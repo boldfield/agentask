@@ -17,12 +17,12 @@ type fakeTaskTx struct {
 	transitionErr    error
 }
 
-func (f *fakeTaskTx) TransitionTask(ctx context.Context, id, toState string, note *string) error {
+func (f *fakeTaskTx) TransitionTask(ctx context.Context, id, toState string, note *string) (store.Task, error) {
 	f.transitionCalled = true
 	f.transitionID = id
 	f.transitionState = toState
 	f.transitionNote = note
-	return f.transitionErr
+	return store.Task{}, f.transitionErr
 }
 
 type fakeNotifier struct {
