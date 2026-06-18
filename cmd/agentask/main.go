@@ -26,6 +26,7 @@ import (
 	"github.com/boldfield/agentask/internal/forge"
 	"github.com/boldfield/agentask/internal/localcommit"
 	"github.com/boldfield/agentask/internal/notify"
+	"github.com/boldfield/agentask/internal/prwatch"
 	"github.com/boldfield/agentask/internal/reconcile"
 	"github.com/boldfield/agentask/internal/store"
 	"github.com/boldfield/agentask/internal/tuiclient"
@@ -221,7 +222,7 @@ func runServer() {
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Set up notification reconciler if enabled
+	// Set up notification and PR-watch reconcilers if enabled
 	if notifyURL != "" {
 		if notifyToken == "" {
 			log.Fatal("NOTIFY_TOKEN environment variable not set")
@@ -230,8 +231,9 @@ func runServer() {
 		logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
 
 		notifyClient := notify.NewClient(notifyURL, notifyToken, nil, logger)
-		reconciler := notify.NewNotifyReconciler(s, notifyClient, notifyFailedWindow, time.Now, logger)
-		runner := reconcile.NewRunner(notifyInterval, logger, reconciler)
+		notifyReconciler := notify.NewNotifyReconciler(s, notifyClient, notifyFailedWindow, time.Now, logger)
+		prwatchReconciler := prwatch.NewPRWatchReconciler(s, notifyClient, forge.OwnerToken, logger)
+		runner := reconcile.NewRunner(notifyInterval, logger, notifyReconciler, prwatchReconciler)
 
 		go func() {
 			runner.Run(sigCtx)
