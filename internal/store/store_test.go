@@ -4386,6 +4386,96 @@ func TestTransitionToSuperseded(t *testing.T) {
 	}
 }
 
+// TestTransitionApprovedToAbandoned verifies that tasks can transition from 'approved' to 'abandoned',
+// that 'abandoned' is a terminal state (no transitions out), and that only 'approved' can transition to 'abandoned'.
+func TestTransitionApprovedToAbandoned(t *testing.T) {
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+
+	// Create a project
+	proj, err := store.CreateProject(ctx, "test-project", "https://github.com/example/repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	// Create a document
+	doc, err := store.CreateDocument(ctx, proj.ID, "design", "Test Design", "DESIGN.md", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	// Create tasks
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Task 1 - Will be approved", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 2 - Backlog", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+		{Title: "Task 3 - Ready", Spec: "Test spec", DocumentID: doc.ID, Model: "haiku"},
+	})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+
+	taskID1 := tasks[0].ID
+	taskID2 := tasks[1].ID
+	taskID3 := tasks[2].ID
+
+	// Manually set task 1 to approved state (the only state from which we can transition to abandoned)
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "approved", taskID1)
+	if err != nil {
+		t.Fatalf("failed to set task to approved state: %v", err)
+	}
+
+	// Test 1: approved→abandoned succeeds
+	abandonedNote := "no longer needed"
+	abandoned, err := store.TransitionTask(ctx, taskID1, "abandoned", &abandonedNote)
+	if err != nil {
+		t.Fatalf("failed to transition approved→abandoned: %v", err)
+	}
+	if abandoned.State != "abandoned" {
+		t.Errorf("expected task state='abandoned', got '%s'", abandoned.State)
+	}
+
+	// Test 2: abandoned→* should fail (abandoned is terminal)
+	// abandoned→done should fail
+	_, err = store.TransitionTask(ctx, taskID1, "done", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected abandoned→done to return ErrConflict, got %v", err)
+	}
+
+	// abandoned→blocked should fail
+	_, err = store.TransitionTask(ctx, taskID1, "blocked", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected abandoned→blocked to return ErrConflict, got %v", err)
+	}
+
+	// abandoned→failed should fail
+	_, err = store.TransitionTask(ctx, taskID1, "failed", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected abandoned→failed to return ErrConflict, got %v", err)
+	}
+
+	// Test 3: backlog→abandoned should fail (only approved can transition to abandoned)
+	_, err = store.TransitionTask(ctx, taskID2, "abandoned", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected backlog→abandoned to return ErrConflict, got %v", err)
+	}
+
+	// Test 4: ready→abandoned should fail (only approved can transition to abandoned)
+	// Manually set task 3 to ready state
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", taskID3)
+	if err != nil {
+		t.Fatalf("failed to set task to ready state: %v", err)
+	}
+	_, err = store.TransitionTask(ctx, taskID3, "abandoned", nil)
+	if !errors.Is(err, ErrConflict) {
+		t.Errorf("expected ready→abandoned to return ErrConflict, got %v", err)
+	}
+}
+
 // TestListProjectsWithClaimableFilter verifies that ListProjects with filter.Claimable=true
 // returns only projects with at least one claimable task matching the model and kind.
 func TestListProjectsWithClaimableFilter(t *testing.T) {
