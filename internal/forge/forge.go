@@ -147,6 +147,45 @@ func SquashMerge(ctx context.Context, owner, repo string, prNumber int, token st
 	return nil
 }
 
+// PostPRComment posts a top-level comment on a GitHub PR using the GitHub REST API.
+// It makes a POST request to /repos/{owner}/{repo}/issues/{prNumber}/comments with the comment text.
+func PostPRComment(ctx context.Context, owner, repo string, prNumber int, token, comment string) error {
+	url := fmt.Sprintf("%s/repos/%s/%s/issues/%d/comments", GitHubBaseURL, owner, repo, prNumber)
+
+	payload := map[string]string{
+		"body": comment,
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("post comment failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
 // prAlreadyMerged reports whether the given PR has already been merged, using
 // GitHub's GET /pulls/{n}/merge endpoint: 204 means merged, 404 means not merged.
 // Any other status (or a transport error) returns an error so the caller can fall
