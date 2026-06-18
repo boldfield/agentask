@@ -412,3 +412,117 @@ func TestSquashMergeIntegration(t *testing.T) {
 		t.Fatalf("SquashMerge() error = %v, want nil", err)
 	}
 }
+
+func TestPostPRComment(t *testing.T) {
+	tests := []struct {
+		name         string
+		statusCode   int
+		responseBody string
+		prNumber     int
+		owner        string
+		repo         string
+		token        string
+		comment      string
+		wantErr      bool
+	}{
+		{
+			name:         "successful comment",
+			statusCode:   201,
+			responseBody: `{"id": 1, "body": "test comment"}`,
+			prNumber:     42,
+			owner:        "testuser",
+			repo:         "testrepo",
+			token:        "test-token",
+			comment:      "test comment",
+			wantErr:      false,
+		},
+		{
+			name:         "comment without token",
+			statusCode:   201,
+			responseBody: `{"id": 1, "body": "test comment"}`,
+			prNumber:     42,
+			owner:        "testuser",
+			repo:         "testrepo",
+			token:        "",
+			comment:      "test comment",
+			wantErr:      false,
+		},
+		{
+			name:         "not found",
+			statusCode:   404,
+			responseBody: `{"message": "Not Found"}`,
+			prNumber:     999,
+			owner:        "testuser",
+			repo:         "testrepo",
+			token:        "test-token",
+			comment:      "test comment",
+			wantErr:      true,
+		},
+		{
+			name:         "unauthorized",
+			statusCode:   401,
+			responseBody: `{"message": "Bad credentials"}`,
+			prNumber:     42,
+			owner:        "testuser",
+			repo:         "testrepo",
+			token:        "invalid-token",
+			comment:      "test comment",
+			wantErr:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				// Verify the request details
+				if r.Method != http.MethodPost {
+					t.Errorf("expected POST, got %s", r.Method)
+				}
+
+				expectedPath := fmt.Sprintf("/repos/%s/%s/issues/%d/comments", tt.owner, tt.repo, tt.prNumber)
+				if r.URL.Path != expectedPath {
+					t.Errorf("expected path %s, got %s", expectedPath, r.URL.Path)
+				}
+
+				// Verify headers
+				if ct := r.Header.Get("Content-Type"); ct != "application/json" {
+					t.Errorf("expected Content-Type: application/json, got %s", ct)
+				}
+
+				if tt.token != "" {
+					expectedAuth := "token " + tt.token
+					if auth := r.Header.Get("Authorization"); auth != expectedAuth {
+						t.Errorf("expected Authorization: %s, got %s", expectedAuth, auth)
+					}
+				}
+
+				// Verify request body contains the comment
+				body, _ := io.ReadAll(r.Body)
+				if !strings.Contains(string(body), tt.comment) {
+					t.Errorf("expected request body to contain %q, got %s", tt.comment, string(body))
+				}
+
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.responseBody))
+			}))
+			defer server.Close()
+
+			// Mock GitHubBaseURL to use our test server
+			oldBaseURL := GitHubBaseURL
+			GitHubBaseURL = server.URL
+			defer func() {
+				GitHubBaseURL = oldBaseURL
+			}()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			// Call the real PostPRComment function with mocked base URL
+			err := PostPRComment(ctx, tt.owner, tt.repo, tt.prNumber, tt.token, tt.comment)
+
+			if (err != nil) != tt.wantErr {
+				t.Errorf("PostPRComment() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
