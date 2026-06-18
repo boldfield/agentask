@@ -33,19 +33,22 @@ state-machine primitive underneath an agent-driven development workflow.
 
 ```
 backlog ──promote──► ready ──claim──► in_progress ──submit──► review ──approve──► approved ──merge──► done
-                       ▲                    │                     │
-                       └──── lease expiry ──┘             reject──┘ (→ ready)
+                       ▲                    │                     │                     │
+                       └──── lease expiry ──┘             reject──┘ (→ ready)    ──────┘
+                                                                            PR-watch:
+                                                                      merged → done
+                                                                      closed → abandoned
 
-                      blocked / failed are off-ramps
+                      blocked / failed / abandoned are off-ramps
 ```
 
 - **backlog**: Initial state. Task is not yet claimable.
 - **ready**: Human has promoted it. Task is claimable (subject to dependencies).
 - **in_progress**: Agent has claimed it and is executing. Lease governs crash recovery.
 - **review**: Agent submitted work. Reviewers vote. On rejection, task returns to `ready`.
-- **approved**: All reviewers voted approve. Human merges.
+- **approved**: All reviewers voted approve. Awaits human merge (or PR-watch driven transitions).
 - **done**: Work is merged.
-- **blocked / failed**: Off-ramps from any state, for unblocked or abandoned tasks.
+- **blocked / failed / abandoned**: Off-ramps. Abandoned is terminal (PR closed without merging or task explicitly abandoned).
 
 **Dependencies & Claiming**
 
@@ -72,6 +75,7 @@ All endpoints (except `/healthz`) require `Authorization: Bearer <token>` header
 - `AGENTASK_TOKEN` (required): The bearer token for authentication.
 - `AGENTASK_DB` (required): SQLite database path (e.g., `/data/agentask.db`).
 - `AGENTASK_ADDR` (optional, default `:8080`): Server address.
+- `FORGE_TOKENS` (optional): Path to the forge tokens file for GitHub API authentication (defaults to `~/.agentask/forge-tokens`). Only needed if PR-watch reconciler is enabled.
 
 See [`docs/api.md`](./docs/api.md) for the full API reference with all request/response examples.
 
@@ -142,6 +146,72 @@ export NOTIFY_INTERVAL="30s"
 export NOTIFY_FAILED_WINDOW="1h"
 ./bin/agentask server
 ```
+
+## PR-Watch Reconciler
+
+The PR-watch reconciler runs in-server on the reconcile runner and watches GitHub pull requests
+linked to approved tasks. It drives state transitions on the board based on PR activity, enabling
+human-gated workflows where code review and approval happen on GitHub, and Agentask remains
+synchronized with the PR's state.
+
+**How It Works**
+
+The reconciler monitors all `approved` tasks that have `agent_merge=false` (i.e., tasks awaiting
+human action). For each task with a linked GitHub PR URL, it fetches the PR's current state and
+review decisions from GitHub, then applies one of four actions:
+
+| PR State              | Action                                                      |
+|----------------------|-------------------------------------------------------------|
+| `merged`             | Task transitions to `done` and fires `agentask-merged` event |
+| `closed` (unmerged)  | Task transitions to `abandoned`                             |
+| `open` + `changes requested` (newer than approval) | Task bounces back to `ready` for rework |
+| All other states     | No action (continues monitoring)                             |
+
+**State Transitions**
+
+- **PR merged → done**: When the PR is merged, the task is marked complete. An `agentask-merged`
+  notification is published to alert external systems of the merge.
+- **PR closed unmerged → abandoned**: If the PR is closed without merging, the task is marked
+  `abandoned` — a terminal state indicating it will not be completed.
+- **PR 'changes requested' → ready**: If a reviewer posts 'changes requested' on the PR *after*
+  the task was approved, the reconciler bounces it back to `ready` and posts a comment on the
+  PR explaining that the task has been returned for rework.
+- **Abandoned is terminal**: Once a task is in the `abandoned` state, it cannot transition to
+  any other state (it is a permanent off-ramp for work that is no longer needed).
+
+**GitHub Authentication**
+
+The reconciler requires GitHub API tokens to fetch PR state and post comments. Tokens are read
+from a file specified by the `FORGE_TOKENS` environment variable (or `~/.agentask/forge-tokens`
+if unset). The file format is one owner-token pair per line:
+
+```
+# File: ~/.agentask/forge-tokens (or $FORGE_TOKENS)
+owner1=token_for_owner1
+owner2="token_for_owner2"  # quoted tokens are supported
+# Comments are allowed
+owner3=token_for_owner3
+```
+
+Tokens are **server-side per-owner**: each GitHub organization owner has its own API token,
+allowing the server to act on behalf of that owner when accessing private repos. The reconciler
+looks up the owner from the PR URL and fetches the corresponding token to authenticate requests.
+
+**Configuration**
+
+Set the `FORGE_TOKENS` environment variable to point to your tokens file:
+
+```bash
+export FORGE_TOKENS="/path/to/forge-tokens"
+./bin/agentask server
+```
+
+If unset, the reconciler defaults to `~/.agentask/forge-tokens`. If no tokens file exists, the
+reconciler proceeds with unauthenticated GitHub API calls: for public repos this may succeed
+(subject to GitHub's 60 req/hr unauthenticated rate limit), but for private repos the requests
+fail with 401/404 errors that are logged each reconcile cycle. If you do not need GitHub
+integration (development or local deployments), create an empty tokens file or set
+`FORGE_TOKENS` to point to an empty file.
 
 ## How to Run It
 
