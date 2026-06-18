@@ -18,7 +18,9 @@ var userHomeDirFunc func() (string, error) = os.UserHomeDir
 // GitHubBaseURL is the base URL for GitHub API calls (made mockable for testing).
 var GitHubBaseURL = "https://api.github.com"
 
-// OwnerToken reads ~/.agentask/forge-tokens and returns the token for the given owner.
+// OwnerToken reads the forge tokens file and returns the token for the given owner.
+// The file path is determined by the FORGE_TOKENS environment variable (if set),
+// or defaults to ~/.agentask/forge-tokens.
 // The file format is owner=token per line, with support for:
 //   - Case-insensitive owner matching
 //   - Comments (# and everything after)
@@ -27,12 +29,20 @@ var GitHubBaseURL = "https://api.github.com"
 //
 // Returns empty string if owner not found or file is missing.
 func OwnerToken(owner string) (string, error) {
-	home, err := userHomeDirFunc()
-	if err != nil {
-		return "", err
+	var filePath string
+
+	// Check for FORGE_TOKENS environment variable
+	if forgeTokensEnv := os.Getenv("FORGE_TOKENS"); forgeTokensEnv != "" {
+		filePath = forgeTokensEnv
+	} else {
+		// Default to ~/.agentask/forge-tokens
+		home, err := userHomeDirFunc()
+		if err != nil {
+			return "", err
+		}
+		filePath = filepath.Join(home, ".agentask", "forge-tokens")
 	}
 
-	filePath := filepath.Join(home, ".agentask", "forge-tokens")
 	data, err := os.ReadFile(filePath)
 	if err != nil {
 		return "", nil
