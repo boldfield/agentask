@@ -39,7 +39,7 @@ spec:
         # Push with: docker push ghcr.io/boldfield/agentask:latest
         # Or load into kind/minikube: kind load docker-image ghcr.io/boldfield/agentask:latest
         # Pinned to a released version tag for reproducible deploys. Bump on each release.
-        image: ghcr.io/boldfield/agentask:v0.10.1
+        image: ghcr.io/boldfield/agentask:v0.13.0
         imagePullPolicy: IfNotPresent
         # Container-level securityContext (also required by 'restricted').
         securityContext:
@@ -66,9 +66,23 @@ spec:
           value: "haiku,sonnet,opus,fable"
         - name: AGENTASK_ESCALATION_THRESHOLDS
           value: "haiku=6,sonnet=4,opus=2,fable=1"
+        # Notify loop -> notifier-proxy (internal/notify). No-op when NOTIFY_URL is unset.
+        - name: NOTIFY_URL
+          value: "https://notifier.summercamp.eastharbor.casa"
+        - name: NOTIFY_TOKEN
+          valueFrom:
+            secretKeyRef:
+              name: notify-token
+              key: NOTIFY_TOKEN
+        # PR-watch reconciler reads PRs with per-owner forge tokens from the file mounted below.
+        - name: FORGE_TOKENS
+          value: /etc/fleet/forge-tokens
         volumeMounts:
         - name: data
           mountPath: /data
+        - name: forge-tokens
+          mountPath: /etc/fleet
+          readOnly: true
         livenessProbe:
           httpGet:
             path: /healthz
@@ -96,3 +110,8 @@ spec:
       - name: data
         persistentVolumeClaim:
           claimName: agentask-data
+      # Per-owner GitHub tokens for the in-server PR-watch reconciler. Created out-of-band
+      # (see secret.yaml.example) — copied from the agentask-fleet namespace's fleet token.
+      - name: forge-tokens
+        secret:
+          secretName: agentask-forge-tokens
