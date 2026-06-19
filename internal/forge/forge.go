@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // userHomeDirFunc is the function used to get the home directory (made mockable for testing).
@@ -218,4 +219,70 @@ func prAlreadyMerged(ctx context.Context, owner, repo string, prNumber int, toke
 		respBody, _ := io.ReadAll(resp.Body)
 		return false, fmt.Errorf("unexpected merge-status %d: %s", resp.StatusCode, string(respBody))
 	}
+}
+
+// PRMergeability returns GitHub's computed `mergeable_state` for a PR — one of
+// "clean", "dirty" (conflicts with base), "behind" (out of date), "blocked" (failing
+// required checks/reviews), "unstable", "draft", or "unknown". GitHub computes this
+// asynchronously, so a just-pushed PR reports mergeable=null / "unknown" briefly; this
+// polls a few times until it settles, returning "unknown" if it never does (so the
+// caller treats it as transient rather than a definitive conflict).
+func PRMergeability(ctx context.Context, owner, repo string, prNumber int, token string) (string, error) {
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", GitHubBaseURL, owner, repo, prNumber)
+	const attempts = 3
+
+	lastState := "unknown"
+	for i := 0; i < attempts; i++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return "", fmt.Errorf("failed to create PR request: %w", err)
+		}
+		req.Header.Set("Accept", "application/vnd.github.v3+json")
+		if token != "" {
+			req.Header.Set("Authorization", "token "+token)
+		}
+
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch PR: %w", err)
+		}
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			return "", fmt.Errorf("failed to fetch PR: status %d: %s", resp.StatusCode, string(body))
+		}
+
+		var pr struct {
+			Mergeable      *bool  `json:"mergeable"`
+			MergeableState string `json:"mergeable_state"`
+		}
+		if err := json.Unmarshal(body, &pr); err != nil {
+			return "", fmt.Errorf("failed to parse PR: %w", err)
+		}
+		if pr.MergeableState != "" {
+			lastState = pr.MergeableState
+		}
+		// mergeable!=nil means GitHub finished computing; the state is now authoritative.
+		if pr.Mergeable != nil && pr.MergeableState != "" && pr.MergeableState != "unknown" {
+			return pr.MergeableState, nil
+		}
+		if i < attempts-1 {
+			select {
+			case <-ctx.Done():
+				return lastState, ctx.Err()
+			case <-time.After(2 * time.Second):
+			}
+		}
+	}
+	return lastState, nil
+}
+
+// NeedsRework reports whether a `mergeable_state` means the PR can only be fixed by
+// reworking the branch — syncing the base in and resolving — rather than by retrying
+// the merge. "dirty" is a real conflict; "behind" is out of date under a
+// require-branches-up-to-date rule. Both are fixed by the worker's merge-with-main on
+// rework. "blocked"/"unstable"/"draft"/"unknown" are NOT rework cases (failing checks,
+// drafts, or not-yet-computed) and are left for the caller to retry/surface.
+func NeedsRework(mergeableState string) bool {
+	return mergeableState == "dirty" || mergeableState == "behind"
 }
