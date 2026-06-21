@@ -257,7 +257,11 @@ ensure_worktree() {
 # again (credits returned), so an overnight credit lapse pauses rather than hammers.
 CLAUDE_FAILS=0
 dispatch() {
-  local prompt; prompt="$(cat "$PROMPT_FILE")"
+  # Substitute the __AGENT_MODEL__ placeholder with this dispatch's actual model so the agent
+  # self-identifies correctly (e.g. review prompts sign PR comments "<model>-reviewer:" instead of
+  # a hardcoded "opus-reviewer:"). sed (not envsubst) for portability; the token is unique so other
+  # $VARS in the prompt are left for the agent's own shell to expand at runtime.
+  local prompt; prompt="$(sed "s/__AGENT_MODEL__/$AGENT_MODEL/g" "$PROMPT_FILE")"
 
   # Check if AGENT_MODEL is in AGENT_CODEX_MODELS (comma-separated list)
   local use_codex=0
