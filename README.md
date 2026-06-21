@@ -295,7 +295,7 @@ Some models (e.g., `gpt-5.5`) are available as review-only models via the Codex 
 To enable Codex routing:
 
 - `AGENT_CODEX_MODELS` (optional): Comma-separated list of models to route through `codex exec` (e.g., `gpt-5.5`). When a reviewer's model is in this list, the harness invokes `codex exec --sandbox danger-full-access` instead of the standard `claude -p` command.
-- `AGENT_CODEX_FLAGS` (optional): Additional flags to pass to `codex exec` (e.g., `-c model_reasoning_effort=high`).
+- `AGENT_CODEX_FLAGS` (optional): Additional flags to pass to `codex exec` beyond the hardcoded `-c model_reasoning_effort=high` (e.g., `-c temperature=0.7`, `--timeout 120`).
 
 The fleet image bundles the Codex CLI (installed via `npm install -g @openai/codex`); no manual installation is required.
 
