@@ -167,6 +167,9 @@ func runServer() {
 		log.Fatal("AGENTASK_MODELS configuration resulted in empty allowlist")
 	}
 
+	// Parse escalation ladder
+	escalationLadder := parseEscalationLadder(os.Getenv("AGENTASK_ESCALATION_LADDER"), allowedModels)
+
 	// Parse event retention configuration
 	eventTerminalRetentionDaysStr := os.Getenv("AGENTASK_EVENT_TERMINAL_RETENTION_DAYS")
 	if eventTerminalRetentionDaysStr == "" {
@@ -199,7 +202,7 @@ func runServer() {
 	}
 
 	// Open the store
-	s, err := store.Open(dbPath, allowedModels)
+	s, err := store.Open(dbPath, allowedModels, store.WithEscalationLadder(escalationLadder))
 	if err != nil {
 		log.Fatalf("failed to open store: %v", err)
 	}
@@ -851,6 +854,34 @@ func parseAllowedModels(modelsStr string) []string {
 	for _, model := range strings.Split(modelsStr, ",") {
 		model = strings.TrimSpace(model)
 		if model != "" && !seen[model] {
+			seen[model] = true
+			result = append(result, model)
+		}
+	}
+	return result
+}
+
+func parseEscalationLadder(ladderStr string, allowedModels []string) []string {
+	if ladderStr == "" {
+		return append([]string{}, allowedModels...)
+	}
+
+	allowedModelsM := make(map[string]bool)
+	for _, m := range allowedModels {
+		allowedModelsM[m] = true
+	}
+
+	seen := make(map[string]bool)
+	var result []string
+	for _, model := range strings.Split(ladderStr, ",") {
+		model = strings.TrimSpace(model)
+		if model == "" {
+			continue
+		}
+		if !allowedModelsM[model] {
+			log.Fatalf("escalation ladder contains model %q not in AGENTASK_MODELS allowlist", model)
+		}
+		if !seen[model] {
 			seen[model] = true
 			result = append(result, model)
 		}
