@@ -44,6 +44,9 @@ COPY --from=golang:1.25-bookworm /usr/local/go /usr/local/go
 # claude CLI (subscription auth comes at runtime via CLAUDE_CODE_OAUTH_TOKEN env).
 RUN npm install -g @anthropic-ai/claude-code
 
+# Codex CLI (OpenAI Codex tool).
+RUN npm install -g @openai/codex
+
 # agentask CLI + harness + the shared fleet entrypoint.
 COPY --from=agentask-builder /out/agentask /usr/local/bin/agentask
 COPY harness/ /harness/
