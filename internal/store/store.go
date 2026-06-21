@@ -56,9 +56,22 @@ type Store interface {
 
 // sqliteStore wraps a SQLite database connection and provides migration functionality.
 type sqliteStore struct {
-	conn           *sql.DB
-	allowedModels  []string
-	allowedModelsM map[string]bool
+	conn             *sql.DB
+	allowedModels    []string
+	allowedModelsM   map[string]bool
+	escalationLadder []string
+}
+
+// StoreOption is a functional option for configuring a Store.
+type StoreOption func(*sqliteStore)
+
+// WithEscalationLadder sets the escalation ladder for the store.
+// The ladder defines the order of models for escalation.
+// If not provided, the ladder defaults to allowedModels.
+func WithEscalationLadder(ladder []string) StoreOption {
+	return func(s *sqliteStore) {
+		s.escalationLadder = append([]string{}, ladder...) // Copy to avoid external mutation
+	}
 }
 
 // Open opens a database connection and applies all pending migrations.
@@ -66,7 +79,8 @@ type sqliteStore struct {
 // for an in-memory database.
 // It configures WAL mode, foreign keys, and busy timeout via DSN pragmas.
 // allowedModels is the list of valid model identifiers for task creation.
-func Open(dbPath string, allowedModels []string) (Store, error) {
+// opts are optional configuration functions (e.g., WithEscalationLadder).
+func Open(dbPath string, allowedModels []string, opts ...StoreOption) (Store, error) {
 	// Build the DSN with pragmas for WAL, foreign_keys, and busy_timeout.
 	// This ensures every connection from the pool has these pragmas applied.
 	dsn := buildDSN(dbPath)
@@ -86,9 +100,20 @@ func Open(dbPath string, allowedModels []string) (Store, error) {
 	}
 
 	store := &sqliteStore{
-		conn:           conn,
-		allowedModels:  allowedModels,
-		allowedModelsM: allowedModelsM,
+		conn:             conn,
+		allowedModels:    allowedModels,
+		allowedModelsM:   allowedModelsM,
+		escalationLadder: append([]string{}, allowedModels...), // Default to allowedModels
+	}
+
+	// Apply functional options
+	for _, opt := range opts {
+		opt(store)
+	}
+
+	// If no escalation ladder was set (or if it's empty after options), default to allowedModels
+	if len(store.escalationLadder) == 0 {
+		store.escalationLadder = append([]string{}, allowedModels...)
 	}
 
 	// Apply migrations in a transaction
