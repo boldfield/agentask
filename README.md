@@ -75,6 +75,8 @@ All endpoints (except `/healthz`) require `Authorization: Bearer <token>` header
 - `AGENTASK_TOKEN` (required): The bearer token for authentication.
 - `AGENTASK_DB` (required): SQLite database path (e.g., `/data/agentask.db`).
 - `AGENTASK_ADDR` (optional, default `:8080`): Server address.
+- `AGENTASK_MODELS` (optional, default `haiku,sonnet,opus`): Comma-separated list of valid model names. This is the allowlist for all models that can claim tasks or be specified as reviewers.
+- `AGENTASK_ESCALATION_LADDER` (optional): Comma-separated list of models in escalation order for reviewer routing. Defaults to `AGENTASK_MODELS` if unset. Every model in this ladder must be in `AGENTASK_MODELS`. Models can be valid review models without being in the escalation ladder — for example, `gpt-5.5` can be specified as a reviewer model via the Codex CLI (see below) without being in the escalation ladder.
 - `FORGE_TOKENS` (optional): Path to the forge tokens file for GitHub API authentication (defaults to `~/.agentask/forge-tokens`). Only needed if PR-watch reconciler is enabled.
 
 See [`docs/api.md`](./docs/api.md) for the full API reference with all request/response examples.
@@ -285,6 +287,17 @@ Each agent:
 
 Agents stand up their own git worktrees (one per repo), so multiple agents can work in parallel
 without stepping on each other.
+
+**Review-Only Models via Codex**
+
+Some models (e.g., `gpt-5.5`) are available as review-only models via the Codex CLI. These models do not need to be in `AGENTASK_ESCALATION_LADDER` and are routed through the Codex sandbox rather than the direct Claude API.
+
+To enable Codex routing:
+
+- `AGENT_CODEX_MODELS` (optional): Comma-separated list of models to route through `codex exec` (e.g., `gpt-5.5`). When a reviewer's model is in this list, the harness invokes `codex exec --sandbox danger-full-access` instead of the standard `claude -p` command.
+- `AGENT_CODEX_FLAGS` (optional): Additional flags to pass to `codex exec` (e.g., `-c model_reasoning_effort=high`).
+
+Reviewers using Codex-routed models require the `codex-auth` subscription secret to be configured in their environment so they can authenticate with the Codex CLI.
 
 **Running the Harness**
 
