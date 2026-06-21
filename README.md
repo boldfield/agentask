@@ -297,6 +297,8 @@ To enable Codex routing:
 - `AGENT_CODEX_MODELS` (optional): Comma-separated list of models to route through `codex exec` (e.g., `gpt-5.5`). When a reviewer's model is in this list, the harness invokes `codex exec --sandbox danger-full-access` instead of the standard `claude -p` command.
 - `AGENT_CODEX_FLAGS` (optional): Additional flags to pass to `codex exec` (e.g., `-c model_reasoning_effort=high`).
 
+The fleet image bundles the Codex CLI (installed via `npm install -g @openai/codex`); no manual installation is required.
+
 Reviewers using Codex-routed models require the `codex-auth` subscription secret to be configured in their environment so they can authenticate with the Codex CLI.
 
 **Running the Harness**
