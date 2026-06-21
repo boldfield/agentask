@@ -53,6 +53,7 @@ spec:
           volumeMounts:
             - { name: home, mountPath: /home/agent }
             - { name: forge-tokens, mountPath: /etc/fleet, readOnly: true }
+            - { name: codex-auth, mountPath: /home/agent/.codex/auth.json, subPath: auth.json, readOnly: true }
           resources:
             requests: { cpu: "500m", memory: "2Gi" }
             limits: { cpu: "2", memory: "6Gi" }
@@ -65,3 +66,6 @@ spec:
         - name: forge-tokens
           secret:
             secretName: agentask-forge-tokens
+        - name: codex-auth
+          secret:
+            secretName: codex-auth
