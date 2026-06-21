@@ -258,12 +258,27 @@ ensure_worktree() {
 CLAUDE_FAILS=0
 dispatch() {
   local prompt; prompt="$(cat "$PROMPT_FILE")"
-  # >>> remove --dangerously-skip-permissions if you want interactive permission prompts <<<
-  # AGENT_CLAUDE_FLAGS appends extra flags to the nested claude (default empty, so the normal fleet
-  # is unchanged). sbx.sh sets it to --allow-dangerously-skip-permissions, which a NESTED `claude -p`
-  # requires inside an sbx sandbox; it is unquoted on purpose so multiple flags word-split.
-  # shellcheck disable=SC2086
-  claude -p --dangerously-skip-permissions ${AGENT_CLAUDE_FLAGS:-} "$prompt" --model "$AGENT_MODEL" &
+
+  # Check if AGENT_MODEL is in AGENT_CODEX_MODELS (comma-separated list)
+  local use_codex=0
+  if [ -n "${AGENT_CODEX_MODELS:-}" ]; then
+    case ",$AGENT_CODEX_MODELS," in
+      *",$AGENT_MODEL,"*) use_codex=1 ;;
+    esac
+  fi
+
+  if [ "$use_codex" -eq 1 ]; then
+    # shellcheck disable=SC2086
+    codex exec -m "$AGENT_MODEL" --sandbox danger-full-access -c model_reasoning_effort=high ${AGENT_CODEX_FLAGS:-} "$prompt" &
+  else
+    # >>> remove --dangerously-skip-permissions if you want interactive permission prompts <<<
+    # AGENT_CLAUDE_FLAGS appends extra flags to the nested claude (default empty, so the normal fleet
+    # is unchanged). sbx.sh sets it to --allow-dangerously-skip-permissions, which a NESTED `claude -p`
+    # requires inside an sbx sandbox; it is unquoted on purpose so multiple flags word-split.
+    # shellcheck disable=SC2086
+    claude -p --dangerously-skip-permissions ${AGENT_CLAUDE_FLAGS:-} "$prompt" --model "$AGENT_MODEL" &
+  fi
+
   CLAUDE_PID=$!   # tracked so request_stop()/cleanup() can tear down this claude's process group
   local pid=$CLAUDE_PID rc=0
   while kill -0 "$pid" 2>/dev/null; do wait "$pid"; rc=$?; done
@@ -274,7 +289,7 @@ dispatch() {
   if [ "$rc" -ne 0 ]; then
     CLAUDE_FAILS=$((CLAUDE_FAILS + 1))
     local backoff=$((CLAUDE_FAILS * 30)); [ "$backoff" -gt 300 ] && backoff=300
-    echo "[$AGENT_ID] $(date '+%H:%M:%S') claude exited rc=$rc (likely out of credits/auth); consecutive failures=$CLAUDE_FAILS, backing off ${backoff}s" >&2
+    echo "[$AGENT_ID] $(date '+%H:%M:%S') dispatch exited rc=$rc (likely out of credits/auth); consecutive failures=$CLAUDE_FAILS, backing off ${backoff}s" >&2
     nap "$backoff"
   else
     CLAUDE_FAILS=0
