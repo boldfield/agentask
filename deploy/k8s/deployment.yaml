@@ -39,7 +39,7 @@ spec:
         # Push with: docker push ghcr.io/boldfield/agentask:latest
         # Or load into kind/minikube: kind load docker-image ghcr.io/boldfield/agentask:latest
         # Pinned to a released version tag for reproducible deploys. Bump on each release.
-        image: ghcr.io/boldfield/agentask:v0.13.0
+        image: ghcr.io/boldfield/agentask:v0.14.1
         imagePullPolicy: IfNotPresent
         # Container-level securityContext (also required by 'restricted').
         securityContext:
@@ -60,10 +60,17 @@ spec:
             secretKeyRef:
               name: agentask-secret
               key: token
-        # Escalation ladder: list order = tiers; per-tier value = consecutive reject rounds
-        # before escalating to the next model. fable is the top tier (last resort, 1 try then block).
+        # AGENTASK_MODELS is the VALIDATION ALLOWLIST (which models a task.model / review_models entry
+        # may use). gpt-5.5 is allowed as a review-ONLY model (codex CLI; see reviewer-deployment.yaml)
+        # but is deliberately NOT an escalation tier.
         - name: AGENTASK_MODELS
+          value: "haiku,sonnet,opus,fable,gpt-5.5"
+        # AGENTASK_ESCALATION_LADDER is the SEPARATE, ordered worker-escalation ladder (must be a
+        # subset of the allowlist; defaults to AGENTASK_MODELS when unset). Set explicitly to EXCLUDE
+        # gpt-5.5 from escalation. list order = tiers; fable is the top tier (last resort).
+        - name: AGENTASK_ESCALATION_LADDER
           value: "haiku,sonnet,opus,fable"
+        # Per-tier value = consecutive reject rounds before escalating to the next ladder model.
         - name: AGENTASK_ESCALATION_THRESHOLDS
           value: "haiku=6,sonnet=4,opus=2,fable=1"
         # Notify loop -> notifier-proxy (internal/notify). No-op when NOTIFY_URL is unset.

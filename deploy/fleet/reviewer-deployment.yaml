@@ -27,6 +27,18 @@ spec:
         fsGroup: 1000
         seccompProfile:
           type: RuntimeDefault
+      initContainers:
+        # codex needs a WRITABLE ~/.codex (sessions + token refresh). Seed the writable
+        # codex-home emptyDir from the read-only codex-auth secret (mounted side-path here).
+        - name: codex-auth-setup
+          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:latest
+          command: ["sh", "-c", "cp /etc/codex-auth/auth.json /home/agent/.codex/auth.json && chmod 600 /home/agent/.codex/auth.json"]
+          volumeMounts:
+            - { name: codex-home, mountPath: /home/agent/.codex }
+            - { name: codex-auth, mountPath: /etc/codex-auth, readOnly: true }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
       containers:
         - name: reviewer
           image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:latest
@@ -46,6 +58,8 @@ spec:
               valueFrom: { secretKeyRef: { name: agentask-fleet, key: token } }
             - name: CLAUDE_CODE_OAUTH_TOKEN
               valueFrom: { secretKeyRef: { name: claude-oauth, key: token } }
+            - name: AGENT_CODEX_MODELS
+              value: "gpt-5.5"
             - name: CARGO_BUILD_JOBS
               value: "2"
             - name: GOMAXPROCS
@@ -53,7 +67,7 @@ spec:
           volumeMounts:
             - { name: home, mountPath: /home/agent }
             - { name: forge-tokens, mountPath: /etc/fleet, readOnly: true }
-            - { name: codex-auth, mountPath: /home/agent/.codex/auth.json, subPath: auth.json, readOnly: true }
+            - { name: codex-home, mountPath: /home/agent/.codex }
           resources:
             requests: { cpu: "500m", memory: "2Gi" }
             limits: { cpu: "2", memory: "6Gi" }
@@ -69,3 +83,5 @@ spec:
         - name: codex-auth
           secret:
             secretName: codex-auth
+        - name: codex-home
+          emptyDir: {}
