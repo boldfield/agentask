@@ -21,8 +21,12 @@ RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
 FROM node:20-slim
 
 # System deps + C/C++ toolchain (covers cgo, native builds, and most "build-essential" tools).
+# libgc-dev = Boehm GC: Sigil-compiled programs + the sigil runtime/e2e tests link `-lgc`, so
+# without it any sigil `make check`/`make test` fails at link with "unable to find library -lgc",
+# which auto-rejects every sigil review round and escalates the task to the top tier.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates jq build-essential pkg-config cmake clang lld \
+      libgc-dev \
       python3 python3-pip python3-venv \
  && rm -rf /var/lib/apt/lists/*
 
@@ -61,7 +65,10 @@ ENV HOME=/home/agent \
     PATH="/usr/local/go/bin:/home/agent/.cargo/bin:${PATH}"
 
 # Rust toolchain (per-user via rustup) — many faictory tools are Rust crates.
-RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path
+# rustfmt + clippy are required for sigil's `make check` (and the CI rustfmt gate): the minimal
+# profile omits them, so workers can't `cargo fmt`/`clippy` and submit unformatted code that the
+# rustfmt CI gate rejects. Install both as components.
+RUN curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path -c rustfmt -c clippy
 
 ENTRYPOINT ["/usr/local/bin/fleet-entrypoint.sh"]
 CMD ["--kind", "implement"]
