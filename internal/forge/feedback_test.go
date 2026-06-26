@@ -179,9 +179,6 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
               "author": {
                 "login": "human"
               },
-              "replies": {
-                "nodes": []
-              },
               "reactionGroups": []
             },
             {
@@ -189,9 +186,6 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
               "body": "Bot response",
               "author": {
                 "login": "bot"
-              },
-              "replies": {
-                "nodes": []
               },
               "reactionGroups": []
             }
@@ -273,36 +267,13 @@ func TestListUnaddressedFeedback_AcknowledgedCommentExcluded(t *testing.T) {
               "author": {
                 "login": "human"
               },
-              "replies": {
-                "nodes": []
-              },
               "reactionGroups": []
             },
             {
               "id": "comment-2",
-              "body": "Feedback with bot reply",
-              "author": {
-                "login": "human"
-              },
-              "replies": {
-                "nodes": [
-                  {
-                    "author": {
-                      "login": "bot"
-                    }
-                  }
-                ]
-              },
-              "reactionGroups": []
-            },
-            {
-              "id": "comment-3",
               "body": "Feedback with bot reaction",
               "author": {
                 "login": "human"
-              },
-              "replies": {
-                "nodes": []
               },
               "reactionGroups": [
                 {
@@ -397,6 +368,152 @@ func TestListUnaddressedFeedback_EmptyCase(t *testing.T) {
 
 	if len(items) != 0 {
 		t.Errorf("ListUnaddressedFeedback() returned %d items, want 0", len(items))
+	}
+}
+
+func TestListUnaddressedFeedback_GraphQLQueryValidation(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+
+		// Validate that the query doesn't include 'replies' field (which doesn't exist on IssueComment)
+		if strings.Contains(bodyStr, "comments") && strings.Contains(bodyStr, "replies") {
+			// If 'replies' is in the query, return a GraphQL error like GitHub would
+			graphqlResp := `{
+  "errors": [
+    {
+      "message": "Field replies does not exist on type IssueComment",
+      "locations": [{"line": 1, "column": 1}],
+      "code": "undefinedField",
+      "typeName": "IssueComment",
+      "fieldName": "replies"
+    }
+  ]
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+			return
+		}
+
+		// Response for review threads query
+		if strings.Contains(bodyStr, "reviewThreads") {
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": []
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		} else if strings.Contains(bodyStr, "comments") {
+			// Response for global comments query - should not have 'replies' field
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "comments": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": []
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	items, err := ListUnaddressedFeedback(ctx, "owner", "repo", 42, "bot", "token")
+
+	if err != nil {
+		t.Fatalf("ListUnaddressedFeedback() error = %v, want nil", err)
+	}
+
+	if len(items) != 0 {
+		t.Errorf("ListUnaddressedFeedback() returned %d items, want 0", len(items))
+	}
+}
+
+func TestListUnaddressedFeedback_GraphQLErrorHandling(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+
+		// Response for review threads query
+		if strings.Contains(bodyStr, "reviewThreads") {
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": []
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		} else if strings.Contains(bodyStr, "comments") {
+			// Return a GraphQL error
+			graphqlResp := `{
+  "errors": [
+    {
+      "message": "Field replies does not exist on type IssueComment"
+    }
+  ]
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	_, err := ListUnaddressedFeedback(ctx, "owner", "repo", 42, "bot", "token")
+
+	if err == nil {
+		t.Fatalf("ListUnaddressedFeedback() error = nil, want error for GraphQL errors")
+	}
+
+	if !strings.Contains(err.Error(), "graphql error") {
+		t.Errorf("ListUnaddressedFeedback() error = %v, want error containing 'graphql error'", err)
 	}
 }
 

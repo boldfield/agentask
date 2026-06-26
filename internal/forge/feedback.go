@@ -219,7 +219,7 @@ func listUnacknowledgedGlobalComments(ctx context.Context, owner, repo string, p
 }
 
 // fetchGlobalCommentsPage fetches a single page of global PR comments from the GraphQL API.
-// It filters out comments authored by the bot and comments already acknowledged (bot reply or bot reaction).
+// It filters out comments authored by the bot and comments already acknowledged (bot reaction).
 func fetchGlobalCommentsPage(ctx context.Context, owner, repo string, prNumber int, after string, botLogin, token string) ([]FeedbackItem, bool, string, error) {
 	const graphqlQuery = `query {
   repository(owner: "%s", name: "%s") {
@@ -234,13 +234,6 @@ func fetchGlobalCommentsPage(ctx context.Context, owner, repo string, prNumber i
           body
           author {
             login
-          }
-          replies(first: 100) {
-            nodes {
-              author {
-                login
-              }
-            }
           }
           reactionGroups {
             content
@@ -297,6 +290,9 @@ func fetchGlobalCommentsPage(ctx context.Context, owner, repo string, prNumber i
 	}
 
 	var result struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
 		Data struct {
 			Repository struct {
 				PullRequest struct {
@@ -311,13 +307,6 @@ func fetchGlobalCommentsPage(ctx context.Context, owner, repo string, prNumber i
 							Author struct {
 								Login string `json:"login"`
 							} `json:"author"`
-							Replies struct {
-								Nodes []struct {
-									Author struct {
-										Login string `json:"login"`
-									} `json:"author"`
-								} `json:"nodes"`
-							} `json:"replies"`
 							ReactionGroups []struct {
 								Content string `json:"content"`
 								Users   struct {
@@ -337,6 +326,11 @@ func fetchGlobalCommentsPage(ctx context.Context, owner, repo string, prNumber i
 		return nil, false, "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
+	// Check for GraphQL errors in the response
+	if len(result.Errors) > 0 {
+		return nil, false, "", fmt.Errorf("graphql error: %s", result.Errors[0].Message)
+	}
+
 	var items []FeedbackItem
 	for _, comment := range result.Data.Repository.PullRequest.Comments.Nodes {
 		// Skip comments authored by the bot
@@ -345,29 +339,19 @@ func fetchGlobalCommentsPage(ctx context.Context, owner, repo string, prNumber i
 		}
 
 		// Check if comment has been acknowledged
-		// Acknowledged = bot has replied or bot has reacted
+		// Acknowledged = bot has reacted
 		acknowledged := false
 
-		// Check for bot replies
-		for _, reply := range comment.Replies.Nodes {
-			if reply.Author.Login == botLogin {
-				acknowledged = true
-				break
-			}
-		}
-
 		// Check for bot reactions
-		if !acknowledged {
-			for _, reactionGroup := range comment.ReactionGroups {
-				for _, user := range reactionGroup.Users.Nodes {
-					if user.Login == botLogin {
-						acknowledged = true
-						break
-					}
-				}
-				if acknowledged {
+		for _, reactionGroup := range comment.ReactionGroups {
+			for _, user := range reactionGroup.Users.Nodes {
+				if user.Login == botLogin {
+					acknowledged = true
 					break
 				}
+			}
+			if acknowledged {
+				break
 			}
 		}
 
