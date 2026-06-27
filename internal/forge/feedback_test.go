@@ -667,12 +667,14 @@ func TestListUnaddressedFeedback_Pagination(t *testing.T) {
 }
 
 func TestAcknowledgeFeedbackItem_InlineItem(t *testing.T) {
+	mutationCalls := make(map[string]string)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
 		bodyStr := string(body)
 
 		// Handle resolveReviewThread mutation
 		if strings.Contains(bodyStr, "resolveReviewThread") {
+			mutationCalls["resolveReviewThread"] = bodyStr
 			graphqlResp := `{
   "data": {
     "resolveReviewThread": {
@@ -687,6 +689,7 @@ func TestAcknowledgeFeedbackItem_InlineItem(t *testing.T) {
 			w.Write([]byte(graphqlResp))
 		} else if strings.Contains(bodyStr, "addPullRequestReviewThreadReply") {
 			// Handle addPullRequestReviewThreadReply mutation
+			mutationCalls["addPullRequestReviewThreadReply"] = bodyStr
 			graphqlResp := `{
   "data": {
     "addPullRequestReviewThreadReply": {
@@ -717,10 +720,30 @@ func TestAcknowledgeFeedbackItem_InlineItem(t *testing.T) {
 		Body:   "This needs fixing",
 	}
 
-	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
+	fixingSha := "abc123def456"
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, fixingSha)
 
 	if err != nil {
 		t.Fatalf("AcknowledgeFeedbackItem() error = %v, want nil", err)
+	}
+
+	if _, ok := mutationCalls["addPullRequestReviewThreadReply"]; !ok {
+		t.Errorf("addPullRequestReviewThreadReply mutation was not called")
+	} else {
+		if !strings.Contains(mutationCalls["addPullRequestReviewThreadReply"], fixingSha) {
+			t.Errorf("addPullRequestReviewThreadReply mutation body does not contain fixing SHA %q", fixingSha)
+		}
+		if !strings.Contains(mutationCalls["addPullRequestReviewThreadReply"], "thread-1") {
+			t.Errorf("addPullRequestReviewThreadReply mutation body does not contain thread ID 'thread-1'")
+		}
+	}
+
+	if _, ok := mutationCalls["resolveReviewThread"]; !ok {
+		t.Errorf("resolveReviewThread mutation was not called")
+	} else {
+		if !strings.Contains(mutationCalls["resolveReviewThread"], "thread-1") {
+			t.Errorf("resolveReviewThread mutation body does not contain thread ID 'thread-1'")
+		}
 	}
 }
 
