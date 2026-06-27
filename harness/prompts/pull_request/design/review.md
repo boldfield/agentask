@@ -89,7 +89,7 @@ not an acceptable reject. Approve only when all four hold for the design as writ
      **VERIFY the claim yourself against current `main`** (`git fetch origin && git checkout --detach
      origin/main`, then read the relevant `DESIGN.md` and check whether the parent's acceptance
      criteria — including the four coherence requirements — genuinely hold). If the claim HOLDS →
-     submit an `approve` verdict (step 4); if work is actually NEEDED → submit a `reject` verdict
+     submit an `approve` verdict (step 5); if work is actually NEEDED → submit a `reject` verdict
      naming the specific gap. There is no PR in this case — your verdict is the whole job; the
      server auto-finalizes an approved no-op to `done`.
    - **Missing PR link, try branch resolution** — no `no_op` marker AND no recorded `pr` link.
@@ -103,7 +103,7 @@ not an acceptable reject. Approve only when all four hold for the design as writ
    (recorded link from step 2 or branch-resolved) — the no-op path from step 2 is verified against
    `main` and never reaches here. Before anything else, **VERIFY the `pr` link resolves to a real OPEN
    PR**: `gh pr view <pr-url> --json number,state` must succeed (and not 404). A `pr` link that does
-   NOT resolve is fabricated or premature — a defect: submit a `reject` verdict (step 4) with note
+   NOT resolve is fabricated or premature — a defect: submit a `reject` verdict (step 5) with note
    "pr link does not resolve to a real PR" and STOP. **Do NOT fall back to reviewing the raw branch.**
    Likewise, if the PR-head fetch below fails (`git fetch origin "pull/<n>/head"` reports no such ref),
    that is a phantom → automatic `reject` with the same note. (This phantom guard applies ONLY when a

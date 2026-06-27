@@ -32,7 +32,7 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
      with no diff. **VERIFY the claim yourself against current `main`** (`git fetch origin &&
      git checkout --detach origin/main`, then check whether the parent's acceptance criteria
      genuinely hold — read the relevant code/tests, run `make check`/`make test` if useful). If the
-     claim HOLDS → submit an `approve` verdict (step 4); if work is actually NEEDED → submit a
+     claim HOLDS → submit an `approve` verdict (step 5); if work is actually NEEDED → submit a
      `reject` verdict naming the specific gap (the worker must then actually implement it). On
      approve, the server drives a verified no-op straight to `done` — you do nothing further.
    - **Missing PR link, try branch resolution** — no `no_op` marker AND no recorded `pr` link.
@@ -47,7 +47,7 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
    verified against `main` and never reaches here. Before doing anything else, **VERIFY the `pr`
    link resolves to a real OPEN PR**: `gh pr view <pr-url> --json number,state` must succeed
    (and not 404). A `pr` link that does NOT resolve is fabricated or premature — a defect: submit
-   a `reject` verdict (step 4) with note "pr link does not resolve to a real PR" and STOP. **Do
+   a `reject` verdict (step 5) with note "pr link does not resolve to a real PR" and STOP. **Do
    NOT fall back to reviewing the raw branch.** Likewise, if the PR-head fetch below fails
    (`git fetch origin "pull/<n>/head"` reports no such ref → the PR doesn't exist), that is a
    phantom → automatic `reject` with the same note. (This phantom guard applies ONLY when a `pr`
