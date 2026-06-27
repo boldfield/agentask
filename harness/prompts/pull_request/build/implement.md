@@ -54,11 +54,10 @@ rely on sensing elapsed time.
    - **REWORK — `origin/mr/<TASKID8>` already exists** (a prior attempt was pushed and the task was
      bounced back to ready): continue it. `git checkout --detach origin/mr/<TASKID8>`; make your
      fixes; publish in step 7 with `git push origin HEAD:mr/<TASKID8>` — it stays the same branch and
-     PR. Read ONLY the **most recent** actionable feedback comment on the PR — from a reviewer
-     (signed `<model>-reviewer:`, e.g. `opus-reviewer:` or `gpt-5.5-reviewer:`, a `CHANGES REQUESTED`)
-     OR a human (e.g. "fix merge conflict"); `gh pr view <pr-url> --comments`
-     lists oldest→newest, take the LAST one; it **supersedes all earlier comments**; address every
-     point. (Merge conflicts are cleared by the sync in step 6.)
+     PR. Run `agentask pr-feedback list <pr-url>` to get every unaddressed item (both inline review
+     threads and global comments); address each one; and after fixing each, run `agentask pr-feedback
+     ack <pr-url> <item-id> <sha>` (where `<sha>` is the commit that addressed it). (Merge conflicts
+     are cleared by the sync in step 6.)
    - **FRESH — `origin/mr/<TASKID8>` does not exist** (first attempt): `git checkout --detach
      origin/main`; you'll create the branch and PR by pushing in step 7.
 5. Implement exactly what the spec requires — nothing more, nothing less. Keep the diff scoped to
