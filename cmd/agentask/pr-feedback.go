@@ -1,0 +1,204 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+
+	"github.com/boldfield/agentask/internal/forge"
+)
+
+func executePRFeedback(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("pr-feedback subcommand required (list or ack)")
+	}
+
+	subcommand := args[0]
+	subArgs := args[1:]
+
+	switch subcommand {
+	case "list":
+		return executePRFeedbackList(ctx, subArgs, out)
+	case "ack":
+		return executePRFeedbackAck(ctx, subArgs)
+	case "--help", "-h":
+		printPRFeedbackHelp(out)
+		return nil
+	default:
+		return fmt.Errorf("unknown pr-feedback subcommand %q (use 'list' or 'ack')", subcommand)
+	}
+}
+
+func printPRFeedbackHelp(w io.Writer) {
+	fmt.Fprintf(w, `agentask pr-feedback - Manage PR feedback
+
+Subcommands:
+  list <pr-url>                   List unaddressed feedback items as JSON lines
+  ack <pr-url> <item-id> <sha>    Acknowledge a feedback item
+
+Environment:
+  GH_TOKEN                        GitHub token (fallback if not in forge-tokens)
+  FORGE_TOKENS                    Path to forge tokens file (defaults to ~/.agentask/forge-tokens)
+`)
+}
+
+func executePRFeedbackList(ctx context.Context, args []string, out io.Writer) error {
+	if len(args) < 1 {
+		return fmt.Errorf("pr-url required for pr-feedback list")
+	}
+
+	prURL := args[0]
+	owner, repo, prNumber, err := parsePRURL(prURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse PR URL: %w", err)
+	}
+
+	token, err := resolveGitHubToken(owner)
+	if err != nil {
+		return fmt.Errorf("failed to resolve GitHub token: %w", err)
+	}
+
+	if token == "" {
+		return fmt.Errorf("no GitHub token found (check FORGE_TOKENS file or GH_TOKEN env)")
+	}
+
+	botLogin, err := getBotLogin(ctx, token)
+	if err != nil {
+		return fmt.Errorf("failed to get bot login: %w", err)
+	}
+
+	items, err := forge.ListUnaddressedFeedback(ctx, owner, repo, prNumber, botLogin, token)
+	if err != nil {
+		return fmt.Errorf("failed to list feedback: %w", err)
+	}
+
+	for _, item := range items {
+		output := map[string]interface{}{
+			"kind":   item.Kind,
+			"id":     item.ID,
+			"path":   item.Path,
+			"line":   item.Line,
+			"author": item.Author,
+			"body":   item.Body,
+		}
+		jsonBytes, err := json.Marshal(output)
+		if err != nil {
+			return fmt.Errorf("failed to marshal feedback item: %w", err)
+		}
+		fmt.Fprintln(out, string(jsonBytes))
+	}
+
+	return nil
+}
+
+func executePRFeedbackAck(ctx context.Context, args []string) error {
+	if len(args) < 3 {
+		return fmt.Errorf("pr-feedback ack requires pr-url, item-id, and sha")
+	}
+
+	prURL := args[0]
+	itemID := args[1]
+	sha := args[2]
+
+	owner, repo, prNumber, err := parsePRURL(prURL)
+	if err != nil {
+		return fmt.Errorf("failed to parse PR URL: %w", err)
+	}
+
+	token, err := resolveGitHubToken(owner)
+	if err != nil {
+		return fmt.Errorf("failed to resolve GitHub token: %w", err)
+	}
+
+	if token == "" {
+		return fmt.Errorf("no GitHub token found (check FORGE_TOKENS file or GH_TOKEN env)")
+	}
+
+	botLogin, err := getBotLogin(ctx, token)
+	if err != nil {
+		return fmt.Errorf("failed to get bot login: %w", err)
+	}
+
+	items, err := forge.ListUnaddressedFeedback(ctx, owner, repo, prNumber, botLogin, token)
+	if err != nil {
+		return fmt.Errorf("failed to list feedback: %w", err)
+	}
+
+	var item *forge.FeedbackItem
+	for i := range items {
+		if items[i].ID == itemID {
+			item = &items[i]
+			break
+		}
+	}
+
+	if item == nil {
+		return fmt.Errorf("feedback item %q not found", itemID)
+	}
+
+	if err := forge.AcknowledgeFeedbackItem(ctx, owner, repo, prNumber, token, *item, sha); err != nil {
+		return fmt.Errorf("failed to acknowledge feedback item: %w", err)
+	}
+
+	return nil
+}
+
+func resolveGitHubToken(owner string) (string, error) {
+	token, err := forge.OwnerToken(owner)
+	if err != nil {
+		return "", fmt.Errorf("failed to read forge tokens: %w", err)
+	}
+
+	if token != "" {
+		return token, nil
+	}
+
+	return os.Getenv("GH_TOKEN"), nil
+}
+
+func getBotLogin(ctx context.Context, token string) (string, error) {
+	url := fmt.Sprintf("%s/user", forge.GitHubBaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return "", fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	if token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return "", fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return "", fmt.Errorf("failed to get user info (status %d): %s", resp.StatusCode, string(body))
+	}
+
+	var result struct {
+		Login string `json:"login"`
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return "", fmt.Errorf("failed to read response: %w", err)
+	}
+
+	if err := json.Unmarshal(body, &result); err != nil {
+		return "", fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if result.Login == "" {
+		return "", fmt.Errorf("no login found in user response")
+	}
+
+	return result.Login, nil
+}

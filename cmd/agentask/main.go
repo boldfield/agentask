@@ -80,7 +80,7 @@ func run(args []string) error {
 	case "-h", "--help", "help":
 		printUsage()
 		return nil
-	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition", "project", "merge", "pending", "diff", "approve", "reject", "wt-ensure":
+	case "projects", "tasks", "show", "claim", "submit", "heartbeat", "next", "promote", "transition", "project", "merge", "pending", "diff", "approve", "reject", "wt-ensure", "pr-feedback":
 		return runClient(args[1], args[2:])
 	default:
 		fmt.Fprintf(os.Stderr, "error: unknown command %q\n\n", args[1])
@@ -116,6 +116,7 @@ Commands:
   transition             Transition a task to a new state
   merge                  Merge a pull request and transition tasks
   wt-ensure              Ensure worktree for task (local_commit mode)
+  pr-feedback            Manage PR feedback (list, ack)
   help, -h, --help       Show this help message
 `, version)
 }
@@ -343,6 +344,8 @@ func runClient(verb string, args []string) error {
 		return executeReject(ctx, baseURL, token, args)
 	case "wt-ensure":
 		return executeWtEnsure(ctx, baseURL, token, args)
+	case "pr-feedback":
+		return executePRFeedback(ctx, args, os.Stdout)
 	default:
 		return fmt.Errorf("unknown command %q", verb)
 	}
