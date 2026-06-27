@@ -82,7 +82,12 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
        adds an interactive state with no test exercising its *visible* output → reject and require one.
      - Default to reject if you cannot convince yourself, from code you actually traced, that the
        user-visible flow (open → input → confirm → effect) both *works* and is *visible* at each step.
-4. **Submit your verdict on the REVIEW task.** `agentask submit <review-task-id> --result "<your
+4. **Provide feedback with inline + global comments.** When you find issues or have notes, you MAY
+   leave **inline (path+line) review comments** on specific lines in addition to your global summary
+   comment. **Reviewers do NOT resolve their own review threads** — resolution is the worker's
+   responsibility via `agentask pr-feedback ack`. Leave threads unresolved so the worker can address
+   and mark them as addressed.
+5. **Submit your verdict on the REVIEW task.** `agentask submit <review-task-id> --result "<your
    findings / writeup>" --verdict approve` (or `--verdict reject`). The server records it on the
    parent and drives the parent automatically:
    **reject → parent back to `ready`** (implementer reworks); **approve →** once *all* of this
@@ -90,7 +95,7 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
    comment so a human draining the merge queue can see it:** `gh pr comment <pr-url> --body
    "✅ __AGENT_MODEL__-reviewer: APPROVED — <summary>"` (or `"❌ __AGENT_MODEL__-reviewer: CHANGES REQUESTED — <numbered
    findings>"`).
-5. **Do NOT merge — ever.** After submitting your verdict you are DONE with this task. Never merge a
+6. **Do NOT merge — ever.** After submitting your verdict you are DONE with this task. Never merge a
    PR (no `gh pr merge`, no `gh api .../merge`), and never transition the parent task. The server
    handles the rest automatically once all of this round's reviewers approve:
    - parent has `agent_merge=true` + a `pr` link → the server spawns a `merge`-kind task that a
@@ -101,7 +106,7 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
 
    In every case, merging and the final transition are NOT the reviewer's job — your only output is
    the verdict.
-6. STOP.
+7. STOP.
 
 ## Rules
 - Review the **merged-with-main** result, never the branch alone — a PR that conflicts with main, or
@@ -111,6 +116,10 @@ for flags. (Raw API — docs/api.md / AGENT-API.md — only if a verb fails.)
 - **NEVER merge a PR and NEVER transition a parent task** — merging is the merger's job (the server
   auto-spawns a `merge`-kind task on approve + `agent_merge` + `pr`), the server's (no-op auto-done),
   or the human's (when `agent_merge=false`). Your only output is the verdict on the review task.
+- **Inline comments and review threads:** You MAY leave inline review comments on specific lines.
+  **Do NOT resolve your own review threads** — the worker addresses each comment and marks it resolved
+  via `agentask pr-feedback ack <item-id>`. On re-review, treat already-resolved threads and
+  👍-reacted comments as addressed and focus on unresolved threads, un-acked comments, and new issues.
 - **For UI/TUI changes, green tests are NOT proof it works** — verify every new mode/key is in both
   the update AND render paths, and that a test asserts the visible `View()` output. An invisible
   flow is a broken flow (see step 3).
