@@ -19,6 +19,24 @@ type FeedbackItem struct {
 	Body   string // comment text
 }
 
+// comment represents a global PR comment from the GraphQL API.
+type comment struct {
+	ID        string
+	Body      string
+	CreatedAt string
+	Author    struct {
+		Login string
+	}
+	ReactionGroups []struct {
+		Content string
+		Users   struct {
+			Nodes []struct {
+				Login string
+			}
+		}
+	}
+}
+
 // ListUnaddressedFeedback returns all unaddressed feedback on a PR.
 // It includes unresolved inline review threads and global comments not authored
 // by the bot and not yet acknowledged (no bot reply and no bot reaction).
@@ -199,15 +217,16 @@ func fetchReviewThreadsPage(ctx context.Context, owner, repo string, prNumber in
 // listUnacknowledgedGlobalComments fetches global PR comments that are not authored by the bot
 // and not yet acknowledged (no bot reply and no bot reaction).
 func listUnacknowledgedGlobalComments(ctx context.Context, owner, repo string, prNumber int, botLogin, token string) ([]FeedbackItem, error) {
-	var allItems []FeedbackItem
+	var allComments []comment
 	after := ""
 
+	// Fetch all comments (handle pagination)
 	for {
-		items, hasNext, nextCursor, err := fetchGlobalCommentsPage(ctx, owner, repo, prNumber, after, botLogin, token)
+		comments, hasNext, nextCursor, err := fetchGlobalCommentsPageRaw(ctx, owner, repo, prNumber, after, botLogin, token)
 		if err != nil {
 			return nil, err
 		}
-		allItems = append(allItems, items...)
+		allComments = append(allComments, comments...)
 
 		if !hasNext {
 			break
@@ -215,12 +234,57 @@ func listUnacknowledgedGlobalComments(ctx context.Context, owner, repo string, p
 		after = nextCursor
 	}
 
-	return allItems, nil
+	// Filter comments: exclude bot-authored, exclude acknowledged (bot reaction or reply)
+	var items []FeedbackItem
+	for _, comment := range allComments {
+		// Skip comments authored by the bot
+		if comment.Author.Login == botLogin {
+			continue
+		}
+
+		// Check if comment has been acknowledged
+		acknowledged := false
+
+		// Check for bot reactions
+		for _, reactionGroup := range comment.ReactionGroups {
+			for _, user := range reactionGroup.Users.Nodes {
+				if user.Login == botLogin {
+					acknowledged = true
+					break
+				}
+			}
+			if acknowledged {
+				break
+			}
+		}
+
+		// Check for bot replies (bot comment created after this comment)
+		if !acknowledged {
+			for _, other := range allComments {
+				if other.Author.Login == botLogin && other.CreatedAt > comment.CreatedAt {
+					acknowledged = true
+					break
+				}
+			}
+		}
+
+		// Only include unacknowledged comments
+		if !acknowledged {
+			items = append(items, FeedbackItem{
+				Kind:   "global",
+				ID:     comment.ID,
+				Author: comment.Author.Login,
+				Body:   comment.Body,
+			})
+		}
+	}
+
+	return items, nil
 }
 
-// fetchGlobalCommentsPage fetches a single page of global PR comments from the GraphQL API.
-// It filters out comments authored by the bot and comments already acknowledged (bot reaction).
-func fetchGlobalCommentsPage(ctx context.Context, owner, repo string, prNumber int, after string, botLogin, token string) ([]FeedbackItem, bool, string, error) {
+// fetchGlobalCommentsPageRaw fetches a single page of global PR comments from the GraphQL API.
+// It returns raw comments without filtering.
+func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumber int, after string, botLogin, token string) ([]comment, bool, string, error) {
 	const graphqlQuery = `query {
   repository(owner: "%s", name: "%s") {
     pullRequest(number: %d) {
@@ -235,9 +299,10 @@ func fetchGlobalCommentsPage(ctx context.Context, owner, repo string, prNumber i
           author {
             login
           }
+          createdAt
           reactionGroups {
             content
-            users(first: 1) {
+            users(first: 100) {
               nodes {
                 login
               }
@@ -302,9 +367,10 @@ func fetchGlobalCommentsPage(ctx context.Context, owner, repo string, prNumber i
 							EndCursor   string `json:"endCursor"`
 						} `json:"pageInfo"`
 						Nodes []struct {
-							ID     string `json:"id"`
-							Body   string `json:"body"`
-							Author struct {
+							ID        string `json:"id"`
+							Body      string `json:"body"`
+							CreatedAt string `json:"createdAt"`
+							Author    struct {
 								Login string `json:"login"`
 							} `json:"author"`
 							ReactionGroups []struct {
@@ -331,43 +397,45 @@ func fetchGlobalCommentsPage(ctx context.Context, owner, repo string, prNumber i
 		return nil, false, "", fmt.Errorf("graphql error: %s", result.Errors[0].Message)
 	}
 
-	var items []FeedbackItem
-	for _, comment := range result.Data.Repository.PullRequest.Comments.Nodes {
-		// Skip comments authored by the bot
-		if comment.Author.Login == botLogin {
-			continue
+	var comments []comment
+	for _, node := range result.Data.Repository.PullRequest.Comments.Nodes {
+		c := comment{
+			ID:        node.ID,
+			Body:      node.Body,
+			CreatedAt: node.CreatedAt,
 		}
-
-		// Check if comment has been acknowledged
-		// Acknowledged = bot has reacted
-		acknowledged := false
-
-		// Check for bot reactions
-		for _, reactionGroup := range comment.ReactionGroups {
-			for _, user := range reactionGroup.Users.Nodes {
-				if user.Login == botLogin {
-					acknowledged = true
-					break
+		c.Author.Login = node.Author.Login
+		for _, rg := range node.ReactionGroups {
+			var userNodes []struct {
+				Login string
+			}
+			for _, u := range rg.Users.Nodes {
+				userNodes = append(userNodes, struct {
+					Login string
+				}{Login: u.Login})
+			}
+			reactionGroup := struct {
+				Content string
+				Users   struct {
+					Nodes []struct {
+						Login string
+					}
 				}
+			}{
+				Content: rg.Content,
+				Users: struct {
+					Nodes []struct {
+						Login string
+					}
+				}{Nodes: userNodes},
 			}
-			if acknowledged {
-				break
-			}
+			c.ReactionGroups = append(c.ReactionGroups, reactionGroup)
 		}
-
-		// Only include unacknowledged comments
-		if !acknowledged {
-			items = append(items, FeedbackItem{
-				Kind:   "global",
-				ID:     comment.ID,
-				Author: comment.Author.Login,
-				Body:   comment.Body,
-			})
-		}
+		comments = append(comments, c)
 	}
 
 	hasNextPage := result.Data.Repository.PullRequest.Comments.PageInfo.HasNextPage
 	endCursor := result.Data.Repository.PullRequest.Comments.PageInfo.EndCursor
 
-	return items, hasNextPage, endCursor, nil
+	return comments, hasNextPage, endCursor, nil
 }

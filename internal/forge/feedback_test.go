@@ -176,6 +176,7 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
             {
               "id": "comment-1",
               "body": "Human feedback",
+              "createdAt": "2024-01-01T10:00:00Z",
               "author": {
                 "login": "human"
               },
@@ -184,6 +185,7 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
             {
               "id": "comment-2",
               "body": "Bot response",
+              "createdAt": "2024-01-01T10:00:00Z",
               "author": {
                 "login": "bot"
               },
@@ -264,6 +266,7 @@ func TestListUnaddressedFeedback_AcknowledgedCommentExcluded(t *testing.T) {
             {
               "id": "comment-1",
               "body": "Feedback needing ack",
+              "createdAt": "2024-01-01T10:00:00Z",
               "author": {
                 "login": "human"
               },
@@ -272,6 +275,7 @@ func TestListUnaddressedFeedback_AcknowledgedCommentExcluded(t *testing.T) {
             {
               "id": "comment-2",
               "body": "Feedback with bot reaction",
+              "createdAt": "2024-01-01T10:00:00Z",
               "author": {
                 "login": "human"
               },
@@ -650,5 +654,105 @@ func TestListUnaddressedFeedback_Pagination(t *testing.T) {
 
 	if items[1].Path != "file2.go" {
 		t.Errorf("items[1].Path = %q, want %q", items[1].Path, "file2.go")
+	}
+}
+
+func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+
+		// Response for review threads query (first call)
+		if strings.Contains(bodyStr, "reviewThreads") {
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": []
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		} else if strings.Contains(bodyStr, "comments") {
+			// Response for global comments query
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "comments": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": [
+            {
+              "id": "comment-1",
+              "body": "Human feedback without reaction",
+              "createdAt": "2024-01-01T10:00:00Z",
+              "author": {
+                "login": "human"
+              },
+              "reactionGroups": []
+            },
+            {
+              "id": "comment-2",
+              "body": "Bot reply acknowledging the feedback",
+              "createdAt": "2024-01-01T10:05:00Z",
+              "author": {
+                "login": "bot"
+              },
+              "reactionGroups": []
+            },
+            {
+              "id": "comment-3",
+              "body": "Another unacknowledged feedback",
+              "createdAt": "2024-01-01T10:10:00Z",
+              "author": {
+                "login": "human"
+              },
+              "reactionGroups": []
+            }
+          ]
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	items, err := ListUnaddressedFeedback(ctx, "owner", "repo", 42, "bot", "token")
+
+	if err != nil {
+		t.Fatalf("ListUnaddressedFeedback() error = %v, want nil", err)
+	}
+
+	// Should return 1 item: comment-3 (comment-1 is acknowledged by bot reply comment-2)
+	if len(items) != 1 {
+		t.Errorf("ListUnaddressedFeedback() returned %d items, want 1", len(items))
+	}
+
+	if items[0].ID != "comment-3" {
+		t.Errorf("items[0].ID = %q, want %q", items[0].ID, "comment-3")
 	}
 }
