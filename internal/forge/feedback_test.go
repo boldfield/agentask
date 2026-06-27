@@ -76,6 +76,7 @@ func TestListUnaddressedFeedback_UnresolvedThreads(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-test",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -167,6 +168,7 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-1",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -175,6 +177,7 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
           "nodes": [
             {
               "id": "comment-1",
+              "databaseId": 1,
               "body": "Human feedback",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
@@ -184,6 +187,7 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
             },
             {
               "id": "comment-2",
+              "databaseId": 2,
               "body": "Bot response",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
@@ -257,6 +261,7 @@ func TestListUnaddressedFeedback_AcknowledgedCommentExcluded(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-2",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -265,6 +270,7 @@ func TestListUnaddressedFeedback_AcknowledgedCommentExcluded(t *testing.T) {
           "nodes": [
             {
               "id": "comment-1",
+              "databaseId": 1,
               "body": "Feedback needing ack",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
@@ -274,6 +280,7 @@ func TestListUnaddressedFeedback_AcknowledgedCommentExcluded(t *testing.T) {
             },
             {
               "id": "comment-2",
+              "databaseId": 2,
               "body": "Feedback with bot reaction",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
@@ -426,6 +433,7 @@ func TestListUnaddressedFeedback_GraphQLQueryValidation(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-test",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -613,6 +621,7 @@ func TestListUnaddressedFeedback_Pagination(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-test",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -657,6 +666,277 @@ func TestListUnaddressedFeedback_Pagination(t *testing.T) {
 	}
 }
 
+func TestAcknowledgeFeedbackItem_InlineItem(t *testing.T) {
+	mutationCalls := make(map[string]string)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+
+		// Handle resolveReviewThread mutation
+		if strings.Contains(bodyStr, "resolveReviewThread") {
+			mutationCalls["resolveReviewThread"] = bodyStr
+			graphqlResp := `{
+  "data": {
+    "resolveReviewThread": {
+      "thread": {
+        "id": "thread-1"
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		} else if strings.Contains(bodyStr, "addPullRequestReviewThreadReply") {
+			// Handle addPullRequestReviewThreadReply mutation
+			mutationCalls["addPullRequestReviewThreadReply"] = bodyStr
+			graphqlResp := `{
+  "data": {
+    "addPullRequestReviewThreadReply": {
+      "comment": {
+        "id": "comment-reply-1"
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	item := FeedbackItem{
+		Kind:   "inline",
+		ID:     "thread-1",
+		Author: "reviewer",
+		Body:   "This needs fixing",
+	}
+
+	fixingSha := "abc123def456"
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, fixingSha)
+
+	if err != nil {
+		t.Fatalf("AcknowledgeFeedbackItem() error = %v, want nil", err)
+	}
+
+	if _, ok := mutationCalls["addPullRequestReviewThreadReply"]; !ok {
+		t.Errorf("addPullRequestReviewThreadReply mutation was not called")
+	} else {
+		if !strings.Contains(mutationCalls["addPullRequestReviewThreadReply"], fixingSha) {
+			t.Errorf("addPullRequestReviewThreadReply mutation body does not contain fixing SHA %q", fixingSha)
+		}
+		if !strings.Contains(mutationCalls["addPullRequestReviewThreadReply"], "thread-1") {
+			t.Errorf("addPullRequestReviewThreadReply mutation body does not contain thread ID 'thread-1'")
+		}
+	}
+
+	if _, ok := mutationCalls["resolveReviewThread"]; !ok {
+		t.Errorf("resolveReviewThread mutation was not called")
+	} else {
+		if !strings.Contains(mutationCalls["resolveReviewThread"], "thread-1") {
+			t.Errorf("resolveReviewThread mutation body does not contain thread ID 'thread-1'")
+		}
+	}
+}
+
+func TestAcknowledgeFeedbackItem_GlobalItem(t *testing.T) {
+	requestPaths := make(map[string]int)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestPaths[r.Method+" "+r.URL.Path]++
+
+		// Handle GraphQL mutations for global comment reply
+		if r.Method == http.MethodPost && r.URL.Path == "/graphql" {
+			body, _ := io.ReadAll(r.Body)
+			bodyStr := string(body)
+
+			if strings.Contains(bodyStr, "addComment") {
+				graphqlResp := `{
+  "data": {
+    "addComment": {
+      "commentEdge": {
+        "node": {
+          "id": "comment-reply-1"
+        }
+      }
+    }
+  }
+}`
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusOK)
+				w.Write([]byte(graphqlResp))
+			}
+		} else if r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/reactions") {
+			// Handle thumbsup reaction via REST
+			reactionResp := `{
+  "id": 1,
+  "user": {
+    "login": "bot"
+  },
+  "content": "+1",
+  "created_at": "2024-01-01T10:00:00Z"
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(reactionResp))
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	item := FeedbackItem{
+		Kind:       "global",
+		ID:         "comment-1",
+		DatabaseID: "12345",
+		PRID:       "PR-node-id",
+		Author:     "human",
+		Body:       "Global feedback",
+	}
+
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
+
+	if err != nil {
+		t.Fatalf("AcknowledgeFeedbackItem() error = %v, want nil", err)
+	}
+
+	// Verify that both GraphQL and REST calls were made
+	if requestPaths["POST /graphql"] == 0 {
+		t.Errorf("Expected GraphQL mutation call, but got none")
+	}
+	if requestPaths["POST /repos/owner/repo/issues/comments/12345/reactions"] == 0 {
+		t.Errorf("Expected reactions REST call, but got none")
+	}
+}
+
+func TestAcknowledgeFeedbackItem_InlineItemGraphQLError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Return a GraphQL error for any mutation
+		graphqlResp := `{
+  "errors": [
+    {
+      "message": "Invalid thread ID"
+    }
+  ]
+}`
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte(graphqlResp))
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	item := FeedbackItem{
+		Kind:   "inline",
+		ID:     "invalid-thread",
+		Author: "reviewer",
+		Body:   "This needs fixing",
+	}
+
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
+
+	if err == nil {
+		t.Fatalf("AcknowledgeFeedbackItem() error = nil, want error for GraphQL error")
+	}
+
+	if !strings.Contains(err.Error(), "graphql error") {
+		t.Errorf("AcknowledgeFeedbackItem() error = %v, want error containing 'graphql error'", err)
+	}
+}
+
+func TestAcknowledgeFeedbackItem_GlobalItemReactionError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.Contains(r.URL.Path, "/reactions") {
+			// Return error for reaction endpoint
+			w.WriteHeader(http.StatusNotFound)
+			w.Write([]byte(`{"message": "Not Found"}`))
+		} else {
+			// Return success for comment creation
+			graphqlResp := `{
+  "data": {
+    "createIssueComment": {
+      "commentEdge": {
+        "node": {
+          "id": "comment-reply-1"
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	item := FeedbackItem{
+		Kind:       "global",
+		ID:         "comment-1",
+		DatabaseID: "12345",
+		PRID:       "PR-node-id",
+		Author:     "human",
+		Body:       "Global feedback",
+	}
+
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
+
+	if err == nil {
+		t.Fatalf("AcknowledgeFeedbackItem() error = nil, want error for reaction failure")
+	}
+
+	if !strings.Contains(err.Error(), "request failed") {
+		t.Errorf("AcknowledgeFeedbackItem() error = %v, want error containing 'request failed'", err)
+	}
+}
+
+func TestAcknowledgeFeedbackItem_UnknownKind(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	item := FeedbackItem{
+		Kind:   "unknown",
+		ID:     "item-1",
+		Author: "someone",
+		Body:   "Some feedback",
+	}
+
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
+
+	if err == nil {
+		t.Fatalf("AcknowledgeFeedbackItem() error = nil, want error for unknown kind")
+	}
+
+	if !strings.Contains(err.Error(), "unknown feedback item kind") {
+		t.Errorf("AcknowledgeFeedbackItem() error = %v, want error containing 'unknown feedback item kind'", err)
+	}
+}
+
 func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
@@ -688,6 +968,7 @@ func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-3",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -696,6 +977,7 @@ func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
           "nodes": [
             {
               "id": "comment-1",
+              "databaseId": 1,
               "body": "Human feedback without reaction",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
@@ -705,6 +987,7 @@ func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
             },
             {
               "id": "comment-2",
+              "databaseId": 2,
               "body": "Bot reply acknowledging the feedback",
               "createdAt": "2024-01-01T10:05:00Z",
               "author": {
@@ -714,6 +997,7 @@ func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
             },
             {
               "id": "comment-3",
+              "databaseId": 3,
               "body": "Another unacknowledged feedback",
               "createdAt": "2024-01-01T10:10:00Z",
               "author": {
