@@ -76,6 +76,7 @@ func TestListUnaddressedFeedback_UnresolvedThreads(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-test",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -167,6 +168,7 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-1",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -175,6 +177,7 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
           "nodes": [
             {
               "id": "comment-1",
+              "databaseId": 1,
               "body": "Human feedback",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
@@ -184,6 +187,7 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
             },
             {
               "id": "comment-2",
+              "databaseId": 2,
               "body": "Bot response",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
@@ -257,6 +261,7 @@ func TestListUnaddressedFeedback_AcknowledgedCommentExcluded(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-2",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -265,6 +270,7 @@ func TestListUnaddressedFeedback_AcknowledgedCommentExcluded(t *testing.T) {
           "nodes": [
             {
               "id": "comment-1",
+              "databaseId": 1,
               "body": "Feedback needing ack",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
@@ -274,6 +280,7 @@ func TestListUnaddressedFeedback_AcknowledgedCommentExcluded(t *testing.T) {
             },
             {
               "id": "comment-2",
+              "databaseId": 2,
               "body": "Feedback with bot reaction",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
@@ -426,6 +433,7 @@ func TestListUnaddressedFeedback_GraphQLQueryValidation(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-test",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -613,6 +621,7 @@ func TestListUnaddressedFeedback_Pagination(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-test",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -766,10 +775,12 @@ func TestAcknowledgeFeedbackItem_GlobalItem(t *testing.T) {
 	defer cancel()
 
 	item := FeedbackItem{
-		Kind:   "global",
-		ID:     "comment-1",
-		Author: "human",
-		Body:   "Global feedback",
+		Kind:       "global",
+		ID:         "comment-1",
+		DatabaseID: "12345",
+		PRID:       "PR-node-id",
+		Author:     "human",
+		Body:       "Global feedback",
 	}
 
 	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
@@ -782,7 +793,7 @@ func TestAcknowledgeFeedbackItem_GlobalItem(t *testing.T) {
 	if requestPaths["POST /graphql"] == 0 {
 		t.Errorf("Expected GraphQL mutation call, but got none")
 	}
-	if requestPaths["POST /repos/owner/repo/issues/comments/comment-1/reactions"] == 0 {
+	if requestPaths["POST /repos/owner/repo/issues/comments/12345/reactions"] == 0 {
 		t.Errorf("Expected reactions REST call, but got none")
 	}
 }
@@ -862,10 +873,12 @@ func TestAcknowledgeFeedbackItem_GlobalItemReactionError(t *testing.T) {
 	defer cancel()
 
 	item := FeedbackItem{
-		Kind:   "global",
-		ID:     "comment-1",
-		Author: "human",
-		Body:   "Global feedback",
+		Kind:       "global",
+		ID:         "comment-1",
+		DatabaseID: "12345",
+		PRID:       "PR-node-id",
+		Author:     "human",
+		Body:       "Global feedback",
 	}
 
 	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
@@ -876,6 +889,28 @@ func TestAcknowledgeFeedbackItem_GlobalItemReactionError(t *testing.T) {
 
 	if !strings.Contains(err.Error(), "request failed") {
 		t.Errorf("AcknowledgeFeedbackItem() error = %v, want error containing 'request failed'", err)
+	}
+}
+
+func TestAcknowledgeFeedbackItem_UnknownKind(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	item := FeedbackItem{
+		Kind:   "unknown",
+		ID:     "item-1",
+		Author: "someone",
+		Body:   "Some feedback",
+	}
+
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
+
+	if err == nil {
+		t.Fatalf("AcknowledgeFeedbackItem() error = nil, want error for unknown kind")
+	}
+
+	if !strings.Contains(err.Error(), "unknown feedback item kind") {
+		t.Errorf("AcknowledgeFeedbackItem() error = %v, want error containing 'unknown feedback item kind'", err)
 	}
 }
 
@@ -910,6 +945,7 @@ func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
   "data": {
     "repository": {
       "pullRequest": {
+        "id": "PR-node-id-3",
         "comments": {
           "pageInfo": {
             "hasNextPage": false,
@@ -918,6 +954,7 @@ func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
           "nodes": [
             {
               "id": "comment-1",
+              "databaseId": 1,
               "body": "Human feedback without reaction",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
@@ -927,6 +964,7 @@ func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
             },
             {
               "id": "comment-2",
+              "databaseId": 2,
               "body": "Bot reply acknowledging the feedback",
               "createdAt": "2024-01-01T10:05:00Z",
               "author": {
@@ -936,6 +974,7 @@ func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
             },
             {
               "id": "comment-3",
+              "databaseId": 3,
               "body": "Another unacknowledged feedback",
               "createdAt": "2024-01-01T10:10:00Z",
               "author": {

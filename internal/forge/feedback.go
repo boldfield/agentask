@@ -11,20 +11,23 @@ import (
 
 // FeedbackItem represents an unaddressed piece of PR feedback.
 type FeedbackItem struct {
-	Kind   string // "inline" or "global"
-	ID     string // thread ID for inline, comment ID for global
-	Path   string // file path (inline only)
-	Line   int    // line number (inline only)
-	Author string // login of the comment author
-	Body   string // comment text
+	Kind       string // "inline" or "global"
+	ID         string // thread ID for inline, comment node ID for global
+	DatabaseID string // numeric comment ID for global items (for REST API)
+	PRID       string // PR node ID (for reply comments on global items)
+	Path       string // file path (inline only)
+	Line       int    // line number (inline only)
+	Author     string // login of the comment author
+	Body       string // comment text
 }
 
 // comment represents a global PR comment from the GraphQL API.
 type comment struct {
-	ID        string
-	Body      string
-	CreatedAt string
-	Author    struct {
+	ID         string
+	DatabaseID string
+	Body       string
+	CreatedAt  string
+	Author     struct {
 		Login string
 	}
 	ReactionGroups []struct {
@@ -218,15 +221,17 @@ func fetchReviewThreadsPage(ctx context.Context, owner, repo string, prNumber in
 // and not yet acknowledged (no bot reply and no bot reaction).
 func listUnacknowledgedGlobalComments(ctx context.Context, owner, repo string, prNumber int, botLogin, token string) ([]FeedbackItem, error) {
 	var allComments []comment
+	var prNodeID string
 	after := ""
 
 	// Fetch all comments (handle pagination)
 	for {
-		comments, hasNext, nextCursor, err := fetchGlobalCommentsPageRaw(ctx, owner, repo, prNumber, after, botLogin, token)
+		comments, prID, hasNext, nextCursor, err := fetchGlobalCommentsPageRaw(ctx, owner, repo, prNumber, after, botLogin, token)
 		if err != nil {
 			return nil, err
 		}
 		allComments = append(allComments, comments...)
+		prNodeID = prID
 
 		if !hasNext {
 			break
@@ -271,10 +276,12 @@ func listUnacknowledgedGlobalComments(ctx context.Context, owner, repo string, p
 		// Only include unacknowledged comments
 		if !acknowledged {
 			items = append(items, FeedbackItem{
-				Kind:   "global",
-				ID:     comment.ID,
-				Author: comment.Author.Login,
-				Body:   comment.Body,
+				Kind:       "global",
+				ID:         comment.ID,
+				DatabaseID: comment.DatabaseID,
+				PRID:       prNodeID,
+				Author:     comment.Author.Login,
+				Body:       comment.Body,
 			})
 		}
 	}
@@ -283,11 +290,12 @@ func listUnacknowledgedGlobalComments(ctx context.Context, owner, repo string, p
 }
 
 // fetchGlobalCommentsPageRaw fetches a single page of global PR comments from the GraphQL API.
-// It returns raw comments without filtering.
-func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumber int, after string, botLogin, token string) ([]comment, bool, string, error) {
+// It returns raw comments without filtering, along with the PR node ID.
+func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumber int, after string, botLogin, token string) ([]comment, string, bool, string, error) {
 	const graphqlQuery = `query {
   repository(owner: "%s", name: "%s") {
     pullRequest(number: %d) {
+      id
       comments(first: 100, after: %s) {
         pageInfo {
           hasNextPage
@@ -295,6 +303,7 @@ func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumbe
         }
         nodes {
           id
+          databaseId
           body
           author {
             login
@@ -324,13 +333,13 @@ func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumbe
 
 	body, err := json.Marshal(payload)
 	if err != nil {
-		return nil, false, "", fmt.Errorf("failed to marshal request body: %w", err)
+		return nil, "", false, "", fmt.Errorf("failed to marshal request body: %w", err)
 	}
 
 	url := fmt.Sprintf("%s/graphql", GitHubBaseURL)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 	if err != nil {
-		return nil, false, "", fmt.Errorf("failed to create request: %w", err)
+		return nil, "", false, "", fmt.Errorf("failed to create request: %w", err)
 	}
 
 	req.Header.Set("Content-Type", "application/json")
@@ -341,17 +350,17 @@ func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumbe
 	client := &http.Client{}
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, false, "", fmt.Errorf("failed to make request: %w", err)
+		return nil, "", false, "", fmt.Errorf("failed to make request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	respBody, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, false, "", fmt.Errorf("failed to read response body: %w", err)
+		return nil, "", false, "", fmt.Errorf("failed to read response body: %w", err)
 	}
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, false, "", fmt.Errorf("graphql request failed with status %d: %s", resp.StatusCode, string(respBody))
+		return nil, "", false, "", fmt.Errorf("graphql request failed with status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var result struct {
@@ -361,16 +370,18 @@ func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumbe
 		Data struct {
 			Repository struct {
 				PullRequest struct {
+					ID       string `json:"id"`
 					Comments struct {
 						PageInfo struct {
 							HasNextPage bool   `json:"hasNextPage"`
 							EndCursor   string `json:"endCursor"`
 						} `json:"pageInfo"`
 						Nodes []struct {
-							ID        string `json:"id"`
-							Body      string `json:"body"`
-							CreatedAt string `json:"createdAt"`
-							Author    struct {
+							ID         string `json:"id"`
+							DatabaseID int    `json:"databaseId"`
+							Body       string `json:"body"`
+							CreatedAt  string `json:"createdAt"`
+							Author     struct {
 								Login string `json:"login"`
 							} `json:"author"`
 							ReactionGroups []struct {
@@ -389,20 +400,22 @@ func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumbe
 	}
 
 	if err := json.Unmarshal(respBody, &result); err != nil {
-		return nil, false, "", fmt.Errorf("failed to parse response: %w", err)
+		return nil, "", false, "", fmt.Errorf("failed to parse response: %w", err)
 	}
 
 	// Check for GraphQL errors in the response
 	if len(result.Errors) > 0 {
-		return nil, false, "", fmt.Errorf("graphql error: %s", result.Errors[0].Message)
+		return nil, "", false, "", fmt.Errorf("graphql error: %s", result.Errors[0].Message)
 	}
 
+	prNodeID := result.Data.Repository.PullRequest.ID
 	var comments []comment
 	for _, node := range result.Data.Repository.PullRequest.Comments.Nodes {
 		c := comment{
-			ID:        node.ID,
-			Body:      node.Body,
-			CreatedAt: node.CreatedAt,
+			ID:         node.ID,
+			DatabaseID: fmt.Sprintf("%d", node.DatabaseID),
+			Body:       node.Body,
+			CreatedAt:  node.CreatedAt,
 		}
 		c.Author.Login = node.Author.Login
 		for _, rg := range node.ReactionGroups {
@@ -437,7 +450,7 @@ func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumbe
 	hasNextPage := result.Data.Repository.PullRequest.Comments.PageInfo.HasNextPage
 	endCursor := result.Data.Repository.PullRequest.Comments.PageInfo.EndCursor
 
-	return comments, hasNextPage, endCursor, nil
+	return comments, prNodeID, hasNextPage, endCursor, nil
 }
 
 // AcknowledgeFeedbackItem marks a feedback item as addressed.
@@ -454,12 +467,14 @@ func AcknowledgeFeedbackItem(ctx context.Context, owner, repo string, prNumber i
 		}
 	} else if item.Kind == "global" {
 		// For global items: post reply and add reaction
-		if err := postCommentReply(ctx, owner, repo, prNumber, item.ID, fixingSha, token); err != nil {
+		if err := postCommentReply(ctx, item.PRID, fixingSha, item.ID, token); err != nil {
 			return err
 		}
-		if err := addThumbsupReaction(ctx, owner, repo, item.ID, token); err != nil {
+		if err := addThumbsupReaction(ctx, owner, repo, item.DatabaseID, token); err != nil {
 			return err
 		}
+	} else {
+		return fmt.Errorf("unknown feedback item kind: %s", item.Kind)
 	}
 	return nil
 }
@@ -589,9 +604,9 @@ func resolveReviewThread(ctx context.Context, threadID, token string) error {
 }
 
 // postCommentReply posts a reply comment to a PR global comment via GraphQL.
-func postCommentReply(ctx context.Context, owner, repo string, prNumber int, commentID, fixingSha, token string) error {
+func postCommentReply(ctx context.Context, prNodeID, fixingSha, originalCommentID, token string) error {
 	const mutationTemplate = `mutation {
-  createIssueComment(input: {subjectId: "%s", body: "addressed in %s"}) {
+  createIssueComment(input: {subjectId: "%s", body: "addressed in %s (see comment %s)"}) {
     commentEdge {
       node {
         id
@@ -600,7 +615,7 @@ func postCommentReply(ctx context.Context, owner, repo string, prNumber int, com
   }
 }`
 
-	mutation := fmt.Sprintf(mutationTemplate, commentID, fixingSha)
+	mutation := fmt.Sprintf(mutationTemplate, prNodeID, fixingSha, originalCommentID)
 	payload := map[string]string{"query": mutation}
 
 	body, err := json.Marshal(payload)
@@ -653,8 +668,9 @@ func postCommentReply(ctx context.Context, owner, repo string, prNumber int, com
 }
 
 // addThumbsupReaction adds a thumbsup reaction to a comment via REST API.
-func addThumbsupReaction(ctx context.Context, owner, repo, commentID, token string) error {
-	url := fmt.Sprintf("%s/repos/%s/%s/issues/comments/%s/reactions", GitHubBaseURL, owner, repo, commentID)
+// commentDatabaseID is the numeric database ID (from databaseId field), not the GraphQL node ID.
+func addThumbsupReaction(ctx context.Context, owner, repo, commentDatabaseID, token string) error {
+	url := fmt.Sprintf("%s/repos/%s/%s/issues/comments/%s/reactions", GitHubBaseURL, owner, repo, commentDatabaseID)
 
 	payload := map[string]string{"content": "+1"}
 	body, err := json.Marshal(payload)
