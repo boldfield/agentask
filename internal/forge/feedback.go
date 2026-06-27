@@ -439,3 +439,255 @@ func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumbe
 
 	return comments, hasNextPage, endCursor, nil
 }
+
+// AcknowledgeFeedbackItem marks a feedback item as addressed.
+// For inline items (review threads): posts a reply comment and resolves the thread via GraphQL.
+// For global items (comments): posts a reply comment and adds a thumbsup reaction.
+func AcknowledgeFeedbackItem(ctx context.Context, owner, repo string, prNumber int, token string, item FeedbackItem, fixingSha string) error {
+	if item.Kind == "inline" {
+		// For inline items: post reply and resolve thread
+		if err := postReviewThreadReply(ctx, item.ID, fixingSha, token); err != nil {
+			return err
+		}
+		if err := resolveReviewThread(ctx, item.ID, token); err != nil {
+			return err
+		}
+	} else if item.Kind == "global" {
+		// For global items: post reply and add reaction
+		if err := postCommentReply(ctx, owner, repo, prNumber, item.ID, fixingSha, token); err != nil {
+			return err
+		}
+		if err := addThumbsupReaction(ctx, owner, repo, item.ID, token); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// postReviewThreadReply posts a reply comment to a review thread via GraphQL.
+func postReviewThreadReply(ctx context.Context, threadID, fixingSha, token string) error {
+	const mutationTemplate = `mutation {
+  addPullRequestReviewThreadReply(input: {threadId: "%s", body: "addressed in %s"}) {
+    comment {
+      id
+    }
+  }
+}`
+
+	mutation := fmt.Sprintf(mutationTemplate, threadID, fixingSha)
+	payload := map[string]string{"query": mutation}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/graphql", GitHubBaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("graphql request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("graphql error: %s", result.Errors[0].Message)
+	}
+
+	return nil
+}
+
+// resolveReviewThread resolves a review thread via GraphQL.
+func resolveReviewThread(ctx context.Context, threadID, token string) error {
+	const mutationTemplate = `mutation {
+  resolveReviewThread(input: {threadId: "%s"}) {
+    thread {
+      id
+    }
+  }
+}`
+
+	mutation := fmt.Sprintf(mutationTemplate, threadID)
+	payload := map[string]string{"query": mutation}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/graphql", GitHubBaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("graphql request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("graphql error: %s", result.Errors[0].Message)
+	}
+
+	return nil
+}
+
+// postCommentReply posts a reply comment to a PR global comment via GraphQL.
+func postCommentReply(ctx context.Context, owner, repo string, prNumber int, commentID, fixingSha, token string) error {
+	const mutationTemplate = `mutation {
+  createIssueComment(input: {subjectId: "%s", body: "addressed in %s"}) {
+    commentEdge {
+      node {
+        id
+      }
+    }
+  }
+}`
+
+	mutation := fmt.Sprintf(mutationTemplate, commentID, fixingSha)
+	payload := map[string]string{"query": mutation}
+
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	url := fmt.Sprintf("%s/graphql", GitHubBaseURL)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("graphql request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	var result struct {
+		Errors []struct {
+			Message string `json:"message"`
+		} `json:"errors"`
+	}
+
+	if err := json.Unmarshal(respBody, &result); err != nil {
+		return fmt.Errorf("failed to parse response: %w", err)
+	}
+
+	if len(result.Errors) > 0 {
+		return fmt.Errorf("graphql error: %s", result.Errors[0].Message)
+	}
+
+	return nil
+}
+
+// addThumbsupReaction adds a thumbsup reaction to a comment via REST API.
+func addThumbsupReaction(ctx context.Context, owner, repo, commentID, token string) error {
+	url := fmt.Sprintf("%s/repos/%s/%s/issues/comments/%s/reactions", GitHubBaseURL, owner, repo, commentID)
+
+	payload := map[string]string{"content": "+1"}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	respBody, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("failed to read response body: %w", err)
+	}
+
+	// 200 or 201 are both acceptable for this endpoint
+	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+		return fmt.Errorf("reaction request failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
