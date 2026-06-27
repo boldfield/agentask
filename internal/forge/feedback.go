@@ -606,7 +606,7 @@ func resolveReviewThread(ctx context.Context, threadID, token string) error {
 // postCommentReply posts a reply comment to a PR global comment via GraphQL.
 func postCommentReply(ctx context.Context, prNodeID, fixingSha, originalCommentID, token string) error {
 	const mutationTemplate = `mutation {
-  createIssueComment(input: {subjectId: "%s", body: "addressed in %s (see comment %s)"}) {
+  addComment(input: {subjectId: "%s", body: "addressed in %s (see comment %s)"}) {
     commentEdge {
       node {
         id

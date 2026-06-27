@@ -757,10 +757,10 @@ func TestAcknowledgeFeedbackItem_GlobalItem(t *testing.T) {
 			body, _ := io.ReadAll(r.Body)
 			bodyStr := string(body)
 
-			if strings.Contains(bodyStr, "createIssueComment") {
+			if strings.Contains(bodyStr, "addComment") {
 				graphqlResp := `{
   "data": {
-    "createIssueComment": {
+    "addComment": {
       "commentEdge": {
         "node": {
           "id": "comment-reply-1"
