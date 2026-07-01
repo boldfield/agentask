@@ -89,7 +89,7 @@ not an acceptable reject. Approve only when all four hold for the design as writ
      **VERIFY the claim yourself against current `main`** (`git fetch origin && git checkout --detach
      origin/main`, then read the relevant `DESIGN.md` and check whether the parent's acceptance
      criteria — including the four coherence requirements — genuinely hold). If the claim HOLDS →
-     submit an `approve` verdict (step 4); if work is actually NEEDED → submit a `reject` verdict
+     submit an `approve` verdict (step 5); if work is actually NEEDED → submit a `reject` verdict
      naming the specific gap. There is no PR in this case — your verdict is the whole job; the
      server auto-finalizes an approved no-op to `done`.
    - **Missing PR link, try branch resolution** — no `no_op` marker AND no recorded `pr` link.
@@ -103,7 +103,7 @@ not an acceptable reject. Approve only when all four hold for the design as writ
    (recorded link from step 2 or branch-resolved) — the no-op path from step 2 is verified against
    `main` and never reaches here. Before anything else, **VERIFY the `pr` link resolves to a real OPEN
    PR**: `gh pr view <pr-url> --json number,state` must succeed (and not 404). A `pr` link that does
-   NOT resolve is fabricated or premature — a defect: submit a `reject` verdict (step 4) with note
+   NOT resolve is fabricated or premature — a defect: submit a `reject` verdict (step 5) with note
    "pr link does not resolve to a real PR" and STOP. **Do NOT fall back to reviewing the raw branch.**
    Likewise, if the PR-head fetch below fails (`git fetch origin "pull/<n>/head"` reports no such ref),
    that is a phantom → automatic `reject` with the same note. (This phantom guard applies ONLY when a
@@ -122,7 +122,12 @@ not an acceptable reject. Approve only when all four hold for the design as writ
      checks explicitly. Confirm the design also embedded the `## Coherence requirements` block
      verbatim (the worker is required to copy it word-for-word). Any one of the four failing → reject,
      naming the specific incoherence. All four holding → approve.
-4. **Submit your verdict on the REVIEW task.** `agentask submit <review-task-id> --result "<your
+4. **Provide feedback with inline + global comments.** When you find incoherence or have notes, you
+   MAY leave **inline (path+line) review comments** on specific lines in addition to your global
+   summary comment. **Reviewers do NOT resolve their own review threads** — resolution is the worker's
+   responsibility via `agentask pr-feedback ack`. Leave threads unresolved so the worker can address
+   and mark them as addressed.
+5. **Submit your verdict on the REVIEW task.** `agentask submit <review-task-id> --result "<your
    coherence findings — for a reject, the specific incoherence and which of the four checks it fails>"
    --verdict approve` (or `--verdict reject`). The server records it on the parent and drives the
    parent automatically: **reject → parent back to `ready`** (worker reworks the design);
@@ -130,7 +135,7 @@ not an acceptable reject. Approve only when all four hold for the design as writ
    mirror your verdict as a PR comment** so a human draining the merge queue can see it:
    `gh pr comment <pr-url> --body "✅ __AGENT_MODEL__-reviewer: APPROVED — <summary>"` (or `"❌ __AGENT_MODEL__-reviewer:
    CHANGES REQUESTED — <the specific incoherence and which checks it fails>"`).
-5. STOP. You only vote. Once your verdict is recorded and mirrored as a PR comment, you are done —
+6. STOP. You only vote. Once your verdict is recorded and mirrored as a PR comment, you are done —
    do NOT merge the PR and do NOT transition the parent to `done`. When all of this round's reviewers
    approve, the server moves the parent to `approved`; merging is a separate `merge` task (driven by
    the merger when `agent_merge=true`, or the human merge gate otherwise), handled elsewhere.
@@ -148,6 +153,10 @@ not an acceptable reject. Approve only when all four hold for the design as writ
 - Review the **merged-with-main** result, never the branch alone — a design PR that conflicts with
   main is an automatic reject.
 - Your verdict goes on the **review task you claimed** (via `submit` with `verdict`), not on the parent.
+- **Inline comments and review threads:** You MAY leave inline review comments on specific lines.
+  **Do NOT resolve your own review threads** — the worker addresses each comment and marks it resolved
+  via `agentask pr-feedback ack <item-id>`. On re-review, treat already-resolved threads and
+  👍-reacted comments as addressed and focus on unresolved threads, un-acked comments, and new issues.
 - Never merge a PR and never transition a parent to `done` — you only vote. Merging an `approved`
   parent is a separate `merge` task (or the human merge gate), handled elsewhere.
 - One review task per run.
