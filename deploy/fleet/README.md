@@ -85,6 +85,39 @@ kubectl --context admin@summercamp-cp -n agentask-fleet \
 The `agentask-fleet` (server API token) and `agentask-forge-tokens` secrets from the merger setup are
 reused — create them in this namespace on the cp cluster too if they aren't there yet.
 
+### 2b. codex auth for gpt-5.5 reviewers — READ THIS, IT EXPIRES
+
+Reviewers that run `gpt-5.5` (via `AGENT_CODEX_MODELS`) authenticate codex with the `codex-auth`
+secret, seeded from `~/.codex/auth.json` (see `secret.example.yaml`). Unlike the claude
+`setup-token`, **this one decays and will take your review queue down.**
+
+Under `auth_mode: chatgpt`, codex uses **refresh-token rotation**: every refresh mints a new refresh
+token and *revokes the previous one*. The secret is therefore a **snapshot**. The
+`codex-auth-setup` initContainer copies it into a writable `codex-home` emptyDir **only at pod
+start**, and each pod rotates its own copy independently, never writing back. So every reviewer
+replica plus any machine where you run `codex` locally are all rotating the same lineage and
+revoking each other. Expect it to break periodically — a 4-replica fleet survived ~13 days.
+
+Symptom: reviewers log `Your access token could not be refreshed because your refresh token was
+revoked` plus `401 Unauthorized`, and every `gpt-5.5` review dispatch exits `rc=1`. Because the
+harness peeks the queue head without claiming it, the failing task stays at the head and stalls the
+whole review queue rather than just its own task.
+
+Check and repair:
+
+```sh
+make codex-auth-check    # compares local vs cluster token freshness
+codex login              # interactive; rotates to a fresh token locally
+make codex-auth          # re-seeds the secret AND rolls the reviewers
+```
+
+The rollout restart is **mandatory** — updating the secret alone does nothing, because the
+initContainer only reads it at pod start.
+
+Running exactly one codex-capable reviewer reduces the churn (one rotation lineage instead of N) at
+the cost of `gpt-5.5` review throughput. `auth_mode: apikey` avoids rotation entirely but moves you
+from subscription to API billing.
+
 ### 3. Deploy
 
 ```sh
