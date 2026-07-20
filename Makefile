@@ -1,4 +1,4 @@
-.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image fleet-deploy merger-deploy versions
+.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image fleet-deploy merger-deploy versions codex-auth codex-auth-check
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 
@@ -111,6 +111,50 @@ merger-deploy: merger-image
 	echo "Deploying $$REF to merger ($(LAB_CONTEXT))"; \
 	kubectl --context $(LAB_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/merger merger="$$REF"; \
 	kubectl --context $(LAB_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/merger --timeout=300s
+
+# --- codex (gpt-5.5) reviewer auth ---
+#
+# codex runs under `auth_mode: chatgpt`, which uses refresh-token ROTATION: every refresh
+# mints a new refresh token and REVOKES the previous one. The cluster secret is therefore a
+# SNAPSHOT that decays — each reviewer pod seeds a writable ~/.codex emptyDir from it at pod
+# start and rotates independently, never writing back. Multiple pods (and your laptop) sharing
+# one lineage revoke each other, so expect to re-run `make codex-auth` periodically. Symptom:
+# reviewers log "refresh token was revoked" + 401 and stall the review queue indefinitely.
+
+# Read-only: compare the cluster secret's token freshness against the local one. A cluster
+# timestamp much older than the local one means the reviewers are running a revoked token.
+codex-auth-check:
+	@LOCAL=$$(jq -r '.last_refresh // empty' "$$HOME/.codex/auth.json" 2>/dev/null); \
+	[ -n "$$LOCAL" ] || LOCAL="(no local ~/.codex/auth.json)"; \
+	RAW=$$(kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) get secret codex-auth \
+	  -o jsonpath='{.data.auth\.json}' 2>/dev/null | base64 -d 2>/dev/null); \
+	if [ -z "$$RAW" ]; then CLUSTER="(unreachable / secret not found)"; \
+	else CLUSTER=$$(printf '%s' "$$RAW" | jq -r '.last_refresh // empty' 2>/dev/null); \
+	  [ -n "$$CLUSTER" ] || CLUSTER="(unparseable secret)"; fi; \
+	printf '%-10s %s\n' local "$$LOCAL"; \
+	printf '%-10s %s\n' cluster "$$CLUSTER"; \
+	case "$$LOCAL$$CLUSTER" in \
+	  *"("*) echo "INDETERMINATE — could not compare (see above); NOT necessarily stale" ;; \
+	  *) [ "$$LOCAL" = "$$CLUSTER" ] && echo "in sync" \
+	       || echo "OUT OF SYNC — run 'codex login' then 'make codex-auth'" ;; \
+	esac
+
+# Re-seed the reviewers' codex auth from the local ~/.codex/auth.json, then re-roll them.
+# Run `codex login` FIRST (interactive browser flow — cannot be automated here).
+# The rollout restart is MANDATORY: the codex-auth-setup initContainer copies the secret into
+# the writable codex-home emptyDir only at pod start, so updating the secret alone does nothing.
+codex-auth:
+	@test -f "$$HOME/.codex/auth.json" || { echo "ERROR: no ~/.codex/auth.json — run 'codex login' first"; exit 1; }
+	@jq -e '.tokens.refresh_token // empty' "$$HOME/.codex/auth.json" >/dev/null 2>&1 \
+	  || { echo "ERROR: ~/.codex/auth.json has no refresh token — re-run 'codex login'"; exit 1; }
+	@echo "Seeding codex-auth secret from ~/.codex/auth.json ($(CP_CONTEXT))"
+	@kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) create secret generic codex-auth \
+	  --from-file=auth.json="$$HOME/.codex/auth.json" \
+	  --dry-run=client -o yaml \
+	  | kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) apply -f -
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout restart deploy/reviewer
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/reviewer --timeout=300s
+	@$(MAKE) --no-print-directory codex-auth-check
 
 deploy:
 	@echo "Resolving image digest for ghcr.io/boldfield/agentask:$(VERSION)..."
