@@ -91,8 +91,20 @@ fleet-image:
 #   kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout restart deploy/worker deploy/reviewer
 fleet-deploy: fleet-image
 	@echo "Resolving digest for $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG)..."
-	@DIGEST=$$(docker buildx imagetools inspect --builder $(FLEET_BUILDER) "$(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG)" 2>/dev/null | awk '/^Digest:/{print $$2; exit}'); \
-	if ! echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then echo "ERROR: could not resolve fleet image digest (got '$$DIGEST')"; exit 1; fi; \
+	@STDERR_FILE=$$(mktemp); \
+	DIGEST=""; \
+	for attempt in 1 2 3 4 5; do \
+	  DIGEST=$$(docker buildx imagetools inspect --builder $(FLEET_BUILDER) "$(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG)" 2>"$$STDERR_FILE" | awk '/^Digest:/{print $$2; exit}'); \
+	  if echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then break; fi; \
+	  if [ $$attempt -lt 5 ]; then sleep 2; fi; \
+	done; \
+	if ! echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then \
+	  STDERR_TEXT=$$(cat "$$STDERR_FILE" 2>/dev/null || echo "(no stderr captured)"); \
+	  rm -f "$$STDERR_FILE"; \
+	  echo "ERROR: could not resolve fleet image digest (got '$$DIGEST'). Last error: $$STDERR_TEXT"; \
+	  exit 1; \
+	fi; \
+	rm -f "$$STDERR_FILE"; \
 	REF="$(FLEET_REGISTRY)/agentask/fleet@$$DIGEST"; \
 	echo "Deploying $$REF to worker + reviewer ($(CP_CONTEXT))"; \
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/worker   worker="$$REF"; \
@@ -105,8 +117,20 @@ fleet-deploy: fleet-image
 #   kubectl --context $(LAB_CONTEXT) -n $(FLEET_NAMESPACE) rollout restart deploy/merger
 merger-deploy: merger-image
 	@echo "Resolving digest for $(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG)..."
-	@DIGEST=$$(docker buildx imagetools inspect --builder $(FLEET_BUILDER) "$(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG)" 2>/dev/null | awk '/^Digest:/{print $$2; exit}'); \
-	if ! echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then echo "ERROR: could not resolve merger image digest (got '$$DIGEST')"; exit 1; fi; \
+	@STDERR_FILE=$$(mktemp); \
+	DIGEST=""; \
+	for attempt in 1 2 3 4 5; do \
+	  DIGEST=$$(docker buildx imagetools inspect --builder $(FLEET_BUILDER) "$(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG)" 2>"$$STDERR_FILE" | awk '/^Digest:/{print $$2; exit}'); \
+	  if echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then break; fi; \
+	  if [ $$attempt -lt 5 ]; then sleep 2; fi; \
+	done; \
+	if ! echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then \
+	  STDERR_TEXT=$$(cat "$$STDERR_FILE" 2>/dev/null || echo "(no stderr captured)"); \
+	  rm -f "$$STDERR_FILE"; \
+	  echo "ERROR: could not resolve merger image digest (got '$$DIGEST'). Last error: $$STDERR_TEXT"; \
+	  exit 1; \
+	fi; \
+	rm -f "$$STDERR_FILE"; \
 	REF="$(FLEET_REGISTRY)/agentask/merger@$$DIGEST"; \
 	echo "Deploying $$REF to merger ($(LAB_CONTEXT))"; \
 	kubectl --context $(LAB_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/merger merger="$$REF"; \
@@ -158,9 +182,20 @@ codex-auth:
 
 deploy:
 	@echo "Resolving image digest for ghcr.io/boldfield/agentask:$(VERSION)..."
-	@DIGEST=$$(docker buildx imagetools inspect "ghcr.io/boldfield/agentask:$(VERSION)" 2>/dev/null | awk '/^Digest:/{print $$2; exit}' || echo ""); \
-	if [ -z "$$DIGEST" ]; then echo "ERROR: Image tag $(VERSION) not found in registry"; exit 1; fi; \
-	if ! echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then echo "ERROR: Invalid digest format: $$DIGEST"; exit 1; fi; \
+	@STDERR_FILE=$$(mktemp); \
+	DIGEST=""; \
+	for attempt in 1 2 3 4 5; do \
+	  DIGEST=$$(docker buildx imagetools inspect "ghcr.io/boldfield/agentask:$(VERSION)" 2>"$$STDERR_FILE" | awk '/^Digest:/{print $$2; exit}'); \
+	  if echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then break; fi; \
+	  if [ $$attempt -lt 5 ]; then sleep 2; fi; \
+	done; \
+	if ! echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then \
+	  STDERR_TEXT=$$(cat "$$STDERR_FILE" 2>/dev/null || echo "(no stderr captured)"); \
+	  rm -f "$$STDERR_FILE"; \
+	  echo "ERROR: Image tag $(VERSION) not found in registry. Last error: $$STDERR_TEXT"; \
+	  exit 1; \
+	fi; \
+	rm -f "$$STDERR_FILE"; \
 	echo "Deploying ghcr.io/boldfield/agentask@$$DIGEST"; \
 	kubectl -n agentask set image deploy/agentask agentask="ghcr.io/boldfield/agentask@$$DIGEST"; \
 	kubectl -n agentask rollout status deploy/agentask --timeout=180s
