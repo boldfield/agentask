@@ -108,7 +108,7 @@ fleet-deploy: fleet-image
 	REF="$(FLEET_REGISTRY)/agentask/fleet@$$DIGEST"; \
 	echo "Deploying $$REF to worker + reviewer ($(CP_CONTEXT))"; \
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/worker   worker="$$REF"; \
-	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/reviewer reviewer="$$REF"; \
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/reviewer reviewer="$$REF" codex-auth-setup="$$REF"; \
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/worker   --timeout=300s; \
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/reviewer --timeout=300s
 
