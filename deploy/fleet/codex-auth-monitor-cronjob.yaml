@@ -86,10 +86,15 @@ spec:
                       SEARCH_SECONDS=3600
                     fi
 
-                    echo "Checking pod $POD for codex auth errors (last $SEARCH_SECONDS seconds)..."
+                    echo "Checking pod $POD for codex auth errors..."
 
-                    # Get logs from the pod
-                    POD_LOGS=$(kubectl logs "$POD" -n "$NAMESPACE" --tail=1000 2>/dev/null || true)
+                    # Get logs from the pod since the last check, or last hour if first run
+                    if [ "$LAST_LOG_CHECK" -gt 0 ]; then
+                      SINCE_TIME=$(date -d @"$LAST_LOG_CHECK" -u -Iseconds 2>/dev/null || date -u -Iseconds)
+                      POD_LOGS=$(kubectl logs "$POD" -n "$NAMESPACE" --since-time="$SINCE_TIME" 2>/dev/null || true)
+                    else
+                      POD_LOGS=$(kubectl logs "$POD" -n "$NAMESPACE" --since=1h 2>/dev/null || true)
+                    fi
 
                     # Search for revocation error or 401 from chatgpt
                     if echo "$POD_LOGS" | grep -q "Your access token could not be refreshed because your refresh token was already used"; then
