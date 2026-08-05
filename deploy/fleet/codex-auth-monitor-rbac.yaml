@@ -1,0 +1,47 @@
+# RBAC for the codex-auth-monitor CronJob. The monitor only READS reviewer pod
+# logs — it never writes cluster state and (critically) never touches the codex
+# token, so the ServiceAccount is scoped to the bare minimum: list reviewer pods
+# and read their logs in the agentask-fleet namespace. Nothing else.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: codex-auth-monitor
+  namespace: agentask-fleet
+  labels:
+    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/component: codex-auth-monitor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: codex-auth-monitor
+  namespace: agentask-fleet
+  labels:
+    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/component: codex-auth-monitor
+rules:
+  # List reviewer pods to know which pods to read logs from.
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # Read those pods' logs to scan for the codex auth-decay signature.
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: codex-auth-monitor
+  namespace: agentask-fleet
+  labels:
+    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/component: codex-auth-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: codex-auth-monitor
+subjects:
+  - kind: ServiceAccount
+    name: codex-auth-monitor
+    namespace: agentask-fleet

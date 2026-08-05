@@ -118,12 +118,27 @@ Running exactly one codex-capable reviewer reduces the churn (one rotation linea
 the cost of `gpt-5.5` review throughput. `auth_mode: apikey` avoids rotation entirely but moves you
 from subscription to API billing.
 
+#### codex-auth-monitor — get paged instead of noticing by hand
+
+The failure above is *silent*: the review queue just stops. `codex-auth-monitor` (a CronJob under
+`deploy/fleet/`) turns it into an ntfy alert. Hourly it scans the reviewer pods' recent logs for the
+revocation message / chatgpt.com `401` signature and, on a match, publishes one alert through the
+cluster notifier-proxy (`NOTIFY_URL` + the `notify-token` secret, same convention as the server's
+notify loop) with the `codex login` → `make codex-auth` runbook in the body. It **never** attempts a
+token refresh — that would rotate and revoke the live lineage, causing the very outage it watches —
+so its ServiceAccount is scoped to reading pod logs only. Repeat alerts are suppressed for 6h via a
+time-bucketed `dedup_key` (no writable cluster state, so no extra RBAC); a healthy fleet stays
+silent. Requires the `notify-token` secret in `agentask-fleet` (see `secret.example.yaml`).
+
 ### 3. Deploy
 
 ```sh
 kubectl --context admin@summercamp-cp apply -f deploy/fleet/namespace.yaml
 kubectl --context admin@summercamp-cp apply -f deploy/fleet/worker-deployment.yaml
 kubectl --context admin@summercamp-cp apply -f deploy/fleet/reviewer-deployment.yaml
+# Alert when codex reviewer auth decays (needs the notify-token secret; see secret.example.yaml):
+kubectl --context admin@summercamp-cp apply -f deploy/fleet/codex-auth-monitor-rbac.yaml
+kubectl --context admin@summercamp-cp apply -f deploy/fleet/codex-auth-monitor-cronjob.yaml
 ```
 
 4 workers + 4 reviewers, matching the laptop fleet. They poll the public server, claim
