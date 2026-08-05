@@ -42,7 +42,6 @@ spec:
 
                   # Get the current time in seconds since epoch
                   NOW=$(date +%s)
-                  NOW_RFC3339=$(date -u -Iseconds)
 
                   # Get or create the ConfigMap for tracking state
                   CONFIG_MAP=$(kubectl get configmap "$CONFIG_MAP_NAME" -n "$NAMESPACE" -o json 2>/dev/null || echo '{}')
@@ -74,17 +73,6 @@ spec:
 
                   # Check each reviewer pod's logs for the revocation error or 401
                   for POD in $PODS; do
-                    # Calculate how many seconds ago the last log check was
-                    # Use tail-time flag to get logs since then
-                    if [ "$LAST_LOG_CHECK" -gt 0 ]; then
-                      SINCE_SECONDS=$((NOW - LAST_LOG_CHECK))
-                      # Kubernetes log timestamps are in RFC3339 format with nanoseconds
-                      # We need to search logs from the past hour at minimum to catch issues
-                      SEARCH_SECONDS=$((SINCE_SECONDS + 3600))
-                    else
-                      SEARCH_SECONDS=3600
-                    fi
-
                     echo "Checking pod $POD for codex auth errors..."
 
                     # Get logs from the pod since the last check, or last hour if first run
@@ -178,11 +166,16 @@ spec:
                       key: NOTIFY_TOKEN
                 - name: NOTIFY_URL
                   value: "https://notifier.summercamp.eastharbor.casa"
+                - name: HOME
+                  value: "/tmp"
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:
                   drop: ["ALL"]
                 readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
               resources:
                 requests:
                   cpu: "50m"
@@ -190,3 +183,6 @@ spec:
                 limits:
                   cpu: "100m"
                   memory: "128Mi"
+          volumes:
+            - name: tmp
+              emptyDir: {}
