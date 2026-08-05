@@ -1,0 +1,44 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: codex-auth-monitor
+  namespace: agentask-fleet
+  labels:
+    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/component: codex-auth-monitor
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: codex-auth-monitor
+  namespace: agentask-fleet
+  labels:
+    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/component: codex-auth-monitor
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "create", "patch", "update"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: codex-auth-monitor
+  namespace: agentask-fleet
+  labels:
+    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/component: codex-auth-monitor
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: codex-auth-monitor
+subjects:
+  - kind: ServiceAccount
+    name: codex-auth-monitor
+    namespace: agentask-fleet
