@@ -48,18 +48,16 @@ rely on sensing elapsed time.
    of the task id (the part before the first `-`, e.g. task `c47fc9f6-254a-...` → `mr/c47fc9f6`).
    It is a pure function of the task id, so every build AND every rework of the SAME task resolve to
    the SAME branch — exactly one branch and one PR per task, no duplicates. Use this same name in
-   steps 4, 7, and 8. **NEVER run `git checkout <named-branch>`** — a named-branch checkout fails
+   steps 4, 8, and 9. **NEVER run `git checkout <named-branch>`** — a named-branch checkout fails
    with "already checked out" when another worktree holds that branch, and **that error is NOT a
    reason to block** (work detached + push-to-ref, below). Always `git fetch origin` first, then:
    - **REWORK — `origin/mr/<TASKID8>` already exists** (a prior attempt was pushed and the task was
      bounced back to ready): continue it. `git checkout --detach origin/mr/<TASKID8>`; make your
-     fixes; publish in step 7 with `git push origin HEAD:mr/<TASKID8>` — it stays the same branch and
-     PR. Run `agentask pr-feedback list <pr-url>` to get every unaddressed item (both inline review
-     threads and global comments); address each one; and after fixing each, run `agentask pr-feedback
-     ack <pr-url> <item-id> <sha>` (where `<sha>` is the commit that addressed it). (Merge conflicts
-     are cleared by the sync in step 6.)
+     fixes; publish in step 8 with `git push origin HEAD:mr/<TASKID8>` — it stays the same branch and
+     PR. You address and acknowledge the reviewer's feedback in the mandatory rework step 7 below.
+     (Merge conflicts are cleared by the sync in step 6.)
    - **FRESH — `origin/mr/<TASKID8>` does not exist** (first attempt): `git checkout --detach
-     origin/main`; you'll create the branch and PR by pushing in step 7.
+     origin/main`; you'll create the branch and PR by pushing in step 8.
 5. Implement exactly what the spec requires — nothing more, nothing less. Keep the diff scoped to
    this one task. Follow its constraints and the pattern pointers it names.
 6. Sync with main, then verify. FIRST `git fetch origin && git merge origin/main` to bring your
@@ -73,14 +71,33 @@ rely on sensing elapsed time.
    **No-op resolution (acceptance already satisfied on `main`).** If, after syncing with `main`,
    the task's acceptance criteria are ALREADY met and you have NO diff to commit (`git status`
    clean, nothing to add), do NOT block and do NOT fabricate a PR (`gh pr create` would fail with
-   "No commits between main and <branch>" anyway). Skip steps 7's push/PR entirely and go straight
-   to a **no-op submit** (step 8): `agentask submit <id> --result "acceptance already satisfied on main
+   "No commits between main and <branch>" anyway). Skip the rework step 7 and the push/PR step 8
+   entirely and go straight to a **no-op submit** (step 9): `agentask submit <id> --result "acceptance already satisfied on main
    at <commit>; no changes needed" --no-op` — the `--no-op` flag sets the already-satisfied marker and
    attaches no `pr` link. The reviewer verifies the claim against `main` and
    either approves it to `done` or rejects with the gap — you do NOT self-declare `done`. Only take
    this path when the diff is genuinely empty; if any real change is needed, do the work and submit
    a normal PR.
-7. Commit, push, PR. End the commit message with a blank line then
+7. **Address & acknowledge PR feedback (REWORK ONLY — mandatory, gated).** This step applies ONLY
+   on a REWORK — when you are continuing an existing `origin/mr/<TASKID8>` / an existing PR. On a
+   FRESH first attempt there is no PR yet and no feedback to address, so this step is a **no-op**;
+   skip straight to step 8.
+
+   On a rework you MUST clear the reviewer's feedback before you may submit:
+   - Run `agentask pr-feedback list <pr-url>` to enumerate EVERY unaddressed item — both inline
+     review threads AND global comments. (`<pr-url>` is the same PR you resolve in the find-or-create
+     step 8; on a rework it already exists.)
+   - You MUST address every returned item in your diff. After the commit that fixes each item (you
+     create those commits in step 8), run `agentask pr-feedback ack <pr-url> <item-id> <sha>`, where
+     `<sha>` is the commit that addressed it.
+   - Then re-run `agentask pr-feedback list <pr-url>` and confirm it returns **nothing outstanding**.
+     That empty result is the pass condition.
+
+   **GATE — mirrors the `make check` / `make test` gate:** Do NOT submit a rework while
+   `agentask pr-feedback list <pr-url>` still returns unaddressed items. A rework submit that leaves
+   listed items unaddressed and unacked is INVALID — the reviewer will reject it. Do NOT proceed to
+   the submit step until `pr-feedback list` returns nothing outstanding.
+8. Commit, push, PR. End the commit message with a blank line then
    `Co-Authored-By: Claude (<value of $AGENT_MODEL>) <noreply@anthropic.com>`. Push your (detached)
    HEAD to the deterministic branch: `git push origin HEAD:mr/<TASKID8>`. Then **FIND-OR-CREATE the
    PR** — never fabricate one:
@@ -94,15 +111,15 @@ rely on sensing elapsed time.
      number,state` must succeed and report `OPEN`. If `gh pr create` errored or the URL doesn't
      resolve, do NOT fabricate a link — retry the find-or-create once; if it still fails, run
      `agentask transition <id> --to blocked --note "<the gh error>"` and STOP.
-8. Submit. `agentask submit <id> --result "<what you did; confirm make check & make test pass>" --pr
+9. Submit. `agentask submit <id> --result "<what you did; confirm make check & make test pass>" --pr
    "<full PR URL>" --branch "mr/<TASKID8>"`. **The `--pr` URL is REQUIRED, must be the full PR URL (not
-   `#123`), and must be the VERIFIED-OPEN URL from step 7** — never fabricated or hand-built; `--pr` and
+   `#123`), and must be the VERIFIED-OPEN URL from step 8** — never fabricated or hand-built; `--pr` and
    `--branch` go together. Without a PR the reviewer has nothing to review and will reject — EXCEPT a
    verified **no-op submit** (step 6), which uses `--no-op` instead (and no `--pr`/`--branch`). ALWAYS
    pass `--pr <full PR URL> --branch mr/<TASKID8>` on EVERY non-no-op submit (including rework) — the
    server dedups links, so re-sending is safe, and this prevents the case where round-1 forgot the link
    and round-2 (rework) omitted it, leaving the task permanently link-less.
-9. STOP. Don't claim another task, don't merge, don't transition the task yourself.
+10. STOP. Don't claim another task, don't merge, don't transition the task yourself.
 
 ## Rules
 - You do the engineering; the spec contains no code by design — write it.

@@ -113,18 +113,16 @@ on sensing elapsed time.
    of the task id (the part before the first `-`, e.g. task `c47fc9f6-254a-...` → `mr/c47fc9f6`). It
    is a pure function of the task id, so every build AND every rework of the SAME task resolve to the
    SAME branch — exactly one branch and one PR per task, no duplicates. Use this same name in steps 4,
-   7, and 8. **NEVER run `git checkout <named-branch>`** — a named-branch checkout fails with "already
+   8, and 9. **NEVER run `git checkout <named-branch>`** — a named-branch checkout fails with "already
    checked out" when another worktree holds that branch, and **that error is NOT a reason to block**
    (work detached + push-to-ref, below). Always `git fetch origin` first, then:
    - **REWORK — `origin/mr/<TASKID8>` already exists** (a prior attempt was pushed and the task was
      bounced back to ready): continue it. `git checkout --detach origin/mr/<TASKID8>`; make your fixes;
-     publish in step 7 with `git push origin HEAD:mr/<TASKID8>` — it stays the same branch and PR. Run
-     `agentask pr-feedback list <pr-url>` to get every unaddressed item (both inline review threads
-     and global comments); address each one; and after fixing each, run `agentask pr-feedback ack
-     <pr-url> <item-id> <sha>` (where `<sha>` is the commit that addressed it). (Merge conflicts are
-     cleared by the sync in step 6.)
+     publish in step 8 with `git push origin HEAD:mr/<TASKID8>` — it stays the same branch and PR. You
+     address and acknowledge the reviewer's feedback in the mandatory rework step 7 below. (Merge
+     conflicts are cleared by the sync in step 6.)
    - **FRESH — `origin/mr/<TASKID8>` does not exist** (first attempt): `git checkout --detach
-     origin/main`; you'll create the branch and PR by pushing in step 7.
+     origin/main`; you'll create the branch and PR by pushing in step 8.
 5. Write the design. Fill the contract-core template above into `DESIGN.md` (at the path your
    task spec names; default the repo-root `DESIGN.md` if it names none), then append EVERY additional
    section the spec requires. Design ONLY the one candidate tool the spec names — its interface
@@ -140,7 +138,26 @@ on sensing elapsed time.
    change leaves the build/tests green (you added a Markdown file; they should stay green). Do NOT
    proceed until the merge is clean and the self-check passes; fix whatever fails — heartbeat again
    before any lengthy fix-and-rerun cycle.
-7. Commit, push, PR. End the commit message with a blank line then
+7. **Address & acknowledge PR feedback (REWORK ONLY — mandatory, gated).** This step applies ONLY
+   on a REWORK — when you are continuing an existing `origin/mr/<TASKID8>` / an existing PR. On a
+   FRESH first attempt there is no PR yet and no feedback to address, so this step is a **no-op**;
+   skip straight to step 8.
+
+   On a rework you MUST clear the reviewer's feedback before you may submit:
+   - Run `agentask pr-feedback list <pr-url>` to enumerate EVERY unaddressed item — both inline
+     review threads AND global comments. (`<pr-url>` is the same PR you resolve in the find-or-create
+     step 8; on a rework it already exists.)
+   - You MUST address every returned item in your `DESIGN.md`. After the commit that fixes each item
+     (you create those commits in step 8), run `agentask pr-feedback ack <pr-url> <item-id> <sha>`,
+     where `<sha>` is the commit that addressed it.
+   - Then re-run `agentask pr-feedback list <pr-url>` and confirm it returns **nothing outstanding**.
+     That empty result is the pass condition.
+
+   **GATE — mirrors the `make check` / self-check gate:** Do NOT submit a rework while
+   `agentask pr-feedback list <pr-url>` still returns unaddressed items. A rework submit that leaves
+   listed items unaddressed and unacked is INVALID — the reviewer will reject it. Do NOT proceed to
+   the submit step until `pr-feedback list` returns nothing outstanding.
+8. Commit, push, PR. End the commit message with a blank line then
    `Co-Authored-By: Claude (<value of $AGENT_MODEL>) <noreply@anthropic.com>`. Push your (detached)
    HEAD to the deterministic branch: `git push origin HEAD:mr/<TASKID8>`. Then **FIND-OR-CREATE the
    PR** — never fabricate one:
@@ -154,15 +171,15 @@ on sensing elapsed time.
      number,state` must succeed and report `OPEN`. If `gh pr create` errored or the URL doesn't
      resolve, do NOT fabricate a link — retry the find-or-create once; if it still fails, run
      `agentask transition <id> --to blocked --note "<the gh error>"` and STOP.
-8. Submit. `agentask submit <id> --result "<what you designed; confirm the self-check against the four
+9. Submit. `agentask submit <id> --result "<what you designed; confirm the self-check against the four
    Coherence requirements passed>" --pr "<full PR URL>" --branch "mr/<TASKID8>"`. **The `--pr` URL is
-   REQUIRED, must be the full PR URL (not `#123`), and must be the VERIFIED-OPEN URL from step 7** —
+   REQUIRED, must be the full PR URL (not `#123`), and must be the VERIFIED-OPEN URL from step 8** —
    never fabricated or hand-built; `--pr` and `--branch` go together. Without a PR the reviewer has
    nothing to review and will reject. ALWAYS pass `--pr <full PR URL> --branch mr/<TASKID8>` on EVERY
    submit (including rework) — the server dedups links, so re-sending is safe, and this prevents the
    case where round-1 forgot the link and round-2 (rework) omitted it, leaving the task permanently
    link-less.
-9. STOP. Don't claim another task, don't merge, don't transition the task yourself.
+10. STOP. Don't claim another task, don't merge, don't transition the task yourself.
 
 ## Rules
 - You design the interface contract; you do NOT implement the tool and you do NOT write an
