@@ -1,0 +1,186 @@
+# codex-auth-monitor — turns a SILENT codex (gpt-5.5) reviewer auth-decay into a
+# loud ntfy alert.
+#
+# Background: codex reviewers authenticate via chatgpt-mode refresh-token ROTATION
+# (see the codex-auth section of the Makefile). The cluster `codex-auth` secret is a
+# decaying snapshot; when the live lineage is revoked, reviewer pods log
+# "Your access token could not be refreshed because your refresh token was already
+# used" plus 401s from wss://chatgpt.com, and the gpt-5.5 review queue stalls
+# silently until a human notices. This CronJob scans reviewer pod logs hourly for
+# that signature and fires one ntfy alert (via the cluster notifier-proxy), then
+# suppresses repeats for 6h while the condition persists.
+#
+# HARD CONSTRAINT: this monitor NEVER validates the token by attempting a refresh —
+# a refresh rotates and revokes the live lineage, causing the very failure it
+# monitors. It only reads pod logs. That is also why its RBAC is log-read-only.
+#
+# 6h rate-limit WITHOUT writable state: the monitor holds no ServiceAccount write
+# permissions (RBAC is pods get/list + pods/log get only). Instead it stamps each
+# alert with a `dedup_key` bucketed to a fixed 6h epoch window
+# (codex-auth-decay-<floor(now/21600)>). The cluster notifier-proxy de-duplicates by
+# `dedup_key` — the same mechanism the agentask server relies on so its 30s notify
+# tick doesn't re-spam a single "approved" task — so every hourly run inside one 6h
+# window collapses to a single delivery, and the next window mints a fresh key that
+# re-alerts if the reviewers are still broken.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: codex-auth-monitor
+  namespace: agentask-fleet
+  labels:
+    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/component: codex-auth-monitor
+spec:
+  # Hourly, on the hour: an error appearing at any point fires an alert within the hour.
+  schedule: "0 * * * *"
+  # Never overlap runs; a run reads at most an hour of logs so it finishes fast.
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentask-fleet
+        app.kubernetes.io/component: codex-auth-monitor
+    spec:
+      # One scan per run; don't retry a transient log-read forever.
+      backoffLimit: 2
+      activeDeadlineSeconds: 300
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: agentask-fleet
+            app.kubernetes.io/component: codex-auth-monitor
+        spec:
+          serviceAccountName: codex-auth-monitor
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: monitor
+              # Pinned image carrying kubectl + curl + bash (no floating :latest).
+              image: alpine/k8s:1.32.13
+              command: ["/bin/bash", "-c"]
+              args:
+                - |
+                  set -euo pipefail
+
+                  NAMESPACE="agentask-fleet"
+                  REVIEWER_SELECTOR="app.kubernetes.io/component=reviewer"
+                  # Look back one hour: matches the hourly schedule ("logs since the
+                  # previous run") so a fresh error is caught within the hour.
+                  SINCE="1h"
+                  # 6h rate-limit window, in seconds, for the bucketed dedup key.
+                  WINDOW=$((6 * 3600))
+
+                  # The codex auth-decay signature: the refresh-token revocation
+                  # message and the 401/Unauthorized from chatgpt.com. Kept tight so
+                  # unrelated 401s elsewhere don't false-positive.
+                  # grep is line-oriented, so `.` already excludes newlines — do NOT
+                  # use `[^\n]` here (in a bracket expression grep reads it as the
+                  # literal chars backslash+n, which silently breaks the 401 matches).
+                  SIGNATURE='could not be refreshed because your refresh token was (already used|revoked)|refresh token was (already used|revoked)|(401|403|Unauthorized|Forbidden).*chatgpt\.com|chatgpt\.com.*(401|403|Unauthorized|Forbidden)'
+
+                  PODS=$(kubectl get pods -n "$NAMESPACE" -l "$REVIEWER_SELECTOR" \
+                           -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || true)
+                  if [ -z "${PODS:-}" ]; then
+                    echo "No reviewer pods found in $NAMESPACE; nothing to scan."
+                    exit 0
+                  fi
+
+                  DECAY_FOUND=false
+                  OFFENDER=""
+                  for POD in $PODS; do
+                    echo "Scanning $POD (last $SINCE) for codex auth-decay signature..."
+                    # NOTE: reading logs only — never invoke codex or a token refresh.
+                    LOGS=$(kubectl logs "$POD" -n "$NAMESPACE" --since="$SINCE" --all-containers=true 2>/dev/null || true)
+                    if printf '%s' "$LOGS" | grep -Eiq "$SIGNATURE"; then
+                      echo "  -> auth-decay signature matched in $POD"
+                      DECAY_FOUND=true
+                      OFFENDER="$POD"
+                      break
+                    fi
+                  done
+
+                  if [ "$DECAY_FOUND" != "true" ]; then
+                    echo "Reviewers healthy; no codex auth-decay signature. Staying silent."
+                    exit 0
+                  fi
+
+                  if [ -z "${NOTIFY_URL:-}" ] || [ -z "${NOTIFY_TOKEN:-}" ]; then
+                    echo "ERROR: auth-decay detected but NOTIFY_URL/NOTIFY_TOKEN unset; cannot alert." >&2
+                    exit 1
+                  fi
+
+                  # Bucket the dedup key to a fixed 6h epoch window so the notifier-proxy
+                  # collapses the hourly re-detections into one alert per 6h.
+                  NOW=$(date +%s)
+                  BUCKET=$((NOW / WINDOW))
+                  DEDUP_KEY="codex-auth-decay-${BUCKET}"
+
+                  BODY=$(cat <<EOF
+                  Codex (gpt-5.5) reviewer auth has decayed: pod ${OFFENDER} logged the refresh-token revocation / chatgpt.com 401 signature. The gpt-5.5 review queue will stall silently until re-seeded.
+
+                  Runbook (on a machine with the codex login):
+                    1. codex login          # interactive browser flow; refreshes ~/.codex/auth.json
+                    2. make codex-auth      # re-seeds the cluster codex-auth secret and re-rolls reviewers
+                  EOF
+                  )
+
+                  # Compose the notifier-proxy payload (same JSON shape the agentask
+                  # server's notify loop uses). jq builds it so the multi-line body is
+                  # safely encoded.
+                  PAYLOAD=$(jq -n \
+                    --arg event "agentask-codex-auth-decay" \
+                    --arg title "Codex reviewer auth decayed — gpt-5.5 review queue stalling" \
+                    --arg body "$BODY" \
+                    --arg dedup "$DEDUP_KEY" \
+                    '{event: $event, title: $title, body: $body, link: "", priority: 5, tags: ["rotating_light","codex"], dedup_key: $dedup}')
+
+                  echo "Publishing ntfy alert (dedup_key=$DEDUP_KEY) to notifier-proxy..."
+                  HTTP_CODE=$(curl -sS -o /tmp/notify-resp -w '%{http_code}' -X POST \
+                    -H "Authorization: Bearer ${NOTIFY_TOKEN}" \
+                    -H "Content-Type: application/json" \
+                    -d "$PAYLOAD" \
+                    "${NOTIFY_URL%/}/notify" || echo "000")
+
+                  if printf '%s' "$HTTP_CODE" | grep -Eq '^2[0-9][0-9]$'; then
+                    echo "Alert published (HTTP $HTTP_CODE)."
+                  else
+                    echo "ERROR: notifier-proxy publish failed (HTTP $HTTP_CODE): $(cat /tmp/notify-resp 2>/dev/null)" >&2
+                    exit 1
+                  fi
+              env:
+                - name: NOTIFY_URL
+                  value: "https://notifier.summercamp.eastharbor.casa"
+                - name: NOTIFY_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: notify-token
+                      key: NOTIFY_TOKEN
+                - name: HOME
+                  value: "/tmp"
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "200m"
+                  memory: "192Mi"
+          volumes:
+            - name: tmp
+              emptyDir: {}
