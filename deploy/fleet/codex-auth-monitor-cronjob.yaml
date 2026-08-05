@@ -1,0 +1,187 @@
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: codex-auth-monitor
+  namespace: agentask-fleet
+  labels:
+    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/component: codex-auth-monitor
+spec:
+  schedule: "0 * * * *"
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    metadata:
+      labels:
+        app.kubernetes.io/name: agentask-fleet
+        app.kubernetes.io/component: codex-auth-monitor
+    spec:
+      template:
+        spec:
+          serviceAccountName: codex-auth-monitor
+          restartPolicy: OnFailure
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            fsGroup: 1000
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: monitor
+              image: bitnami/kubectl:latest
+              command:
+                - /bin/bash
+                - -c
+                - |
+                  set -e
+
+                  NAMESPACE="agentask-fleet"
+                  CONFIG_MAP_NAME="codex-auth-monitor-state"
+                  NOTIFY_URL="${NOTIFY_URL:-https://notifier.summercamp.eastharbor.casa}"
+
+                  # Get the current time in seconds since epoch
+                  NOW=$(date +%s)
+                  NOW_RFC3339=$(date -u -Iseconds)
+
+                  # Get or create the ConfigMap for tracking state
+                  CONFIG_MAP=$(kubectl get configmap "$CONFIG_MAP_NAME" -n "$NAMESPACE" -o json 2>/dev/null || echo '{}')
+
+                  if [ "$CONFIG_MAP" = '{}' ]; then
+                    # Initialize ConfigMap with timestamps
+                    LAST_LOG_CHECK=0
+                    LAST_ALERT_TIME=0
+                  else
+                    LAST_LOG_CHECK=$(echo "$CONFIG_MAP" | jq -r '.data.lastLogCheckTime // "0"' 2>/dev/null || echo 0)
+                    LAST_ALERT_TIME=$(echo "$CONFIG_MAP" | jq -r '.data.lastAlertTime // "0"' 2>/dev/null || echo 0)
+                  fi
+
+                  # Convert to integers, defaulting to 0 if empty/invalid
+                  LAST_LOG_CHECK=${LAST_LOG_CHECK%.*}
+                  LAST_ALERT_TIME=${LAST_ALERT_TIME%.*}
+                  [ -z "$LAST_LOG_CHECK" ] && LAST_LOG_CHECK=0
+                  [ -z "$LAST_ALERT_TIME" ] && LAST_ALERT_TIME=0
+
+                  # Find reviewer pods
+                  PODS=$(kubectl get pods -n "$NAMESPACE" -l app.kubernetes.io/component=reviewer -o jsonpath='{.items[*].metadata.name}' 2>/dev/null || echo "")
+
+                  if [ -z "$PODS" ]; then
+                    echo "No reviewer pods found"
+                    exit 0
+                  fi
+
+                  REVOCATION_FOUND=false
+
+                  # Check each reviewer pod's logs for the revocation error or 401
+                  for POD in $PODS; do
+                    # Calculate how many seconds ago the last log check was
+                    # Use tail-time flag to get logs since then
+                    if [ "$LAST_LOG_CHECK" -gt 0 ]; then
+                      SINCE_SECONDS=$((NOW - LAST_LOG_CHECK))
+                      # Kubernetes log timestamps are in RFC3339 format with nanoseconds
+                      # We need to search logs from the past hour at minimum to catch issues
+                      SEARCH_SECONDS=$((SINCE_SECONDS + 3600))
+                    else
+                      SEARCH_SECONDS=3600
+                    fi
+
+                    echo "Checking pod $POD for codex auth errors (last $SEARCH_SECONDS seconds)..."
+
+                    # Get logs from the pod
+                    POD_LOGS=$(kubectl logs "$POD" -n "$NAMESPACE" --tail=1000 2>/dev/null || true)
+
+                    # Search for revocation error or 401 from chatgpt
+                    if echo "$POD_LOGS" | grep -q "Your access token could not be refreshed because your refresh token was already used"; then
+                      echo "Found refresh token revocation error in $POD"
+                      REVOCATION_FOUND=true
+                      break
+                    fi
+
+                    if echo "$POD_LOGS" | grep -q "401.*chatgpt.com\|chatgpt.com.*401"; then
+                      echo "Found 401 error from chatgpt in $POD"
+                      REVOCATION_FOUND=true
+                      break
+                    fi
+
+                    if echo "$POD_LOGS" | grep -q "401.*wss://chatgpt"; then
+                      echo "Found 401 WebSocket error from chatgpt in $POD"
+                      REVOCATION_FOUND=true
+                      break
+                    fi
+                  done
+
+                  # Check if we should send an alert (only if >6h since last alert)
+                  SHOULD_ALERT=false
+                  if [ "$REVOCATION_FOUND" = "true" ]; then
+                    TIME_SINCE_ALERT=$((NOW - LAST_ALERT_TIME))
+                    ALERT_COOLDOWN=$((6 * 3600)) # 6 hours in seconds
+
+                    if [ "$TIME_SINCE_ALERT" -ge "$ALERT_COOLDOWN" ]; then
+                      SHOULD_ALERT=true
+                    else
+                      echo "Error detected but alert cooldown active ($(( ALERT_COOLDOWN - TIME_SINCE_ALERT )) seconds remaining)"
+                    fi
+                  fi
+
+                  # Send alert if needed
+                  if [ "$SHOULD_ALERT" = "true" ]; then
+                    echo "Sending ntfy alert for codex auth revocation..."
+
+                    NOTIFICATION=$(cat <<'EOF'
+                  {
+                    "event": "agentask-codex-auth-revoked",
+                    "title": "Codex auth token revoked - gpt-5.5 review queue stalled",
+                    "body": "A reviewer pod logged token revocation errors. This will cause the gpt-5.5 review queue to stall.\n\nRunbook:\n1. Run: codex login (interactive browser flow on your local machine)\n2. Run: make codex-auth\n\nThis will re-seed the cluster secret from your local ~/.codex/auth.json and restart the reviewer pods.",
+                    "priority": 1,
+                    "tags": ["warning", "codex"],
+                    "dedup_key": "agentask-codex-auth-revoked"
+                  }
+                  EOF
+                    )
+
+                    RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+                      -H "Authorization: Bearer $NOTIFY_TOKEN" \
+                      -H "Content-Type: application/json" \
+                      -d "$NOTIFICATION" \
+                      "$NOTIFY_URL/notify" 2>&1 || true)
+
+                    HTTP_CODE=$(echo "$RESPONSE" | tail -1)
+                    RESPONSE_BODY=$(echo "$RESPONSE" | sed '$d')
+
+                    if echo "$HTTP_CODE" | grep -qE "^2[0-9][0-9]$"; then
+                      echo "Alert sent successfully (HTTP $HTTP_CODE)"
+                      LAST_ALERT_TIME=$NOW
+                    else
+                      echo "Failed to send alert (HTTP $HTTP_CODE): $RESPONSE_BODY"
+                    fi
+                  fi
+
+                  # Update the ConfigMap with new timestamps
+                  kubectl patch configmap "$CONFIG_MAP_NAME" -n "$NAMESPACE" \
+                    -p "{\"data\":{\"lastLogCheckTime\":\"$NOW\",\"lastAlertTime\":\"$LAST_ALERT_TIME\"}}" \
+                    --type merge 2>/dev/null || \
+                  kubectl create configmap "$CONFIG_MAP_NAME" -n "$NAMESPACE" \
+                    --from-literal=lastLogCheckTime="$NOW" \
+                    --from-literal=lastAlertTime="$LAST_ALERT_TIME" 2>/dev/null
+
+                  echo "Monitor run completed"
+              env:
+                - name: NOTIFY_TOKEN
+                  valueFrom:
+                    secretKeyRef:
+                      name: notify-token
+                      key: NOTIFY_TOKEN
+                      optional: true
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop: ["ALL"]
+                readOnlyRootFilesystem: true
+              resources:
+                requests:
+                  cpu: "50m"
+                  memory: "64Mi"
+                limits:
+                  cpu: "100m"
+                  memory: "128Mi"
