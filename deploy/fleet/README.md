@@ -118,6 +118,28 @@ Running exactly one codex-capable reviewer reduces the churn (one rotation linea
 the cost of `gpt-5.5` review throughput. `auth_mode: apikey` avoids rotation entirely but moves you
 from subscription to API billing.
 
+### 2c. Codex auth monitoring (optional but recommended for gpt-5.5)
+
+The `codex-auth-monitor` CronJob runs hourly to detect when the codex token has decayed and sends an
+ntfy alert before your reviewers start failing silently. It scans reviewer logs for the revocation
+error message and sends one alert per 6-hour window, with instructions to run the repair (section 2b).
+
+**Requires the `notify-token` secret:** Create it with your ntfy bearer token:
+
+```sh
+# Get your ntfy token (usually a chat/messaging auth token for the notifier)
+NOTIFY_TOKEN="<your-notifier-bearer-token>"
+kubectl --context admin@summercamp-cp -n agentask-fleet \
+  create secret generic notify-token --from-literal=NOTIFY_TOKEN="$NOTIFY_TOKEN"
+```
+
+Then deploy the monitor:
+
+```sh
+kubectl --context admin@summercamp-cp apply -f deploy/fleet/codex-auth-monitor-rbac.yaml
+kubectl --context admin@summercamp-cp apply -f deploy/fleet/codex-auth-monitor-cronjob.yaml
+```
+
 ### 3. Deploy
 
 ```sh

@@ -30,7 +30,7 @@ spec:
               type: RuntimeDefault
           containers:
             - name: monitor
-              image: bitnami/kubectl:latest
+              image: bitnami/kubectl:1.32
               command:
                 - /bin/bash
                 - -c
@@ -39,7 +39,6 @@ spec:
 
                   NAMESPACE="agentask-fleet"
                   CONFIG_MAP_NAME="codex-auth-monitor-state"
-                  NOTIFY_URL="${NOTIFY_URL:-https://notifier.summercamp.eastharbor.casa}"
 
                   # Get the current time in seconds since epoch
                   NOW=$(date +%s)
@@ -177,7 +176,8 @@ spec:
                     secretKeyRef:
                       name: notify-token
                       key: NOTIFY_TOKEN
-                      optional: true
+                - name: NOTIFY_URL
+                  value: "https://notifier.summercamp.eastharbor.casa"
               securityContext:
                 allowPrivilegeEscalation: false
                 capabilities:
