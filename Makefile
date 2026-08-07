@@ -98,9 +98,13 @@ fleet-deploy: fleet-image
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/reviewer --timeout=300s
 
 # Preview what `make fleet-deploy` would change on the cluster without applying it.
+# `kubectl diff` exits non-zero when it finds differences, so run both diffs even if the
+# first one "fails" and propagate the worst exit status instead of stopping after worker.
 diff-fleet:
-	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) diff -f deploy/fleet/worker-deployment.yaml
-	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) diff -f deploy/fleet/reviewer-deployment.yaml
+	@rc=0; \
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) diff -f deploy/fleet/worker-deployment.yaml || rc=$$?; \
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) diff -f deploy/fleet/reviewer-deployment.yaml || rc=$$?; \
+	exit $$rc
 
 # Build + push the multi-arch merger image, then roll the lab-cluster merger onto it
 # (digest-pinned, same mechanism as fleet-deploy). Re-roll without rebuild:
