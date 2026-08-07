@@ -87,8 +87,8 @@ fleet-image:
 
 # Build + push the fleet image, then apply the cp-cluster worker + reviewer manifests, which
 # pin the image tag to deploy. The manifests fully determine what runs, so this is a plain
-# `kubectl apply` — do NOT use `kubectl set image` (it writes only to the cluster and the next
-# apply silently reverts it). Bump the pinned tag in the manifests before running this. Preview
+# `kubectl apply` — see deploy/fleet/README.md for why the imperative image-patch escape hatch
+# must not be used here. Bump the pinned tag in the manifests before running this. Preview
 # the effect first with `make diff-fleet`. Assumes the deployments already exist (first-time
 # setup — namespace, secrets, apply — is in deploy/fleet/README.md).
 fleet-deploy: fleet-image
