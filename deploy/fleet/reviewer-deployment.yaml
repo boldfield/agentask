@@ -31,7 +31,8 @@ spec:
         # codex needs a WRITABLE ~/.codex (sessions + token refresh). Seed the writable
         # codex-home emptyDir from the read-only codex-auth secret (mounted side-path here).
         - name: codex-auth-setup
-          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:latest
+          # Version tag is bumped by hand on release; make fleet-image must have pushed this tag first.
+          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-8-g4beac47
           command: ["sh", "-c", "cp /etc/codex-auth/auth.json /home/agent/.codex/auth.json && chmod 600 /home/agent/.codex/auth.json"]
           volumeMounts:
             - { name: codex-home, mountPath: /home/agent/.codex }
@@ -41,7 +42,8 @@ spec:
             capabilities: { drop: ["ALL"] }
       containers:
         - name: reviewer
-          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:latest
+          # Version tag is bumped by hand on release; make fleet-image must have pushed this tag first.
+          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-8-g4beac47
           args: ["--kind", "review"]
           env:
             - name: AGENTASK_URL

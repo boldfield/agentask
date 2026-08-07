@@ -28,7 +28,8 @@ spec:
           type: RuntimeDefault
       containers:
         - name: worker
-          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:latest
+          # Version tag is bumped by hand on release; make fleet-image must have pushed this tag first.
+          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-8-g4beac47
           args: ["--kind", "implement"]
           env:
             - name: AGENTASK_URL
