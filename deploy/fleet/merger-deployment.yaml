@@ -38,7 +38,8 @@ spec:
                   - { key: kubernetes.io/arch, operator: In, values: ["arm64"] }
       containers:
         - name: merger
-          image: docker.summercamp.eastharbor.casa:32050/agentask/merger:latest
+          # Version tag is bumped by hand on release; make merger-image must have pushed this tag first.
+          image: docker.summercamp.eastharbor.casa:32050/agentask/merger:v0.15.0-8-g4beac47
           args: ["--kind", "merge"]
           env:
             # All fleet pods reach the server via its PUBLIC ingress, so placement is decoupled from
