@@ -7,7 +7,7 @@ depends_on: [T14]
 ---
 
 ## Spec
-Manifests under `deploy/k8s/`:
+Manifests, originally under `deploy/k8s/` in this repo (since migrated to the `manifests` repo — see Result note below):
 
 - `PersistentVolumeClaim` using the `local-path` StorageClass, `ReadWriteOnce`.
 - `Deployment` with **`replicas: 1`** (mandatory — SQLite single-writer + node-local PV;
@@ -26,3 +26,7 @@ Manifests under `deploy/k8s/`:
 **PR**: https://github.com/boldfield/agentask/pull/17
 **Branch**: agentask/T15-k8s-manifests
 **Head SHA**: 4973f3b86b8225d9922f9685d89e6708e37c6d4d
+
+**Note (2026-08-07)**: these manifests were subsequently moved to the separate `manifests` repo
+(github.com/boldfield/manifests) under `cp/agentask/`, per that repo's rule that manifests own
+what runs, app repos only build and push images. See the top-level README's Deployment section.
