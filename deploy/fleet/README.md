@@ -134,3 +134,21 @@ kubectl --context admin@summercamp-cp apply -f deploy/fleet/reviewer-deployment.
 4 workers + 4 reviewers, matching the laptop fleet. They poll the public server, claim
 `implement` / `review` tasks across all boards, clone+build in an ephemeral `emptyDir` HOME, and
 open/PR-review as usual. `replicas` is the only knob to match local concurrency.
+
+### Releasing a new fleet image
+
+`worker-deployment.yaml` and `reviewer-deployment.yaml` pin an exact image tag — the manifests
+fully determine what runs in the cluster. To roll out a new build:
+
+```sh
+# 1. Bump the pinned tag in deploy/fleet/worker-deployment.yaml and
+#    deploy/fleet/reviewer-deployment.yaml (all `image:` lines) to the new VERSION, then:
+make fleet-image                       # build + push the new tag to the registry
+make diff-fleet                        # preview what the apply would change on the cluster
+make fleet-deploy                      # apply the manifests and wait for the rollout
+```
+
+**Never use `kubectl set image` to roll the fleet.** It patches the live Deployment directly, but
+the manifest in the repo is unchanged — the next `make fleet-deploy` (or anyone else applying the
+manifest) silently reverts the cluster back to the old tag. The pinned tag in the manifest is the
+single source of truth for what's running; always change it there.

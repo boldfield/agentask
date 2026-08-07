@@ -1,4 +1,4 @@
-.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image fleet-deploy merger-deploy versions codex-auth codex-auth-check
+.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image fleet-deploy diff-fleet merger-deploy versions codex-auth codex-auth-check
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 
@@ -85,34 +85,26 @@ fleet-image:
 	  -f deploy/fleet/Dockerfile.fleet --push .
 	@echo "Pushed $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG) and :$(VERSION) (linux/amd64)"
 
-# Build + push the fleet image, then roll the cp-cluster worker + reviewer onto it. Like
-# `make deploy`, this pins the resolved image DIGEST (not the reused :latest tag) into the
-# pod spec — that spec change is what forces a rollout and a fresh pull. Assumes the
-# deployments already exist (first-time setup — namespace, secrets, apply — is in
-# deploy/fleet/README.md). To re-roll WITHOUT rebuilding, instead run:
-#   kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout restart deploy/worker deploy/reviewer
+# Build + push the fleet image, then apply the cp-cluster worker + reviewer manifests, which
+# pin the image tag to deploy. The manifests fully determine what runs, so this is a plain
+# `kubectl apply` — see deploy/fleet/README.md for why the imperative image-patch escape hatch
+# must not be used here. Bump the pinned tag in the manifests before running this. Preview
+# the effect first with `make diff-fleet`. Assumes the deployments already exist (first-time
+# setup — namespace, secrets, apply — is in deploy/fleet/README.md).
 fleet-deploy: fleet-image
-	@echo "Resolving digest for $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG)..."
-	@STDERR_FILE=$$(mktemp); \
-	DIGEST=""; \
-	for attempt in 1 2 3 4 5; do \
-	  DIGEST=$$(docker buildx imagetools inspect --builder $(FLEET_BUILDER) "$(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG)" 2>"$$STDERR_FILE" | awk '/^Digest:/{print $$2; exit}'); \
-	  if echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then break; fi; \
-	  if [ $$attempt -lt 5 ]; then sleep 2; fi; \
-	done; \
-	if ! echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then \
-	  STDERR_TEXT=$$(cat "$$STDERR_FILE" 2>/dev/null || echo "(no stderr captured)"); \
-	  rm -f "$$STDERR_FILE"; \
-	  echo "ERROR: could not resolve fleet image digest (got '$$DIGEST'). Last error: $$STDERR_TEXT"; \
-	  exit 1; \
-	fi; \
-	rm -f "$$STDERR_FILE"; \
-	REF="$(FLEET_REGISTRY)/agentask/fleet@$$DIGEST"; \
-	echo "Deploying $$REF to worker + reviewer ($(CP_CONTEXT))"; \
-	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/worker   worker="$$REF"; \
-	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/reviewer reviewer="$$REF" codex-auth-setup="$$REF"; \
-	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/worker   --timeout=300s; \
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) apply -f deploy/fleet/worker-deployment.yaml
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) apply -f deploy/fleet/reviewer-deployment.yaml
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/worker   --timeout=300s
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/reviewer --timeout=300s
+
+# Preview what `make fleet-deploy` would change on the cluster without applying it.
+# `kubectl diff` exits non-zero when it finds differences, so run both diffs even if the
+# first one "fails" and propagate the worst exit status instead of stopping after worker.
+diff-fleet:
+	@rc=0; \
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) diff -f deploy/fleet/worker-deployment.yaml || rc=$$?; \
+	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) diff -f deploy/fleet/reviewer-deployment.yaml || rc=$$?; \
+	exit $$rc
 
 # Build + push the multi-arch merger image, then roll the lab-cluster merger onto it
 # (digest-pinned, same mechanism as fleet-deploy). Re-roll without rebuild:
