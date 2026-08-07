@@ -57,6 +57,11 @@ COPY harness/ /harness/
 COPY deploy/fleet/fleet-entrypoint.sh /usr/local/bin/fleet-entrypoint.sh
 RUN chmod +x /usr/local/bin/fleet-entrypoint.sh /harness/agent.sh
 
+# Symlink Go binaries to /usr/local/bin so Codex reviewer can find them.
+# Codex rebuilds PATH and doesn't inherit Docker ENV additions, so Go must be in /usr/local/bin.
+RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
+    ln -sf /usr/local/go/bin/gofmt /usr/local/bin/gofmt
+
 # Non-root agent at uid 1000 (numeric USER so k8s runAsNonRoot can verify it).
 RUN useradd -m -u 1000 -o -g 1000 agent
 USER 1000

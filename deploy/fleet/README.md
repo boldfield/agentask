@@ -63,6 +63,11 @@ Go/Rust/Python/C toolchains + git/gh + the harness + agentask CLI). **amd64-only
 arm64 (Pi) build comes later with the cross-arch build/test dimension. The merger stays multi-arch
 and keeps running on the Pis.
 
+**Note on Go symlinks:** The Dockerfile creates symlinks from `/usr/local/go/bin/{go,gofmt}` to
+`/usr/local/bin/` because the Codex-based gpt-5.5 reviewer rebuilds its shell's PATH and does not
+inherit Docker `ENV` additions. Go binaries must be in `/usr/local/bin` or Go reviews fail spuriously.
+The existing `PATH` env var in the Dockerfile still helps all other environments.
+
 ### 1. Build + push the fleet image
 
 ```sh
