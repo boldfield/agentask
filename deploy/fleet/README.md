@@ -68,6 +68,11 @@ and keeps running on the Pis.
 inherit Docker `ENV` additions. Go binaries must be in `/usr/local/bin` or Go reviews fail spuriously.
 The existing `PATH` env var in the Dockerfile still helps all other environments.
 
+**Note on PyYAML:** The Dockerfile installs `python3-yaml` because the manifests repo and other
+projects validate Kubernetes manifests through a capability ladder: `kubectl kustomize` if kubectl
+is present, else a python3 `yaml.safe_load_all` parse. Without PyYAML, validation silently skips
+and broken manifests would pass review. Installing the system package ensures the fallback validation works.
+
 ### 1. Build + push the fleet image
 
 ```sh
