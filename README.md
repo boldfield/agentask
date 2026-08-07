@@ -265,6 +265,20 @@ make test      # Run tests
 make check     # Run gofmt, go vet, and go mod tidy checks
 ```
 
+### Deployment
+
+This repository's job ends at **building and pushing images**. It does not own how the server runs.
+
+The agentask server's Kubernetes manifests (Deployment, Service, PVC, kustomization) live in the
+separate [`manifests`](https://github.com/boldfield/manifests) repo under `cp/agentask/`, applied
+from there with `make apply-agentask`. That repo is the single source of truth for what runs on the
+cluster; duplicating the manifests here would recreate exactly the drift this split removes.
+
+Note that `deploy/fleet/` **intentionally remains in this repo**: it holds build inputs
+(`Dockerfile.fleet`, `Dockerfile.merger`, `fleet-entrypoint.sh`) alongside the fleet
+worker/reviewer manifests, so it is coupled to this repo's image builds rather than to the server's
+deployment.
+
 ## The Worker & Reviewer Harness
 
 See [`harness/README.md`](./harness/README.md) for a deep dive.

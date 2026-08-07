@@ -7,7 +7,8 @@ depends_on: [T14]
 ---
 
 ## Spec
-Manifests under `deploy/k8s/`:
+Manifests (originally added to this repo; since relocated to the `manifests` repo under
+`cp/agentask/` — see the top-level README's Deployment section):
 
 - `PersistentVolumeClaim` using the `local-path` StorageClass, `ReadWriteOnce`.
 - `Deployment` with **`replicas: 1`** (mandatory — SQLite single-writer + node-local PV;
