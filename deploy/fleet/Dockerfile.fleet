@@ -27,7 +27,7 @@ FROM node:20-slim
 RUN apt-get update && apt-get install -y --no-install-recommends \
       git curl ca-certificates jq build-essential pkg-config cmake clang lld \
       libgc-dev \
-      python3 python3-pip python3-venv \
+      python3 python3-pip python3-venv python3-yaml \
  && rm -rf /var/lib/apt/lists/*
 
 # gh CLI (for clone/push + PR ops in pull_request mode). Installed from the release tarball rather
