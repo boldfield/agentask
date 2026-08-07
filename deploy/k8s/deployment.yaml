@@ -70,9 +70,10 @@ spec:
         # gpt-5.5 from escalation. list order = tiers; fable is the top tier (last resort).
         - name: AGENTASK_ESCALATION_LADDER
           value: "haiku,sonnet,opus,fable"
-        # Per-tier value = consecutive reject rounds before escalating to the next ladder model.
+        # Per-tier reject-round threshold before escalating to the next ladder model (haiku → sonnet → opus → fable).
+        # Exceeding the top tier (fable) blocks the task. Lowered from 6/4/2/1 to cap wasted rounds when rejected for unfixable reasons (e.g. repo-level gate failure).
         - name: AGENTASK_ESCALATION_THRESHOLDS
-          value: "haiku=6,sonnet=4,opus=2,fable=1"
+          value: "haiku=3,sonnet=2,opus=2,fable=1"
         # Notify loop -> notifier-proxy (internal/notify). No-op when NOTIFY_URL is unset.
         - name: NOTIFY_URL
           value: "https://notifier.summercamp.eastharbor.casa"
