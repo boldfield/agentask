@@ -229,6 +229,27 @@ make tui
 ./bin/agentask-tui
 ```
 
+### Deployment
+
+The agentask server's Kubernetes manifests (deployment, service, PVC, kustomization) have moved to
+the separate [`manifests`](https://github.com/boldfield/manifests) repository under `cp/agentask/`,
+per the [manifests repo's design](https://github.com/boldfield/manifests/blob/main/DESIGN.md) rule 1:
+**manifests own what runs; app repos only build and push images.**
+
+To deploy the server, clone the manifests repo and run:
+
+```bash
+cd manifests/cp/agentask/
+make apply-agentask
+```
+
+This repo's responsibility ends at building and pushing the server image via `make build` and `make
+release`. See [**How to Run It**](#how-to-run-it) for testing locally.
+
+**Note:** `deploy/fleet/` deliberately remains in this repo because it holds build inputs
+(Dockerfile.fleet, Dockerfile.merger, fleet-entrypoint.sh) that live alongside the fleet deployments.
+Only the server manifests have moved.
+
 ### Server
 
 Set environment variables:
