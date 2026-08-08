@@ -265,6 +265,14 @@ make test      # Run tests
 make check     # Run gofmt, go vet, and go mod tidy checks
 ```
 
+### Deployment
+
+The agentask server's Kubernetes manifests have been consolidated into a separate manifests repository for centralized configuration management. The manifests live in [`github.com/boldfield/manifests`](https://github.com/boldfield/manifests) under `cp/agentask/` (deployment.yaml, service.yaml, pvc.yaml, kustomization.yaml, etc.) and are applied from there.
+
+This repository's responsibility is now limited to **building and pushing the server image** — the actual Kubernetes deployment is owned by the manifests repo. Apply server updates with `make apply-agentask` from that repository.
+
+Note: `deploy/fleet/` remains in this repository because it contains build inputs (Dockerfile.fleet, Dockerfile.merger, fleet-entrypoint.sh) that must live alongside fleet deployment manifests — they are tightly coupled to the build pipeline and the fleet's lifecycle.
+
 ## The Worker & Reviewer Harness
 
 See [`harness/README.md`](./harness/README.md) for a deep dive.
