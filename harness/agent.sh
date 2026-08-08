@@ -167,7 +167,7 @@ get_prompt_file() {
 }
 
 ID_DIR="$AGENTASK_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
-REPOS_DIR="$AGENTASK_HOME/repos"     # per-repo clones (multi-mode); intentional unbounded cache — prune by hand if it grows
+REPOS_DIR="$AGENTASK_HOME/repos"     # per-repo clones (multi-mode); LRU-pruned by prune_repos_cache() to stay under $AGENTASK_HOME's emptyDir cap
 mkdir -p "$ID_DIR"
 [ -s "$ID_FILE" ] || echo "$SLOT-$(hostname -s)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' ')" > "$ID_FILE"
 export AGENT_ID="$(cat "$ID_FILE")"
@@ -230,12 +230,65 @@ ensure_clone() {
       || { echo "[$AGENT_ID] clone failed: $owner_repo" >&2; return 1; }
   fi
   git -C "$clone" fetch origin --quiet 2>/dev/null || true
+  # LRU key for prune_repos_cache() — a dedicated marker, NOT the clone dir's own mtime, which
+  # routine git operations (fetch, worktree add/prune) touch and would make the ordering meaningless.
+  touch "$clone/.agentask-last-used" 2>/dev/null || true
   # If a per-owner token is set, tokenize the remote so the worker's git push/fetch authenticate as
   # that owner (gh commands read GH_TOKEN from the env). No token -> leave the plain remote (default auth).
   if [ -n "${GH_TOKEN:-}" ]; then
     git -C "$clone" remote set-url origin "https://x-access-token:${GH_TOKEN}@github.com/$owner_repo.git" 2>/dev/null || true
   fi
   echo "$clone"
+}
+
+# Prune REPOS_DIR (the per-repo clone cache) so $AGENTASK_HOME stays under its emptyDir cap — the
+# cache is otherwise unbounded and multi-project reviewers (AGENTASK_PROJECT=all) accumulate a
+# clone of every repo they ever review, which is what filled the 20Gi emptyDir and got 37 pods
+# evicted with "Usage of EmptyDir volume home exceeds the limit" on 2026-08-07.
+#
+# Cheap in the common case: one `du -sk` and an immediate return when usage is under the high-water
+# mark. Only when over does it walk REPOS_DIR, oldest-.agentask-last-used-first, deleting clones
+# one at a time (re-measuring after each) until usage is back at/under the low-water mark. $1 is
+# the clone this dispatch is about to use — it is skipped so pruning can never corrupt a running
+# task's worktree. Never raises: any failure here is logged and the dispatch proceeds regardless.
+prune_repos_cache() {
+  local keep="$1" high_kib low_kib usage_kib
+  high_kib=$(( ${AGENTASK_REPOS_HIGH_GIB:-14} * 1024 * 1024 ))
+  low_kib=$(( ${AGENTASK_REPOS_LOW_GIB:-8} * 1024 * 1024 ))
+
+  usage_kib=$(du -sk "$AGENTASK_HOME" 2>/dev/null | cut -f1)
+  [ -n "${usage_kib:-}" ] || return 0
+  [ "$usage_kib" -le "$high_kib" ] && return 0
+  [ -d "$REPOS_DIR" ] || return 0
+
+  # Build "<lru-key>\t<dir>" rows, oldest first; a clone with no marker sorts oldest (key 0).
+  local d key marker rows
+  rows=""
+  for d in "$REPOS_DIR"/*/; do
+    d="${d%/}"
+    [ -d "$d" ] || continue
+    [ "$d" = "$keep" ] && continue
+    marker="$d/.agentask-last-used"
+    key=""
+    [ -e "$marker" ] && key=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null)
+    rows="$rows${key:-0}	$d
+"
+  done
+  [ -n "$rows" ] || return 0
+
+  local dir size_kib freed_mb
+  while IFS=$'\t' read -r _ dir; do
+    [ -n "$dir" ] || continue
+    usage_kib=$(du -sk "$AGENTASK_HOME" 2>/dev/null | cut -f1)
+    [ -n "${usage_kib:-}" ] || break
+    [ "$usage_kib" -le "$low_kib" ] && break
+    [ -d "$dir" ] || continue
+    size_kib=$(du -sk "$dir" 2>/dev/null | cut -f1)
+    freed_mb=$(( ${size_kib:-0} / 1024 ))
+    rm -rf "$dir" 2>/dev/null || { echo "[$AGENT_ID] prune failed: $(basename "$dir")" >&2; continue; }
+    echo "[$AGENT_ID] pruned clone: $(basename "$dir") (freed $freed_mb MB)"
+  done < <(printf '%s' "$rows" | sort -n)
+  return 0
 }
 
 # Ensure this slot's detached worktree for a given clone; echo the worktree dir.
@@ -422,6 +475,7 @@ while true; do
     # Re-check claimable (the listing can race another worker); skip if it emptied out.
     has_claimable_work "$pid" || continue
     apply_owner_token "$(norm_repo "$prepo" | cut -d/ -f1)"   # auth as the repo's owner (default auth if unmapped)
+    prune_repos_cache "$REPOS_DIR/$(repo_slug "$prepo")"
     clone="$(ensure_clone "$prepo")" || continue
     wt="$(ensure_worktree "$clone")" || continue
     export AGENTASK_PROJECT="$pid" AGENTASK_REPO="$wt"
