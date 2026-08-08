@@ -63,7 +63,7 @@ spec:
             capabilities: { drop: ["ALL"] }
       volumes:
         - name: home
-          emptyDir: { sizeLimit: 20Gi }
+          emptyDir: { sizeLimit: 30Gi }
         - name: forge-tokens
           secret:
             secretName: agentask-forge-tokens
