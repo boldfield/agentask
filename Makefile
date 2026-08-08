@@ -1,4 +1,4 @@
-.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image fleet-deploy diff-fleet merger-deploy versions codex-auth codex-auth-check
+.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image verify-fleet-tags fleet-deploy diff-fleet merger-deploy versions codex-auth codex-auth-check
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 
@@ -85,13 +85,50 @@ fleet-image:
 	  -f deploy/fleet/Dockerfile.fleet --push .
 	@echo "Pushed $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG) and :$(VERSION) (linux/amd64)"
 
-# Build + push the fleet image, then apply the cp-cluster worker + reviewer manifests, which
-# pin the image tag to deploy. The manifests fully determine what runs, so this is a plain
-# `kubectl apply` — see deploy/fleet/README.md for why the imperative image-patch escape hatch
-# must not be used here. Bump the pinned tag in the manifests before running this. Preview
-# the effect first with `make diff-fleet`. Assumes the deployments already exist (first-time
-# setup — namespace, secrets, apply — is in deploy/fleet/README.md).
-fleet-deploy: fleet-image
+# Fail fast if a tag pinned in the worker/reviewer manifests was never built and pushed. This
+# is what would have caught #273: it pins v0.15.0-8-g4beac47 before any VERSION-tagged image
+# had been built, so every pod went ImagePullBackOff and the failure only surfaced as a rollout
+# timeout minutes later. Parses the images actually pinned in the manifests (NOT $(VERSION) —
+# the point is to check what will be APPLIED, which may differ from what would be built) and
+# queries the registry's v2 API for each distinct one. reviewer-deployment.yaml has two image
+# lines (the codex-auth-setup init container and the reviewer container), so all three lines
+# across the two files are checked. The registry serves plain HTTP on port 32050 (HTTPS fails
+# there), so this deliberately uses http://. Uses only curl + POSIX sh (no jq): the tag list is
+# matched as the exact quoted JSON array element "$$tag".
+verify-fleet-tags:
+	@images=$$(grep -h 'image:' deploy/fleet/worker-deployment.yaml deploy/fleet/reviewer-deployment.yaml | sed 's/^[^:]*: *//' | sort -u); \
+	fail=0; \
+	for img in $$images; do \
+	  repo_tag="$${img#$(FLEET_REGISTRY)/}"; \
+	  repo="$${repo_tag%:*}"; \
+	  tag="$${repo_tag##*:}"; \
+	  url="http://$(FLEET_REGISTRY)/v2/$$repo/tags/list"; \
+	  resp=$$(curl -fsS "$$url" 2>/tmp/verify-fleet-tags.$$$$.err); \
+	  rc=$$?; \
+	  if [ $$rc -ne 0 ]; then \
+	    echo "ERROR: registry unreachable for $$img (curl exit $$rc, $$url): $$(cat /tmp/verify-fleet-tags.$$$$.err)"; \
+	    rm -f /tmp/verify-fleet-tags.$$$$.err; \
+	    fail=1; \
+	    continue; \
+	  fi; \
+	  rm -f /tmp/verify-fleet-tags.$$$$.err; \
+	  if printf '%s' "$$resp" | grep -qF "\"$$tag\""; then \
+	    echo "OK: $$img found in $(FLEET_REGISTRY)"; \
+	  else \
+	    echo "ERROR: tag '$$tag' not found for '$$repo' in $(FLEET_REGISTRY) -- build and push it first ('make fleet-image' or 'make merger-image'), or correct the pin in the manifest"; \
+	    fail=1; \
+	  fi; \
+	done; \
+	exit $$fail
+
+# Apply the cp-cluster worker + reviewer manifests, which pin the image tag to deploy. The
+# manifests fully determine what runs, so this is a plain `kubectl apply` — see
+# deploy/fleet/README.md for why the imperative image-patch escape hatch must not be used
+# here. Build and push the image FIRST (`make fleet-image`), THEN bump the pinned tag in the
+# manifests to match — never the other way around (see verify-fleet-tags). Preview the effect
+# with `make diff-fleet`. Assumes the deployments already exist (first-time setup — namespace,
+# secrets, apply — is in deploy/fleet/README.md).
+fleet-deploy: verify-fleet-tags
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) apply -f deploy/fleet/worker-deployment.yaml
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) apply -f deploy/fleet/reviewer-deployment.yaml
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/worker   --timeout=300s
