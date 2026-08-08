@@ -140,6 +140,28 @@ kubectl --context admin@summercamp-cp apply -f deploy/fleet/reviewer-deployment.
 `implement` / `review` tasks across all boards, clone+build in an ephemeral `emptyDir` HOME, and
 open/PR-review as usual. `replicas` is the only knob to match local concurrency.
 
+### Repo clone cache (multi-project mode)
+
+In multi-project mode (`AGENTASK_PROJECT=all`, the fleet default) each pod clones every repo it
+ever touches into `$AGENTASK_HOME/repos`. Reviewers accumulate the widest set — one clone per repo
+they've ever reviewed — because they poll across all boards. On 2026-08-07 that unbounded cache
+filled the 20Gi `emptyDir` HOME and got 37 pods evicted (23 reviewer / 14 worker) with `Usage of
+EmptyDir volume "home" exceeds the limit "20Gi"`, with no node under disk/memory/PID pressure — it
+was purely the per-pod cap.
+
+`harness/agent.sh` now prunes that cache itself, once per dispatch, before setting up the task's
+clone/worktree: it measures `$AGENTASK_HOME` usage and, once it crosses a high-water mark, deletes
+the least-recently-used clones (oldest `.agentask-last-used` marker first, never the clone the
+in-flight task needs) until usage is back at or under a low-water mark. Two env vars tune it:
+
+- `AGENTASK_REPOS_HIGH_GIB` (default `14`) — usage above this triggers a prune pass.
+- `AGENTASK_REPOS_LOW_GIB` (default `8`) — prune deletes clones until usage is at or below this.
+
+Defaults are sized for the current 20Gi emptyDir (being raised to 30Gi separately as breathing
+room, not as a substitute for this bound), leaving headroom for worktrees and tool caches, which
+also live under `$AGENTASK_HOME` but are not touched by this prune — only `$AGENTASK_HOME/repos`
+is in scope.
+
 ### Releasing a new fleet image
 
 `worker-deployment.yaml` and `reviewer-deployment.yaml` pin an exact image tag — the manifests
