@@ -29,7 +29,7 @@ spec:
       containers:
         - name: worker
           # Version tag is bumped by hand on release; make fleet-image must have pushed this tag first.
-          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-8-g4beac47
+          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-12-gd149d9b
           args: ["--kind", "implement"]
           env:
             - name: AGENTASK_URL
