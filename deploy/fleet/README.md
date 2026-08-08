@@ -143,17 +143,36 @@ open/PR-review as usual. `replicas` is the only knob to match local concurrency.
 ### Releasing a new fleet image
 
 `worker-deployment.yaml` and `reviewer-deployment.yaml` pin an exact image tag — the manifests
-fully determine what runs in the cluster. To roll out a new build:
+fully determine what runs in the cluster. **Ordering rule: build and push the image FIRST, then
+pin the tag.** Pinning a tag that was never built is exactly what took the fleet down once
+already — see the `verify-fleet-tags` note below. To roll out a new build:
 
 ```sh
-# 1. Bump the pinned tag in deploy/fleet/worker-deployment.yaml and
-#    deploy/fleet/reviewer-deployment.yaml (all `image:` lines) to the new VERSION, then:
-make fleet-image                       # build + push the new tag to the registry
-make diff-fleet                        # preview what the apply would change on the cluster
-make fleet-deploy                      # apply the manifests and wait for the rollout
+make fleet-image                       # 1. build + push the new tag to the registry
+# 2. Bump the pinned tag in deploy/fleet/worker-deployment.yaml and
+#    deploy/fleet/reviewer-deployment.yaml (all `image:` lines) to the tag just pushed.
+make diff-fleet                        # 3. preview what the apply would change on the cluster
+make fleet-deploy                      # 4. apply the manifests and wait for the rollout
 ```
 
 **Never use `kubectl set image` to roll the fleet.** It patches the live Deployment directly, but
 the manifest in the repo is unchanged — the next `make fleet-deploy` (or anyone else applying the
 manifest) silently reverts the cluster back to the old tag. The pinned tag in the manifest is the
 single source of truth for what's running; always change it there.
+
+### `verify-fleet-tags`: fail fast if a pinned tag was never pushed
+
+`fleet-deploy` depends on `verify-fleet-tags`, which runs before either `kubectl apply` and fails
+loudly if any image tag pinned in `worker-deployment.yaml` or `reviewer-deployment.yaml` (there
+are three `image:` lines across the two files — the `codex-auth-setup` init container and the
+reviewer container both pin the fleet image too) is missing from the registry. It parses the
+tags actually in the manifests — not `$(VERSION)` — since the whole point is to check what will
+be *applied*, which can differ from what would be freshly built, then queries
+`http://$(FLEET_REGISTRY)/v2/<repo>/tags/list` for each distinct image (plain HTTP — the internal
+registry has no TLS on port 32050).
+
+This is the guard that would have caught the incident that motivated it: a tag was pinned in the
+manifests before any image had ever been pushed under that tag, so applying it took down every
+worker and reviewer pod with `ImagePullBackOff`, and the failure only surfaced as a rollout
+timeout minutes later. Run it standalone with `make verify-fleet-tags` any time you want to sanity
+check the current pins without deploying.
