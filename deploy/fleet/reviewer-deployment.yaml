@@ -32,7 +32,7 @@ spec:
         # codex-home emptyDir from the read-only codex-auth secret (mounted side-path here).
         - name: codex-auth-setup
           # Version tag is bumped by hand on release; make fleet-image must have pushed this tag first.
-          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-8-g4beac47
+          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-12-gd149d9b
           command: ["sh", "-c", "cp /etc/codex-auth/auth.json /home/agent/.codex/auth.json && chmod 600 /home/agent/.codex/auth.json"]
           volumeMounts:
             - { name: codex-home, mountPath: /home/agent/.codex }
@@ -43,7 +43,7 @@ spec:
       containers:
         - name: reviewer
           # Version tag is bumped by hand on release; make fleet-image must have pushed this tag first.
-          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-8-g4beac47
+          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-12-gd149d9b
           args: ["--kind", "review"]
           env:
             - name: AGENTASK_URL
