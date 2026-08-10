@@ -201,11 +201,16 @@ fi
 # ============================== 3. start the server ==============================
 if [ "$REUSE_SERVER" -eq 0 ]; then
   say "starting agentask server on :$PORT (db: $DB_PATH)…"
+  # gpt-5.5 is allowlisted (review_models: ["opus","gpt-5.5"] validates) but deliberately left OUT
+  # of AGENTASK_ESCALATION_LADDER: it's a review-only model routed through codex exec (see
+  # AGENT_CODEX_MODELS below), not an implementer, so it must never become an escalation target for
+  # implement work. Thresholds/ladder mirror production (manifests repo) as of 2026-08-10.
   AGENTASK_DB="$DB_PATH" \
   AGENTASK_ADDR=":$PORT" \
   AGENTASK_TOKEN="$LOCAL_TOKEN" \
-  AGENTASK_MODELS="haiku,sonnet,opus,fable" \
-  AGENTASK_ESCALATION_THRESHOLDS="haiku=6,sonnet=4,opus=2,fable=1" \
+  AGENTASK_MODELS="haiku,sonnet,opus,fable,gpt-5.5" \
+  AGENTASK_ESCALATION_THRESHOLDS="haiku=3,sonnet=2,opus=2,fable=1" \
+  AGENTASK_ESCALATION_LADDER="haiku,sonnet,opus,fable" \
     agentask server >>"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
 
@@ -297,6 +302,10 @@ export AGENTASK_WORKTREE_HOME="$WORKTREE_HOME"
 export AGENTASK_DELIVERY_MODE="$DELIVERY_MODE"
 # Nested claude -p inside a sandbox needs this alongside --dangerously-skip-permissions:
 export AGENT_CLAUDE_FLAGS="--allow-dangerously-skip-permissions"
+# agent.sh routes any dispatch whose model is in this comma-separated list through codex exec
+# instead of claude -p — gpt-5.5 isn't a claude model, so without this its review dispatch would
+# fail as "claude -p --model gpt-5.5".
+export AGENT_CODEX_MODELS="gpt-5.5"
 EOF
 
 # Export for fleet.sh/agent.sh children of THIS process too (env file is the source of truth, but
@@ -306,6 +315,7 @@ export AGENTASK_REPO="$FLEET_REPO"
 export AGENTASK_PROJECT="$PROJECT_ID"
 export AGENTASK_DELIVERY_MODE="$DELIVERY_MODE"
 export AGENT_CLAUDE_FLAGS="--allow-dangerously-skip-permissions"
+export AGENT_CODEX_MODELS="gpt-5.5"
 
 # ============================== 7. graceful shutdown ==============================
 # Each fleet is launched as its OWN process-group leader (job control, set -m, in §8), so its pid ==
