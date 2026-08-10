@@ -64,22 +64,29 @@ Running it on the host gives `exec format error`; the identical file inside the 
 The script's own stated invariant is that everything it writes lives under `/tmp/agentask`; the
 mounted `bin/` was carved out as a deliberate exception, and that exception is the bug.
 
-### 2. The `claude` CLI is not installed or verified
+### 2. Neither agent CLI is installed — and the boot now hard-fails without them
 
-The bootstrap must install it, not inherit it. There is also no version or toolchain preflight: the
-build needs a Go new enough for `go.mod`, which today the image happens to satisfy and tomorrow may
-not.
+`sbx.sh` gained a presence preflight in #292: it dies if either `claude` or `codex` is missing from
+`PATH`, deliberately, so a missing CLI surfaces at boot instead of as `dispatch exited rc=127`
+buried in a worker log behind the engine's backoff. That is the right behaviour, and it raises the
+stakes here: **`codex` is not installed in the sandbox**, so `sbx.sh` now fails closed on a fresh
+sandbox until something installs it. The bootstrap must install both CLIs, not inherit them.
+
+There is also no toolchain preflight: the build needs a Go new enough for `go.mod`, which today the
+image happens to satisfy and tomorrow may not.
 
 ### 3. `claude` has no reproducible authentication path
 
 The cluster authenticates `claude` through a `CLAUDE_CODE_OAUTH_TOKEN` environment variable sourced
 from a secret (see the worker and reviewer deployments). The sandbox has **no equivalent** — its
 credentials file is opaque state written by sbx's interactive login, which this repo cannot create,
-refresh, or validate. `sbx.sh` never checks it either: no preflight for the binary, none for auth.
+refresh, or validate.
 
-So when those credentials expire, `sbx.sh` boots **green** — health check passes, fleet starts,
-agents claim tasks — and every dispatch fails silently inside `agent.sh`, discoverable only by
-reading worker logs. That is precisely the failure mode the boot script exists to prevent.
+#292 closed half of this: `sbx.sh` now checks that both CLIs are **present**. It does not check that
+they are **authenticated**, and presence is the weaker half. An installed-but-expired `claude` still
+boots **green** — health check passes, fleet starts, agents claim tasks — and every dispatch fails
+inside `agent.sh`, discoverable only by reading worker logs. Closing that remaining half is what
+this gap is now about.
 
 Note the resulting asymmetry this feature must remove: of the four provisioning concerns, three have
 a repo-side mechanism for the cluster and this feature adds two for the sandbox — but sandbox
@@ -188,9 +195,13 @@ Give `claude` the same explicit, repo-side, verifiable auth path this feature gi
   handles its other fleet variables.
 - Fall back to an existing valid credentials file when one is present, so a working sandbox keeps
   working and nobody is forced to mint a token for the common case.
-- **Add a boot preflight to `sbx.sh`**: before starting the fleet, confirm `claude` is present and
-  actually authenticated, and fail with an actionable message if not. This is the highest-value part
-  of this deliverable — it converts a silent, log-only dispatch failure into a loud boot failure.
+- **Extend `sbx.sh`'s existing preflight from presence to authentication.** #292 already added the
+  `command -v` checks for both CLIs — do not re-add them. What is missing is verifying that `claude`
+  is actually *authenticated*, failing with an actionable message when it is not. This is the
+  highest-value part of this deliverable: it converts a silent, log-only dispatch failure into a
+  loud boot failure. Prefer a check that does not consume meaningful quota on every boot; if a
+  trivial invocation is the only reliable signal, that is acceptable but should be justified in a
+  comment.
 - If sbx's login proves to be sandbox-scoped such that a token cannot be transplanted, then detect
   and report that clearly instead of seeding. A loud preflight is the requirement; seeding is the
   preferred implementation, not the goal.
