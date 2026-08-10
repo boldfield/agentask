@@ -1008,6 +1008,112 @@ func TestExecuteSubmitLocalCommitFirstSubmit(t *testing.T) {
 	}
 }
 
+// A review-kind task owns NO worktree — its payload is the --verdict. Submitting one must NOT take
+// the commit path: <worktree-home>/<review-task-id> does not exist, so `git add -A` there exits 128
+// and the reviewer can never record a verdict, wedging every implement task in `review`. Note the
+// worktree dir is deliberately never created here — that is the whole point of the regression.
+func TestExecuteSubmitLocalCommitReviewKindSkipsCommit(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("AGENTASK_WORKTREE_HOME", t.TempDir())
+	t.Setenv("AGENT_ID", "test-reviewer")
+
+	var gotLinks int
+	var gotVerdict string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/tasks/review-1" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "review-1",
+				Title: "Review: Test Task Title [opus]",
+				Kind:  "review",
+			})
+			return
+		}
+		if r.Method == "POST" && r.URL.Path == "/tasks/review-1/submit" {
+			var req struct {
+				Verdict *string             `json:"verdict"`
+				Links   []map[string]string `json:"links"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			gotLinks = len(req.Links)
+			if req.Verdict != nil {
+				gotVerdict = *req.Verdict
+			}
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "LGTM", "--verdict", "approve", "review-1",
+	})
+	if err != nil {
+		t.Fatalf("executeSubmit on a review-kind task failed: %v", err)
+	}
+	if gotVerdict != "approve" {
+		t.Errorf("expected verdict %q, got %q", "approve", gotVerdict)
+	}
+	if gotLinks != 0 {
+		t.Errorf("expected no links on a review-kind submit, got %d", gotLinks)
+	}
+}
+
+// The documented no-op path (implement prompt, step 6) asserts acceptance is already satisfied on
+// the base with an unchanged tree. CommitAll errors on an empty commit, so local_commit mode must
+// bypass the commit and attach a no_op link, exactly as pull_request mode does.
+func TestExecuteSubmitLocalCommitNoOp(t *testing.T) {
+	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	tmpDir := t.TempDir()
+	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+	t.Setenv("AGENT_ID", "test-agent")
+
+	// A real worktree with a CLEAN tree — there is genuinely nothing to commit.
+	wtPath := filepath.Join(tmpDir, "task-noop")
+	if err := os.MkdirAll(wtPath, 0755); err != nil {
+		t.Fatalf("failed to create worktree dir: %v", err)
+	}
+	initGitRepo(t, wtPath)
+
+	var gotLinks []map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == "GET" && r.URL.Path == "/tasks/task-noop" {
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(tuiclient.TaskDetail{
+				ID:    "task-noop",
+				Title: "Already satisfied",
+				Kind:  "implement",
+			})
+			return
+		}
+		if r.Method == "POST" && r.URL.Path == "/tasks/task-noop/submit" {
+			var req struct {
+				Links []map[string]string `json:"links"`
+			}
+			if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+				w.WriteHeader(http.StatusBadRequest)
+				return
+			}
+			gotLinks = req.Links
+			w.WriteHeader(http.StatusOK)
+		}
+	}))
+	defer server.Close()
+
+	err := executeSubmit(context.Background(), server.URL, "test-token", []string{
+		"--result", "acceptance already satisfied on base; no changes needed",
+		"--no-op", "task-noop",
+	})
+	if err != nil {
+		t.Fatalf("executeSubmit --no-op in local_commit mode failed: %v", err)
+	}
+	if len(gotLinks) != 1 || gotLinks[0]["kind"] != "no_op" {
+		t.Errorf("expected a single no_op link, got %v", gotLinks)
+	}
+}
+
 func TestExecuteSubmitLocalCommitRework(t *testing.T) {
 	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
@@ -2505,7 +2611,7 @@ func TestExecuteDiffLocalCommitBaseDiff(t *testing.T) {
 	}
 
 	// Initialize repo with main branch
-	runCmd(tmpDir, "git", "init")
+	runCmd(tmpDir, "git", "init", "-b", "main")
 	runCmd(tmpDir, "git", "config", "user.email", "test@example.com")
 	runCmd(tmpDir, "git", "config", "user.name", "Test User")
 
@@ -2578,7 +2684,7 @@ func TestExecuteDiffLocalCommitFull(t *testing.T) {
 	}
 
 	// Initialize repo with main branch
-	runCmd(tmpDir, "git", "init")
+	runCmd(tmpDir, "git", "init", "-b", "main")
 	runCmd(tmpDir, "git", "config", "user.email", "test@example.com")
 	runCmd(tmpDir, "git", "config", "user.name", "Test User")
 
@@ -2916,7 +3022,7 @@ func TestExecuteRejectAbandonLocalCommit(t *testing.T) {
 	// Create a temporary git repo with worktree and branches
 	repoDir := t.TempDir()
 	cmds := [][]string{
-		{"git", "init"},
+		{"git", "init", "-b", "main"},
 		{"git", "config", "user.email", "test@example.com"},
 		{"git", "config", "user.name", "Test User"},
 		{"git", "commit", "--allow-empty", "-m", "initial"},
@@ -3063,7 +3169,7 @@ func TestExecuteRejectReworkPreservesWorktree(t *testing.T) {
 	// Create a temporary git repo with worktree and branches
 	repoDir := t.TempDir()
 	cmds := [][]string{
-		{"git", "init"},
+		{"git", "init", "-b", "main"},
 		{"git", "config", "user.email", "test@example.com"},
 		{"git", "config", "user.name", "Test User"},
 		{"git", "commit", "--allow-empty", "-m", "initial"},
@@ -3418,7 +3524,7 @@ func setupRepoForWtEnsure(t *testing.T) string {
 	tmpDir := t.TempDir()
 
 	cmds := [][]string{
-		{"git", "init"},
+		{"git", "init", "-b", "main"},
 		{"git", "config", "user.email", "test@example.com"},
 		{"git", "config", "user.name", "Test User"},
 		{"git", "commit", "--allow-empty", "-m", "initial"},
@@ -3587,7 +3693,7 @@ func TestExecuteWtEnsureMissingToken(t *testing.T) {
 
 func initGitRepo(t *testing.T, repoPath string) {
 	cmds := [][]string{
-		{"git", "init"},
+		{"git", "init", "-b", "main"},
 		{"git", "config", "user.email", "test@example.com"},
 		{"git", "config", "user.name", "Test User"},
 		{"git", "commit", "--allow-empty", "-m", "initial"},

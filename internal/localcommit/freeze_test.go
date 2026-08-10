@@ -42,7 +42,7 @@ func TestFreeze_FirstFreeze(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
-	runCmd(t, repoDir, "git", "init")
+	runCmd(t, repoDir, "git", "init", "-b", "main")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
 	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
 
@@ -105,7 +105,7 @@ func TestFreeze_WipNotOnCheckedOutBranch(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
-	runCmd(t, repoDir, "git", "init")
+	runCmd(t, repoDir, "git", "init", "-b", "main")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
 	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
 
@@ -149,7 +149,7 @@ func TestFreeze_FFAdvance(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
-	runCmd(t, repoDir, "git", "init")
+	runCmd(t, repoDir, "git", "init", "-b", "main")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
 	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
 
@@ -207,7 +207,7 @@ func TestFreeze_Footgun(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
-	runCmd(t, mainDir, "git", "init")
+	runCmd(t, mainDir, "git", "init", "-b", "main")
 	runCmd(t, mainDir, "git", "config", "user.email", "test@example.com")
 	runCmd(t, mainDir, "git", "config", "user.name", "Test User")
 
@@ -273,7 +273,7 @@ func TestFreeze_AlreadyRemovedWorktree(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
-	runCmd(t, repoDir, "git", "init")
+	runCmd(t, repoDir, "git", "init", "-b", "main")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
 	runCmd(t, repoDir, "git", "config", "user.name", "Test User")
 
@@ -324,7 +324,7 @@ func TestFreeze_PrefixCollision(t *testing.T) {
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
 	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
 
-	runCmd(t, mainDir, "git", "init")
+	runCmd(t, mainDir, "git", "init", "-b", "main")
 	runCmd(t, mainDir, "git", "config", "user.email", "test@example.com")
 	runCmd(t, mainDir, "git", "config", "user.name", "Test User")
 

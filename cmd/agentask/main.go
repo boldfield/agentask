@@ -733,48 +733,72 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 			return fmt.Errorf("failed to get task: %w", err)
 		}
 
-		message := *messageFlag
-		if message == "" {
-			message = task.Title
-		}
+		switch {
+		case task.Kind == "review" || task.Kind == "merge":
+			// review/merge-kind tasks own NO worktree, so there is nothing to commit — a review
+			// task's payload IS its --verdict. `wt-ensure` is never run for one, so
+			// <worktree-home>/<id> does not exist and the commit path below died on
+			// `git -C <missing> add -A` (exit 128), which made submitting ANY reviewer verdict
+			// impossible in local_commit mode and wedged every task in `review`. Attach no links
+			// and fall through to the verdict.
+			//
+			// Deliberately an allowlist of worktree-LESS kinds rather than `!= "implement"`: an
+			// unset/unknown kind must fall through to the commit path and fail loudly if there is
+			// no worktree, never silently skip the commit and discard the worker's edits.
 
-		wtHome, err := localcommit.WorktreeHome()
-		if err != nil {
-			return fmt.Errorf("failed to get worktree home: %w", err)
-		}
-
-		wtPath := filepath.Join(wtHome, taskID)
-
-		// Resolve tip for rework detection: use MR branch if it exists, else origin/main
-		slug := localcommit.Slugify(task.Title)
-		tip, err := localcommit.ResolveTip(wtPath, slug)
-		if err != nil {
-			return fmt.Errorf("failed to resolve tip: %w", err)
-		}
-
-		isRework := false
-		cmd := exec.Command("git", "-C", wtPath, "rev-list", "--count", tip+"..HEAD")
-		var stdout bytes.Buffer
-		cmd.Stdout = &stdout
-		if err := cmd.Run(); err == nil {
-			commitCount := strings.TrimSpace(stdout.String())
-			if commitCount != "0" && commitCount != "" {
-				isRework = true
+		case *noOpFlag:
+			// A no-op submit asserts the acceptance criteria are already met on the base with an
+			// unchanged tree. CommitAll errors on an empty commit, so the documented no-op path
+			// (implement prompt, step 6) has to bypass the commit entirely — same as pull_request
+			// mode. The reviewer verifies the claim against the base.
+			links = []tuiclient.LinkInput{
+				{Kind: "no_op", Value: "already-satisfied"},
 			}
-		}
 
-		var sha string
-		if isRework {
-			sha, err = localcommit.AmendAll(wtPath, message)
-		} else {
-			sha, err = localcommit.CommitAll(wtPath, message)
-		}
-		if err != nil {
-			return fmt.Errorf("failed to commit: %w", err)
-		}
+		default:
+			message := *messageFlag
+			if message == "" {
+				message = task.Title
+			}
 
-		links = []tuiclient.LinkInput{
-			{Kind: "commit", Value: sha},
+			wtHome, err := localcommit.WorktreeHome()
+			if err != nil {
+				return fmt.Errorf("failed to get worktree home: %w", err)
+			}
+
+			wtPath := filepath.Join(wtHome, taskID)
+
+			// Resolve tip for rework detection: use MR branch if it exists, else origin/main
+			slug := localcommit.Slugify(task.Title)
+			tip, err := localcommit.ResolveTip(wtPath, slug)
+			if err != nil {
+				return fmt.Errorf("failed to resolve tip: %w", err)
+			}
+
+			isRework := false
+			cmd := exec.Command("git", "-C", wtPath, "rev-list", "--count", tip+"..HEAD")
+			var stdout bytes.Buffer
+			cmd.Stdout = &stdout
+			if err := cmd.Run(); err == nil {
+				commitCount := strings.TrimSpace(stdout.String())
+				if commitCount != "0" && commitCount != "" {
+					isRework = true
+				}
+			}
+
+			var sha string
+			if isRework {
+				sha, err = localcommit.AmendAll(wtPath, message)
+			} else {
+				sha, err = localcommit.CommitAll(wtPath, message)
+			}
+			if err != nil {
+				return fmt.Errorf("failed to commit: %w", err)
+			}
+
+			links = []tuiclient.LinkInput{
+				{Kind: "commit", Value: sha},
+			}
 		}
 	} else {
 		if *noOpFlag {
