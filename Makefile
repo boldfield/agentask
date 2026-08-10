@@ -1,4 +1,4 @@
-.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image verify-fleet-tags fleet-deploy diff-fleet merger-deploy versions codex-auth codex-auth-check
+.PHONY: build run test tidy tui check release deploy fleet-builder merger-image fleet-image verify-fleet-tags fleet-deploy diff-fleet merger-deploy versions codex-auth codex-auth-check sbx-codex-auth
 
 VERSION ?= $(shell git describe --tags --always --dirty)
 
@@ -18,6 +18,9 @@ FLEET_NAMESPACE ?= agentask-fleet
 # context, matching `make deploy` (which sets no --context).
 SERVER_CONTEXT   ?=
 SERVER_NAMESPACE ?= agentask
+
+# `sbx` sandbox container the host-side codex auth seeding targets (see sbx-codex-auth below).
+SBX_NAME ?= claude-agentask-sbx
 
 build:
 	mkdir -p bin
@@ -210,6 +213,42 @@ codex-auth:
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout restart deploy/reviewer
 	kubectl --context $(CP_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/reviewer --timeout=300s
 	@$(MAKE) --no-print-directory codex-auth-check
+
+# Host-side half of sbx-agent-bootstrap Deliverable 2 (docs/features/sbx-agent-bootstrap.md).
+# `codex login` is an interactive browser flow that cannot complete headless inside a sandbox
+# container, so — exactly like the cluster's codex-auth above — auth is seeded by copying the
+# host's already-authenticated ~/.codex/auth.json in, not by logging in there. This is a Makefile
+# target (not a mode of harness/sbx.sh) because sbx.sh's whole job is to run INSIDE the sandbox and
+# boot the Agentask stack; this step runs the OPPOSITE direction, from the HOST, reaching INTO a
+# sandbox via `sbx cp`/`sbx exec` — it belongs with the other host-side codex-auth target instead.
+#
+# The in-sandbox counterpart, harness/sbx-agent-setup.sh, installs codex but cannot authenticate
+# it; this target is what makes that install usable.
+sbx-codex-auth:
+	@test -f "$$HOME/.codex/auth.json" || { echo "ERROR: no ~/.codex/auth.json — run 'codex login' first"; exit 1; }
+	@jq -e '.tokens.refresh_token // empty' "$$HOME/.codex/auth.json" >/dev/null 2>&1 \
+	  || { echo "ERROR: ~/.codex/auth.json has no refresh token — re-run 'codex login'"; exit 1; }
+	@echo "Seeding codex auth into sandbox '$(SBX_NAME)' from ~/.codex/auth.json"
+	@sbx exec $(SBX_NAME) -- sudo install -d -o agent -g agent -m 700 /home/agent/.codex
+	@sbx cp "$$HOME/.codex/auth.json" "$(SBX_NAME):/tmp/agentask-codex-auth.json.incoming"
+	@sbx exec $(SBX_NAME) -- sudo install -o agent -g agent -m 600 \
+	  /tmp/agentask-codex-auth.json.incoming /home/agent/.codex/auth.json
+	@sbx exec $(SBX_NAME) -- sudo rm -f /tmp/agentask-codex-auth.json.incoming
+	@echo "Verifying: running 'codex exec -m gpt-5.5' inside sandbox '$(SBX_NAME)'..."
+	@if ! sbx exec $(SBX_NAME) -- command -v codex >/dev/null 2>&1; then \
+	  echo "codex auth seeded, but codex itself is not installed in sandbox '$(SBX_NAME)' yet — cannot verify."; \
+	  echo "Run harness/sbx-agent-setup.sh inside the sandbox first, then re-run 'make sbx-codex-auth'."; \
+	  exit 1; \
+	fi
+	@if sbx exec $(SBX_NAME) -- codex exec -m gpt-5.5 "reply with the single word: ok" >/tmp/sbx-codex-auth-verify.out 2>&1; then \
+	  echo "OK: codex authenticated in sandbox '$(SBX_NAME)' (gpt-5.5 invocation succeeded)"; \
+	  rm -f /tmp/sbx-codex-auth-verify.out; \
+	else \
+	  echo "ERROR: codex auth was seeded but the verification invocation failed in sandbox '$(SBX_NAME)':"; \
+	  cat /tmp/sbx-codex-auth-verify.out; \
+	  rm -f /tmp/sbx-codex-auth-verify.out; \
+	  exit 1; \
+	fi
 
 deploy:
 	@echo "Resolving image digest for ghcr.io/boldfield/agentask:$(VERSION)..."
