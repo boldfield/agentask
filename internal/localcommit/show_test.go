@@ -11,7 +11,7 @@ func TestShowCommit(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		cmds := [][]string{
-			{"git", "init"},
+			{"git", "init", "-b", "main"},
 			{"git", "config", "user.email", "test@example.com"},
 			{"git", "config", "user.name", "Test User"},
 			{"git", "commit", "--allow-empty", "-m", "initial commit"},
@@ -67,7 +67,7 @@ func TestShowCommit(t *testing.T) {
 	t.Run("unknown SHA returns error", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		cmd := exec.Command("git", "init")
+		cmd := exec.Command("git", "init", "-b", "main")
 		cmd.Dir = tmpDir
 		if err := cmd.Run(); err != nil {
 			t.Fatalf("setup failed: %v", err)
@@ -85,7 +85,7 @@ func TestDiffBase(t *testing.T) {
 		tmpDir := t.TempDir()
 
 		cmds := [][]string{
-			{"git", "init"},
+			{"git", "init", "-b", "main"},
 			{"git", "config", "user.email", "test@example.com"},
 			{"git", "config", "user.name", "Test User"},
 			{"git", "commit", "--allow-empty", "-m", "initial"},
@@ -169,7 +169,7 @@ func TestDiffBase(t *testing.T) {
 	t.Run("unknown SHA returns error", func(t *testing.T) {
 		tmpDir := t.TempDir()
 
-		cmd := exec.Command("git", "init")
+		cmd := exec.Command("git", "init", "-b", "main")
 		cmd.Dir = tmpDir
 		if err := cmd.Run(); err != nil {
 			t.Fatalf("setup failed: %v", err)

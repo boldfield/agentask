@@ -12,7 +12,7 @@ func setupTempRepo(t *testing.T) string {
 
 	// Initialize git repo with initial commit on main
 	cmds := [][]string{
-		{"git", "init"},
+		{"git", "init", "-b", "main"},
 		{"git", "config", "user.email", "test@example.com"},
 		{"git", "config", "user.name", "Test User"},
 		{"git", "commit", "--allow-empty", "-m", "initial"},
