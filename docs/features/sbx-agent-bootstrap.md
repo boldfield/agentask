@@ -1,4 +1,4 @@
-# Feature: sbx agent bootstrap (codex + claude + board config inside the sandbox)
+# Feature: sbx agent bootstrap (provision the sandbox: toolchain, agents, auth, board config)
 
 Status: feature spec, 2026-08-10
 Kind: feature_spec (for project Agentask)
@@ -7,166 +7,259 @@ Kind: feature_spec (for project Agentask)
 
 `harness/sbx.sh` already boots the whole Agentask stack — server + worker/reviewer fleet — inside an
 `sbx` sandbox container with all state under `/tmp/agentask`. What it does **not** do is provision
-the *agents* that container runs. Today a fresh sandbox has `claude` (sbx installs and authenticates
-it) but **no `codex`, no `~/.codex`, no Agentask skills wired into `~/.claude/`, and no board
-config**. So the sandbox cannot run a two-reviewer board: the second reviewer is a `codex exec`
-model that isn't installed, isn't authenticated, isn't in the sandbox server's model allowlist, and
-isn't routed.
+the container it runs in.
 
-This feature closes that gap with a bootstrap script (plus a host-side auth-seeding step) so that
-after `sbx.sh` comes up, an interactive `claude` session **inside** the container knows how to drive
-the local board and creates tasks that are reviewed by **both `opus` and `gpt-5.5`**.
+**The sandbox image is externally defined.** It is supplied by Docker Sandboxes, not built from this
+repo. `deploy/fleet/Dockerfile.fleet` — which does install both CLIs and the whole toolchain — is the
+**cluster** fleet image and has nothing to do with the sandbox. Nothing in this repository controls
+what the sandbox image contains, and its contents can change underneath us when Docker updates it.
 
-Scope is the **sandbox only**. The cluster fleet already installs both CLIs
-(`deploy/fleet/Dockerfile.fleet`), already routes `gpt-5.5` through `codex exec`
-(`reviewer-deployment.yaml`), and already allows `gpt-5.5` in its model allowlist. None of that
-changes here.
+Everything the stack needs must therefore be **installed into the running container at boot time and
+verified**, never assumed. That includes the `claude` CLI itself: a fresh sandbox happening to ship an
+authenticated `claude` today is incidental, not a contract. This feature closes that gap so that a
+sandbox can be provisioned from whatever the external image happens to be, and an interactive
+`claude` session inside it can drive the local board and create tasks reviewed by **both `opus` and
+`gpt-5.5`**.
+
+Scope is the **sandbox only**. The cluster fleet is untouched.
 
 ## Measured starting state (verified in the running `claude-agentask-sbx` container)
 
-| Thing | State |
+Treat this table as *observed today*, not as a contract. Every row is a property of an external
+image that can change; the bootstrap must verify each rather than rely on it.
+
+| Thing | Observed |
 |---|---|
 | container user / home | `agent`, `HOME=/home/agent` |
-| `claude` | present at `/home/agent/.local/bin/claude`, authenticated via `~/.claude/.credentials.json` (sbx-provided) |
-| `codex` | **absent**; `~/.codex` does not exist |
-| `node`, `npm`, `git`, `gh`, `jq`, `go` | present |
+| `claude` | present at `/home/agent/.local/bin/claude`, authenticated via `~/.claude/.credentials.json` (307 bytes, mode 600, **not a mount** — written by sbx's own login flow, and unreproducible from this repo) |
+| `codex` | absent; `~/.codex` does not exist |
+| `node`, `npm`, `git`, `gh`, `jq` | present |
+| `go` | `go1.26.0 linux/arm64` (`go.mod` requires `1.25.6`) |
 | npm global prefix | `/usr/local/share/npm-global`, root-owned (not writable by `agent`) |
 | `sudo -n` | works — passwordless |
-| `~/.claude/skills` | **does not exist** |
-| repo mounts | bind-mounted at the **same absolute paths as the host**, e.g. `/Users/boldfield/projects/agentask` |
+| `~/.claude/skills` | does not exist |
+| repo mounts | bind-mounted **read-write at the same absolute paths as the host**, e.g. `/Users/boldfield/projects/agentask` |
+| container arch | `aarch64` |
 
-## The four gaps
+## The gaps
 
-1. **`codex` is not installed.** The npm global prefix is root-owned, but passwordless `sudo` is
-   available, so a global install is the simple correct path — no per-user prefix gymnastics.
+### 1. `sbx.sh` trusts a pre-built binary whose architecture it never checks
 
-2. **`codex` has no credentials, and `codex login` is an interactive browser flow** that cannot
-   complete headless in a container. Auth must be *seeded* by copying the host's
-   `~/.codex/auth.json` in. This is the same move `make codex-auth` already makes for the cluster
-   (which seeds a k8s secret from that file and validates `.tokens.refresh_token` first). Because
-   the copy originates on the host, this half **cannot run inside the container** — it needs
-   `sbx cp`, and is therefore a separate host-side entry point.
+`harness/sbx.sh` builds the CLI only when the mounted repo's `bin/agentask` is not executable. The
+test is the **executable bit alone** — architecture is never considered. Because the repo is mounted
+read-write at the same path on both sides, that binary is shared between a macOS host and a Linux
+container, and the check is wrong in both directions:
 
-3. **The sandbox server rejects `gpt-5.5`.** `harness/sbx.sh` starts the server with
-   `AGENTASK_MODELS="haiku,sonnet,opus,fable"` — no `gpt-5.5`. Creating a task with
-   `review_models: ["opus","gpt-5.5"]` therefore fails at create time with `UNKNOWN_MODEL`. And even
-   if it were allowed, `sbx.sh` never sets `AGENT_CODEX_MODELS`, so `harness/agent.sh` would dispatch
-   the review as `claude -p --model gpt-5.5` — which is not a claude model — instead of routing it
-   through `codex exec`.
+- A **host-built** binary is present and executable, so the container skips the build and puts a
+  Mach-O binary on `PATH`. Every `agentask` call inside the container then dies with an exec format
+  error — at dispatch time, deep in a worker log, not at boot.
+- A **container-built** binary is written back through the mount and **clobbers the host's**
+  `bin/agentask`.
 
-   `sbx.sh`'s escalation config has also drifted from production: it still carries the original
-   `AGENTASK_ESCALATION_THRESHOLDS="haiku=6,sonnet=4,opus=2,fable=1"` and predates
-   `AGENTASK_ESCALATION_LADDER` existing at all. Production is now
-   `haiku=3,sonnet=2,opus=2,fable=1` with a separate ladder that deliberately **excludes**
-   `gpt-5.5` so a review-only model never becomes an escalation tier. The sandbox should mirror
-   that, otherwise adding `gpt-5.5` to the allowlist silently makes it an escalation target.
+This is not hypothetical; it is the current state of the working copy. `bin/agentask` on the host is
+an `ELF 64-bit LSB executable, ARM aarch64` — built inside the container and written back out.
+Running it on the host gives `exec format error`; the identical file inside the container reports
+`agentask version v0.15.0-17-g99af944`.
 
-4. **Nothing teaches the in-container Claude the two-reviewer default.** The server's fallback when
-   `review_models` is empty is hardcoded `["opus"]`, and
-   `skills/agentask-breakdown/scripts/agentask.sh` documents exactly that in its usage text
-   (*"review_models is optional, defaults to `["opus"]`"*). An interactive Claude reading that will
-   keep creating single-reviewer tasks.
+The script's own stated invariant is that everything it writes lives under `/tmp/agentask`; the
+mounted `bin/` was carved out as a deliberate exception, and that exception is the bug.
+
+### 2. The `claude` CLI is not installed or verified
+
+The bootstrap must install it, not inherit it. There is also no version or toolchain preflight: the
+build needs a Go new enough for `go.mod`, which today the image happens to satisfy and tomorrow may
+not.
+
+### 3. `claude` has no reproducible authentication path
+
+The cluster authenticates `claude` through a `CLAUDE_CODE_OAUTH_TOKEN` environment variable sourced
+from a secret (see the worker and reviewer deployments). The sandbox has **no equivalent** — its
+credentials file is opaque state written by sbx's interactive login, which this repo cannot create,
+refresh, or validate. `sbx.sh` never checks it either: no preflight for the binary, none for auth.
+
+So when those credentials expire, `sbx.sh` boots **green** — health check passes, fleet starts,
+agents claim tasks — and every dispatch fails silently inside `agent.sh`, discoverable only by
+reading worker logs. That is precisely the failure mode the boot script exists to prevent.
+
+Note the resulting asymmetry this feature must remove: of the four provisioning concerns, three have
+a repo-side mechanism for the cluster and this feature adds two for the sandbox — but sandbox
+`claude` auth has **no mechanism anywhere**.
+
+### 4. `codex` is not installed
+
+The npm global prefix is root-owned, but passwordless `sudo` is available, so a global install is
+the simple correct path — no per-user prefix workaround needed.
+
+### 5. `codex` has no credentials, and `codex login` cannot run headless
+
+It is an interactive browser flow. Auth must be *seeded* by copying the host's `~/.codex/auth.json`
+in — the same move `make codex-auth` already makes for the cluster, including its validation that a
+refresh token is present. Because the copy originates on the host, this half **cannot run inside the
+container**; it needs `sbx cp` and is therefore a separate host-side entry point.
+
+### 6. The sandbox server rejects `gpt-5.5`, and would misroute it anyway
+
+`sbx.sh` starts the server with `AGENTASK_MODELS="haiku,sonnet,opus,fable"` — no `gpt-5.5` — so a
+task carrying `review_models: ["opus","gpt-5.5"]` fails at create time with `UNKNOWN_MODEL`. And
+`sbx.sh` never sets `AGENT_CODEX_MODELS`, so even once allowed, `agent.sh` would dispatch that review
+as `claude -p --model gpt-5.5` instead of routing it through `codex exec`.
+
+Its escalation config has also drifted from production: it carries the original thresholds and
+predates `AGENTASK_ESCALATION_LADDER` existing at all. Production defines the ladder separately and
+deliberately **excludes** `gpt-5.5`, so a review-only model never becomes an escalation tier for
+implementation work.
+
+### 7. Nothing teaches the in-container Claude the two-reviewer default
+
+The server's fallback when `review_models` is empty is hardcoded to a single Claude reviewer, and
+`skills/agentask-breakdown/scripts/agentask.sh` documents exactly that. An interactive Claude reading
+it will keep creating single-reviewer tasks. Nor are the repo's four Agentask skills visible to an
+in-container session at all.
 
 ## Model choice: `gpt-5.5`, not `gpt-5.6`
 
-`gpt-5.6` was requested but is **not available on this account**. Verified directly against
-codex-cli 0.147.0:
+`gpt-5.6` was requested but is **not available on this account**. Verified against codex-cli 0.147.0:
+`codex exec -m gpt-5.6` returns `warning: Model metadata for 'gpt-5.6' not found` followed by
+`400 invalid_request_error: The 'gpt-5.6' model is not supported when using Codex with a ChatGPT
+account`; `gpt-5.5` succeeds. `gpt-5.5` is also what the production allowlist and reviewer deployment
+already use. If the account later gains `gpt-5.6` it is a one-constant swap.
 
-- `codex exec -m gpt-5.6` → `warning: Model metadata for 'gpt-5.6' not found`, then
-  `400 invalid_request_error: The 'gpt-5.6' model is not supported when using Codex with a ChatGPT
-  account.`
-- `codex exec -m gpt-5.5` → succeeds.
+## Guiding principle
 
-`gpt-5.5` is also what the production allowlist and reviewer deployment already use. Every task in
-this feature uses `gpt-5.5`. If the account later gains `gpt-5.6`, it is a one-constant swap in each
-of the places this feature touches.
+**Verify, never assume.** Every step provisions against an image this repo does not control. Each
+step must check the resulting state and fail loudly at boot with an actionable message, rather than
+letting a missing or wrong-architecture component surface later as an opaque dispatch failure. A
+green boot must mean the stack can actually do work.
 
 ## Scope
 
-### Deliverable 1 — `harness/sbx-agent-setup.sh` (runs **inside** the container)
+### Deliverable 1 — arch-correct, container-local build of the `agentask` binary
 
-Idempotent provisioning of the agent tooling and board config. Re-running must be a clean no-op, not
-an error or a duplicate.
+Fix the build step in `harness/sbx.sh` so the binary it runs is always built for the machine running
+it, and so it never writes into the mounted repo.
 
-- **Install `codex`** globally via `sudo npm install -g @openai/codex` when absent. Install `claude`
-  the same way only if it is missing — in the standard sbx image it is already present and
-  authenticated, and the script must not disturb the existing install or its credentials.
-- **Verify, don't assume.** After install, confirm both binaries resolve on `PATH` and fail loudly
-  with an actionable message if either does not.
-- **Wire the Agentask skills in.** The repo's `skills/` directory ships four skills —
-  `agentask-board`, `agentask-breakdown`, `agentask-ops`, `review`. Make them visible to the
-  in-container Claude by linking them into `~/.claude/skills/`. Symlink rather than copy, so editing
-  a skill in the mounted repo takes effect immediately with no re-provision — this mirrors the
-  harness's existing "code lives in the repo, state lives in `$AGENTASK_HOME`" split. Resolve the
-  repo path from the script's own location, not a hardcoded absolute path.
-- **Write board config for the in-container Claude** — a `CLAUDE.md` telling it: the local board is
-  at `http://localhost:<port>` with the fixed sandbox token, this is a throwaway local board (not the
-  cluster), and **every task it creates must carry `review_models: ["opus","gpt-5.5"]`** unless the
-  human explicitly says otherwise. State the reason (two independent reviewers: one Claude, one
-  Codex) so the rule survives paraphrase.
-- **Write `~/.claude/settings.json`** with a permission allowlist covering the local board's normal
-  traffic — `curl` against `localhost:<port>`, the `agentask` CLI, and git — so routine board work
-  does not prompt. Merge into any existing settings rather than clobbering them.
-- **Take the port** as an argument defaulting to `8080`, matching `sbx.sh`.
+- Build into a container-local location under the harness state directory rather than the mounted
+  repo's `bin/`, and put that on `PATH` ahead of anything else. This restores the script's own
+  "everything under the state directory" invariant and removes the cross-contamination in both
+  directions at once.
+- Never trust a pre-existing binary on the basis of the executable bit. Either rebuild
+  unconditionally, or validate that an existing binary actually runs on this machine and rebuild if
+  it does not — pick one and say why in a comment.
+- Preflight the toolchain before building: a Go toolchain must be present and satisfy `go.mod`. If it
+  is absent or too old, fail immediately with a message naming the required version, rather than
+  emitting a wall of compiler output.
+- Do not modify or delete the host's existing `bin/agentask`. Leaving a stale wrong-arch binary in
+  the mounted repo is acceptable; silently overwriting it is not.
 
-### Deliverable 2 — host-side codex auth seeding
+### Deliverable 2 — install and verify both agent CLIs (`harness/sbx-agent-setup.sh`, in-container)
 
-An entry point that runs **on the host** and copies `~/.codex/auth.json` into the container at
-`/home/agent/.codex/auth.json`, mode `0600`, owned by `agent`.
+A new harness script that provisions agent tooling and board config inside the container. Model its
+structure on the existing harness scripts: same real-directory resolution preamble, same argument
+parsing style, same logging helpers. Idempotent — re-running is a clean no-op.
 
-- **Preflight before copying:** the file must exist and must contain `.tokens.refresh_token`, with
-  the same two distinct, actionable failure messages `make codex-auth` already emits (missing file →
-  run `codex login`; no refresh token → re-run `codex login`).
+- **Install both `claude` and `codex`** as first-class steps. Neither is assumed present. Use the
+  system package manager for global installs with `sudo`; do not build a per-user prefix workaround.
+- **Never disturb a working install.** If a CLI is already present, leave it and its stored
+  credentials alone. The goal is a guaranteed-present CLI, not a guaranteed-fresh one.
+- **Verify after installing.** Both binaries must resolve on `PATH` and report a version. A package
+  manager exiting zero is not evidence of a working binary.
+- **Wire the Agentask skills in.** Link the repo's four skills — `agentask-board`,
+  `agentask-breakdown`, `agentask-ops`, `review` — into the location an in-container `claude` session
+  reads skills from. Symlink rather than copy, so editing a skill in the mounted repo takes effect
+  with no re-provisioning; this mirrors the harness's existing split between versioned code in the
+  repo and unversioned state elsewhere. Resolve the repo path from the script's own location, never
+  a hardcoded absolute path.
+- **Write board config for the in-container Claude** — a project instructions file stating that the
+  local board is at localhost on the configured port with the fixed sandbox token, that it is a
+  throwaway local board and explicitly not the production cluster, and that every task it creates
+  must carry both review models unless the human overrides. State the reason for the pair — two
+  independent reviewers, one Claude and one Codex — so the rule survives paraphrase.
+- **Write a `claude` settings file** granting a permission allowlist for routine local-board traffic:
+  HTTP calls to the local server port, the `agentask` CLI, and git. Merge into existing settings
+  rather than overwriting.
+- Take the port as an argument, defaulting to the boot script's default.
+
+### Deliverable 3 — reproducible `claude` authentication + a real preflight
+
+Give `claude` the same explicit, repo-side, verifiable auth path this feature gives `codex`.
+
+- Support supplying claude credentials via the **same OAuth token environment variable the cluster
+  deployments already use**, plumbed through the sandbox fleet environment the way `sbx.sh` already
+  handles its other fleet variables.
+- Fall back to an existing valid credentials file when one is present, so a working sandbox keeps
+  working and nobody is forced to mint a token for the common case.
+- **Add a boot preflight to `sbx.sh`**: before starting the fleet, confirm `claude` is present and
+  actually authenticated, and fail with an actionable message if not. This is the highest-value part
+  of this deliverable — it converts a silent, log-only dispatch failure into a loud boot failure.
+- If sbx's login proves to be sandbox-scoped such that a token cannot be transplanted, then detect
+  and report that clearly instead of seeding. A loud preflight is the requirement; seeding is the
+  preferred implementation, not the goal.
+
+### Deliverable 4 — host-side `codex` auth seeding
+
+An entry point that runs **on the host** and copies `~/.codex/auth.json` into the container at the
+agent user's codex config directory, mode `0600`, owned by that user.
+
+- Preflight: the host file must exist and must contain a refresh token, with the same two distinct,
+  actionable messages `make codex-auth` already emits.
 - Accept the sandbox name as an argument.
-- **Verify after seeding** by running a trivial `codex exec -m gpt-5.5` inside the container and
-  reporting success or failure. A silent copy that leaves codex unusable is the failure mode this
-  step exists to prevent.
-- Deliverable 1 is useless without this, so make the dependency explicit: if Deliverable 1 finds
-  `codex` installed but unauthenticated, it should say so and name this step.
+- Verify after seeding by running a trivial `gpt-5.5` invocation inside the container and reporting
+  the result. A silent copy that leaves codex unusable is the failure this step exists to prevent.
+- Place it wherever best matches existing conventions — a Makefile target beside the existing codex
+  targets, or a mode of the harness script — and justify the choice in a comment.
 
-### Deliverable 3 — `harness/sbx.sh` config alignment
+### Deliverable 5 — `sbx.sh` model config alignment
 
-- Add `gpt-5.5` to the server's `AGENTASK_MODELS` so `review_models: ["opus","gpt-5.5"]` validates.
-- Set `AGENT_CODEX_MODELS="gpt-5.5"` in the generated `/tmp/agentask/env` **and** in the exported
-  environment the fleet children inherit — matching how the file already handles the other fleet
-  variables, so `agent.sh` routes `gpt-5.5` review dispatches through `codex exec`.
-- Realign escalation with production: adopt the separate `AGENTASK_ESCALATION_LADDER` that excludes
-  `gpt-5.5`, and update the thresholds to the current production values.
-- Carry the same rationale comments production's manifest carries, so the next reader knows
-  `gpt-5.5` is review-only by design.
+- Add `gpt-5.5` to the server's `AGENTASK_MODELS`.
+- Set `AGENT_CODEX_MODELS` to `gpt-5.5` in the generated fleet environment file **and** in the
+  exported environment the fleet children inherit, matching how the script already handles its other
+  fleet variables, so `agent.sh` routes those reviews through `codex exec`.
+- Adopt the separate escalation ladder that excludes `gpt-5.5`, and update thresholds to current
+  production values. The production manifest is the source of truth for both — read it, do not guess.
+  Carry over its rationale comments.
 
-### Deliverable 4 — correct the documented review default
+### Deliverable 6 — correct the documented review default
 
-`skills/agentask-breakdown/scripts/agentask.sh` states the default is `["opus"]`. Update the usage
-text and the example task object so the two-reviewer pair is what a reader copies. This is
-documentation inside a script, not a behavior change — the server's fallback is unchanged and out of
-scope.
+`skills/agentask-breakdown/scripts/agentask.sh` states the default is a single Claude reviewer.
+Update its usage text and example task object so the two-reviewer pair is what a reader copies, and
+correct any matching claim in the skill's own instructions. Be precise: the server's fallback is
+unchanged and remains a single reviewer — the accurate statement is that callers should pass the pair
+explicitly. Documentation only; no server or deployment changes.
 
 ## Non-scope
 
-- **No changes to the cluster fleet**, its Dockerfile, its deployments, or the `manifests` repo. The
-  cluster already installs both CLIs and routes `gpt-5.5`.
-- **No change to the server's hardcoded `["opus"]` fallback.** Making that default configurable is a
-  reasonable follow-up, but it affects every deployment including production, and this feature is
-  sandbox-only.
+- **The cluster fleet, its image, its deployments, and the `manifests` repo.**
+  `deploy/fleet/Dockerfile.fleet` is the cluster image and is explicitly **not** the sandbox image;
+  nothing here changes it.
+- **No change to the server's hardcoded single-reviewer fallback.** Making it configurable is a
+  reasonable follow-up but affects every deployment including production.
 - **Foreman** is untouched.
 - **No `gpt-5.6`** until the account supports it.
+- **Not building our own sandbox image.** This feature provisions the external image at runtime.
+  Publishing a purpose-built sandbox image is a legitimate alternative worth considering later, but
+  it is a much larger change and is out of scope here.
 
 ## Acceptance criteria
 
-1. On a fresh `claude-agentask-sbx` sandbox, running the host-side auth seeding followed by
-   `harness/sbx-agent-setup.sh` inside the container leaves both `claude` and `codex` resolvable on
-   `PATH`, with `codex exec -m gpt-5.5` completing successfully inside the container.
-2. Re-running both steps is a clean no-op — no errors, no duplicated symlinks, no clobbered claude
-   credentials or pre-existing settings.
-3. All four skills (`agentask-board`, `agentask-breakdown`, `agentask-ops`, `review`) are visible to
-   an in-container `claude` session, and editing a skill in the mounted repo is reflected without
-   re-provisioning.
-4. After `harness/sbx.sh` boots, creating a task on the sandbox board with
-   `review_models: ["opus","gpt-5.5"]` succeeds — no `UNKNOWN_MODEL`.
-5. When that task reaches review, the server spawns **two** review tasks (one per model), the
-   `opus` one dispatches via `claude -p`, and the `gpt-5.5` one dispatches via `codex exec` — not
-   `claude -p --model gpt-5.5`.
-6. `gpt-5.5` is in the sandbox allowlist but **not** in the escalation ladder: a repeatedly-rejected
-   implement task escalates `haiku → sonnet → opus → fable` and never to `gpt-5.5`.
-7. `harness/harness_test.sh` still passes.
+1. After boot, the `agentask` binary on `PATH` inside the container executes there, and the host's
+   `bin/agentask` is not modified by the boot.
+2. Booting with a wrong-architecture binary already present in the mounted repo succeeds rather than
+   failing at dispatch with an exec format error.
+3. A missing or too-old Go toolchain fails at boot with a message naming the required version.
+4. On a sandbox lacking either CLI, one run of the setup script leaves **both** `claude` and `codex`
+   resolvable on `PATH` and reporting a version.
+5. Re-running the setup script changes nothing and exits successfully; pre-existing installs and
+   stored credentials are untouched; existing claude settings are preserved rather than clobbered.
+6. `codex exec` with `gpt-5.5` completes successfully inside the container after auth seeding.
+7. Missing host codex credentials and a present-but-tokenless file each produce their own clear
+   message, and neither copies anything.
+8. `sbx.sh` refuses to start the fleet — with an actionable message — when `claude` is missing or
+   unauthenticated, instead of booting green and failing at dispatch.
+9. All four skills are visible to an in-container `claude` session, and editing a skill in the
+   mounted repo is reflected without re-provisioning.
+10. Creating a task on the sandbox board with `review_models: ["opus","gpt-5.5"]` succeeds, and when
+    it reaches review the server spawns two review tasks — the `opus` one dispatching via `claude -p`
+    and the `gpt-5.5` one via `codex exec`, verified by observation.
+11. `gpt-5.5` is in the sandbox allowlist but **not** in the escalation ladder: a repeatedly-rejected
+    implement task escalates through the Claude tiers and never to `gpt-5.5`.
+12. `harness/harness_test.sh` still passes.
