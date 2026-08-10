@@ -64,7 +64,7 @@ while [ $# -gt 0 ]; do
     --worktree-home)  WORKTREE_HOME_ARG="${2:?}"; shift 2 ;;   # override CLI worktree root (local_commit)
     --seed-demo)      SEED_DEMO=1;                shift ;;     # create+use a throwaway local demo
     -h|--help)
-      sed -n '2,24p' "$_src"; exit 0 ;;
+      sed -n '2,24p' "$_src"; exit 0 ;;   # keep in sync with the header comment block above
     *) echo "unknown flag: $1" >&2; exit 1 ;;
   esac
 done
@@ -185,6 +185,17 @@ fi
 command -v agentask >/dev/null 2>&1 || die "agentask not on PATH after build"
 say "agentask: $(command -v agentask)"
 
+# --- preflight: the agent CLIs the fleet will actually dispatch ---
+# BOTH are required: the server allowlists gpt-5.5 and AGENT_CODEX_MODELS routes it through
+# `codex exec`, so a board using the standard two-reviewer pair dispatches claude AND codex. A
+# missing CLI otherwise surfaces only as `dispatch exited rc=127` buried in workers.log, behind
+# agent.sh's 30s→300s backoff — which reads as a mysteriously stalled board rather than a setup
+# error. Fail here, while the operator is still looking at the terminal.
+command -v claude >/dev/null 2>&1 || die "claude CLI not on PATH — the fleet dispatches 'claude -p' and every claude-model task would fail"
+say "claude: $(command -v claude)"
+command -v codex >/dev/null 2>&1 || die "codex CLI not on PATH — gpt-5.5 is allowlisted and routed via AGENT_CODEX_MODELS, so its review dispatches would fail"
+say "codex: $(command -v codex)"
+
 # ============================== 2. handle a stale / bound port ==============================
 # If our server is already up on this port and healthy, reuse it; if something else holds the port, error.
 SERVER_PID=""
@@ -228,6 +239,57 @@ if [ "$REUSE_SERVER" -eq 0 ]; then
   say "server healthy (pid $SERVER_PID)"
 fi
 
+# --- graceful shutdown (installed HERE, not after the fleet starts) ---
+# This trap must go up the instant the server is running. It used to live in §7, after seeding and
+# the env-file write — so any failure in between (e.g. the bash 3.2 $VAR-abutting-UTF-8 abort at the
+# demo-seed step) exited with NO trap installed and left the server running as an orphan on the port,
+# which then made the next `sbx.sh start` "reuse" a server it did not own.
+#
+# Each fleet is launched as its OWN process-group leader (job control, set -m, in §8), so its pid ==
+# its pgid. We signal the WHOLE group (kill -SIG -pgid) — fleet.sh + every agent.sh + any nested
+# claude — directly, rather than trusting fleet.sh to propagate. TERM first (graceful: agents drop
+# their in-flight dispatch and exit), then a hard KILL fallback so NOTHING is ever orphaned.
+FLEET_PIDS=()
+STOPPED=0
+group_alive() { kill -0 "-$1" 2>/dev/null; }
+stop_all() {
+  [ "$STOPPED" -eq 1 ] && return
+  STOPPED=1
+  echo
+  say "shutting down…"
+  # TERM each fleet's process group.
+  for pgid in "${FLEET_PIDS[@]:-}"; do
+    [ -n "$pgid" ] && kill -TERM "-$pgid" 2>/dev/null || true
+  done
+  # Wait up to ~12s for the groups to drain, then KILL whatever is left.
+  for _ in $(seq 1 12); do
+    local any=0
+    for pgid in "${FLEET_PIDS[@]:-}"; do
+      [ -n "$pgid" ] && group_alive "$pgid" && any=1
+    done
+    [ "$any" -eq 0 ] && break
+    sleep 1
+  done
+  for pgid in "${FLEET_PIDS[@]:-}"; do
+    [ -n "$pgid" ] && group_alive "$pgid" && kill -KILL "-$pgid" 2>/dev/null || true
+  done
+  # Reap the (now-dead) fleet job leaders so they aren't left as zombies.
+  for pgid in "${FLEET_PIDS[@]:-}"; do
+    [ -n "$pgid" ] && wait "$pgid" 2>/dev/null || true
+  done
+  # Then the server (only if WE started it).
+  if [ "$REUSE_SERVER" -eq 0 ] && [ -n "$SERVER_PID" ]; then
+    kill -TERM "$SERVER_PID" 2>/dev/null || true
+    wait "$SERVER_PID" 2>/dev/null || true
+    say "server stopped"
+  fi
+  # Drop our pidfile only if it still points at us (a newer instance may have taken it over).
+  [ -f "$PIDFILE" ] && [ "$(cat "$PIDFILE" 2>/dev/null)" = "$$" ] && rm -f "$PIDFILE"
+  say "done. state + logs under $AGENTASK_HOME (logs: $LOG_DIR)"
+}
+trap 'stop_all; exit 0' INT TERM
+trap 'stop_all' EXIT
+
 # ============================== 4 & 5. resolve the fleet's target project + repo ==============================
 # Two paths: --seed-demo stands up a throwaway local repo + project (self-contained, no GitHub);
 # otherwise the fleet drains YOUR --project (+ --repo for local_commit), which already exists.
@@ -235,7 +297,12 @@ if [ "$SEED_DEMO" -eq 1 ]; then
   # 4. Seed a throwaway git repo (no-op Makefile so `make check`/`make test` pass) with a bare origin
   #    so `origin/main` resolves for the CLI's local_commit worktrees. Idempotent.
   if [ ! -d "$SEED_REPO/.git" ]; then
-    say "seeding demo git repo at $SEED_REPO…"
+    # NOTE: "${SEED_REPO}" is braced deliberately. macOS bash 3.2's identifier scanner treats the
+    # UTF-8 continuation bytes of a following non-ASCII char (here the "…") as part of the variable
+    # NAME, so a bare "$SEED_REPO…" resolves to the unset var `SEED_REPO<e2><80><a6>` and `set -u`
+    # aborts the boot. bash 4+/glibc stops the identifier at the high byte, which is why this only
+    # ever failed on a mac. Brace any $VAR that abuts a non-ASCII character.
+    say "seeding demo git repo at ${SEED_REPO}…"
     rm -rf "$SEED_REPO" "$SEED_ORIGIN"
     git init -q -b main "$SEED_REPO"
     git -C "$SEED_REPO" config user.email "sbx@local" >/dev/null 2>&1
@@ -316,52 +383,6 @@ export AGENTASK_PROJECT="$PROJECT_ID"
 export AGENTASK_DELIVERY_MODE="$DELIVERY_MODE"
 export AGENT_CLAUDE_FLAGS="--allow-dangerously-skip-permissions"
 export AGENT_CODEX_MODELS="gpt-5.5"
-
-# ============================== 7. graceful shutdown ==============================
-# Each fleet is launched as its OWN process-group leader (job control, set -m, in §8), so its pid ==
-# its pgid. We signal the WHOLE group (kill -SIG -pgid) — fleet.sh + every agent.sh + any nested
-# claude — directly, rather than trusting fleet.sh to propagate. TERM first (graceful: agents drop
-# their in-flight dispatch and exit), then a hard KILL fallback so NOTHING is ever orphaned.
-FLEET_PIDS=()
-STOPPED=0
-group_alive() { kill -0 "-$1" 2>/dev/null; }
-stop_all() {
-  [ "$STOPPED" -eq 1 ] && return
-  STOPPED=1
-  echo
-  say "shutting down…"
-  # TERM each fleet's process group.
-  for pgid in "${FLEET_PIDS[@]:-}"; do
-    [ -n "$pgid" ] && kill -TERM "-$pgid" 2>/dev/null || true
-  done
-  # Wait up to ~12s for the groups to drain, then KILL whatever is left.
-  for _ in $(seq 1 12); do
-    local any=0
-    for pgid in "${FLEET_PIDS[@]:-}"; do
-      [ -n "$pgid" ] && group_alive "$pgid" && any=1
-    done
-    [ "$any" -eq 0 ] && break
-    sleep 1
-  done
-  for pgid in "${FLEET_PIDS[@]:-}"; do
-    [ -n "$pgid" ] && group_alive "$pgid" && kill -KILL "-$pgid" 2>/dev/null || true
-  done
-  # Reap the (now-dead) fleet job leaders so they aren't left as zombies.
-  for pgid in "${FLEET_PIDS[@]:-}"; do
-    [ -n "$pgid" ] && wait "$pgid" 2>/dev/null || true
-  done
-  # Then the server (only if WE started it).
-  if [ "$REUSE_SERVER" -eq 0 ] && [ -n "$SERVER_PID" ]; then
-    kill -TERM "$SERVER_PID" 2>/dev/null || true
-    wait "$SERVER_PID" 2>/dev/null || true
-    say "server stopped"
-  fi
-  # Drop our pidfile only if it still points at us (a newer instance may have taken it over).
-  [ -f "$PIDFILE" ] && [ "$(cat "$PIDFILE" 2>/dev/null)" = "$$" ] && rm -f "$PIDFILE"
-  say "done. state + logs under $AGENTASK_HOME (logs: $LOG_DIR)"
-}
-trap 'stop_all; exit 0' INT TERM
-trap 'stop_all' EXIT
 
 # ============================== 8. start the fleet ==============================
 # `set -m` (job control) makes each backgrounded fleet its OWN process-group leader, so $! == its
