@@ -63,6 +63,12 @@ type sqliteStore struct {
 	allowedModels    []string
 	allowedModelsM   map[string]bool
 	escalationLadder []string
+
+	// supersedeCloseHook, when set, is invoked after each background
+	// closeSupersededPR attempt finishes. It exists solely so tests can
+	// deterministically wait for the async close instead of racing it; it is
+	// never set in production.
+	supersedeCloseHook func()
 }
 
 // StoreOption is a functional option for configuring a Store.
@@ -2396,12 +2402,18 @@ func (s *sqliteStore) SupersedeTask(ctx context.Context, taskID string, modelOve
 
 	// The task state change above is authoritative; closing its pull request is
 	// best-effort cleanup that must never roll back or block the supersession that
-	// already happened. Detach from the request context (which is canceled the
-	// moment the HTTP handler returns) and bound it with its own timeout instead,
-	// so a hung or throttled GitHub API can't hang this call indefinitely.
-	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
-	defer cancel()
-	s.closeSupersededPR(closeCtx, taskID, newTaskID)
+	// already happened. Run it in the background so a slow or throttled GitHub API
+	// can't add latency to this call, on a context detached from the request (which
+	// is canceled the moment the HTTP handler returns) and bounded by its own
+	// timeout so it can't run forever either.
+	go func() {
+		closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+		defer cancel()
+		s.closeSupersededPR(closeCtx, taskID, newTaskID)
+		if s.supersedeCloseHook != nil {
+			s.supersedeCloseHook()
+		}
+	}()
 
 	// Load the new task from the database (this gets the feedback-augmented spec)
 	var newTask Task

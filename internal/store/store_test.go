@@ -8434,6 +8434,25 @@ func withMockForge(t *testing.T, server *httptest.Server) {
 	t.Cleanup(func() { forge.GitHubBaseURL = oldBaseURL })
 }
 
+// armSupersedeCloseSync arms st's background-close completion hook and returns a
+// function that blocks until the async closeSupersededPR spawned by the next
+// SupersedeTask call has finished. SupersedeTask runs that cleanup in a goroutine
+// so a slow forge call can never add latency to the request; tests need this to
+// deterministically observe its effects instead of racing it.
+func armSupersedeCloseSync(t *testing.T, st Store) func() {
+	t.Helper()
+	done := make(chan struct{})
+	st.(*sqliteStore).supersedeCloseHook = func() { close(done) }
+	return func() {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for background superseded-PR close to finish")
+		}
+	}
+}
+
 func TestSupersedeTaskWithOpenPRLinkClosesIt(t *testing.T) {
 	ctx := context.Background()
 	setForgeToken(t, "testowner", "test-token")
@@ -8450,10 +8469,12 @@ func TestSupersedeTaskWithOpenPRLinkClosesIt(t *testing.T) {
 
 	oldTask := createSupersedableTaskWithPRLink(t, ctx, st, "https://github.com/testowner/testrepo/pull/123")
 
+	waitForClose := armSupersedeCloseSync(t, st)
 	newTask, err := st.SupersedeTask(ctx, oldTask.ID, nil)
 	if err != nil {
 		t.Fatalf("SupersedeTask failed: %v", err)
 	}
+	waitForClose()
 
 	calls.mu.Lock()
 	defer calls.mu.Unlock()
@@ -8488,9 +8509,11 @@ func TestSupersedeTaskWithMergedPRDoesNotCloseIt(t *testing.T) {
 
 	oldTask := createSupersedableTaskWithPRLink(t, ctx, st, "https://github.com/testowner/testrepo/pull/123")
 
+	waitForClose := armSupersedeCloseSync(t, st)
 	if _, err := st.SupersedeTask(ctx, oldTask.ID, nil); err != nil {
 		t.Fatalf("SupersedeTask failed: %v", err)
 	}
+	waitForClose()
 
 	calls.mu.Lock()
 	defer calls.mu.Unlock()
@@ -8521,9 +8544,11 @@ func TestSupersedeTaskWithAlreadyClosedPRIsNotAnError(t *testing.T) {
 
 	oldTask := createSupersedableTaskWithPRLink(t, ctx, st, "https://github.com/testowner/testrepo/pull/123")
 
+	waitForClose := armSupersedeCloseSync(t, st)
 	if _, err := st.SupersedeTask(ctx, oldTask.ID, nil); err != nil {
 		t.Fatalf("SupersedeTask failed: %v", err)
 	}
+	waitForClose()
 
 	calls.mu.Lock()
 	defer calls.mu.Unlock()
@@ -8555,10 +8580,12 @@ func TestSupersedeTaskWithNoPRLinkIsCleanNoop(t *testing.T) {
 	}
 	oldTask := tasks[0]
 
+	waitForClose := armSupersedeCloseSync(t, st)
 	newTask, err := st.SupersedeTask(ctx, oldTask.ID, nil)
 	if err != nil {
 		t.Fatalf("SupersedeTask failed for a task with no pr link: %v", err)
 	}
+	waitForClose()
 	if newTask.ID == oldTask.ID {
 		t.Errorf("expected a new task to be created")
 	}
@@ -8580,10 +8607,12 @@ func TestSupersedeTaskForgeFailureStillSucceeds(t *testing.T) {
 
 	oldTask := createSupersedableTaskWithPRLink(t, ctx, st, "https://github.com/testowner/testrepo/pull/123")
 
+	waitForClose := armSupersedeCloseSync(t, st)
 	newTask, err := st.SupersedeTask(ctx, oldTask.ID, nil)
 	if err != nil {
 		t.Fatalf("SupersedeTask should succeed even when the forge call fails: %v", err)
 	}
+	waitForClose()
 	if newTask.ID == oldTask.ID || newTask.State != "backlog" {
 		t.Errorf("expected a fresh replacement task despite the forge failure, got %+v", newTask)
 	}
