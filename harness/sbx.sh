@@ -244,10 +244,23 @@ else
   CLAUDE_AUTH_OUT="$("${CLAUDE_AUTH_CMD[@]}" 2>&1)"
 fi
 CLAUDE_AUTH_RC=$?
-if [ "$CLAUDE_AUTH_RC" -ne 0 ]; then
+# Classify the probe's OUTCOME — a bare "rc != 0 means unauthenticated" test is wrong and produced a
+# false negative that blocked a correctly-authenticated boot: --max-budget-usd makes the probe exit
+# non-zero with "Exceeded USD budget" on a perfectly good login, because the trivial prompt can cost
+# more than the cap. Hitting the cap is positive evidence: billable work only happens AFTER the API
+# accepts your credentials. Verified empirically both ways — a bad token fails with "Failed to
+# authenticate / 401 ... is invalid" and never reaches billing, while a good one reaches the cap.
+# Anything else (network, proxy, timeout) is neither pass nor auth failure and must say so, rather
+# than sending the operator off to re-authenticate a login that was never the problem.
+if [ "$CLAUDE_AUTH_RC" -eq 0 ]; then
+  say "claude: authenticated"
+elif printf '%s' "$CLAUDE_AUTH_OUT" | grep -qiE 'exceeded (usd )?budget'; then
+  say "claude: authenticated (probe stopped at its budget cap — reaching billing proves the credentials were accepted)"
+elif printf '%s' "$CLAUDE_AUTH_OUT" | grep -qiE 'failed to authenticate|not logged in|401|invalid api key|oauth (access )?token'; then
   die "claude is on PATH but not authenticated — every claude-model dispatch would fail (claude -p said: $CLAUDE_AUTH_OUT). Fix: seed a working ~/.claude/.credentials.json (sbx's own interactive login), or export CLAUDE_CODE_OAUTH_TOKEN (a 'claude setup-token' token — the same variable the cluster deployments use, see deploy/fleet/worker-deployment.yaml) before running sbx.sh."
+else
+  die "claude auth probe failed for a NON-auth reason — not a login problem, so re-authenticating will not help (claude -p said: $CLAUDE_AUTH_OUT). Check network/proxy egress to api.anthropic.com from inside the sandbox, then re-run."
 fi
-say "claude: authenticated"
 
 command -v codex >/dev/null 2>&1 || die "codex CLI not on PATH — gpt-5.5 is allowlisted and routed via AGENT_CODEX_MODELS, so its review dispatches would fail"
 say "codex: $(command -v codex)"
