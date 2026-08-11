@@ -34,6 +34,14 @@ import (
 
 var version = "dev"
 
+// noopNotifier discards notifications. It's used when NOTIFY_URL isn't configured, so
+// that PR-watch reconciliation (including stale pull request cleanup) still runs.
+type noopNotifier struct{}
+
+func (noopNotifier) Publish(ctx context.Context, n notify.Notification) error {
+	return nil
+}
+
 type claimError struct {
 	message string
 	code    int
@@ -226,23 +234,31 @@ func runServer() {
 	sigCtx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
-	// Set up notification and PR-watch reconcilers if enabled
+	// Set up the PR-watch reconciler unconditionally: it closes stale pull requests
+	// belonging to superseded/abandoned tasks, which must happen regardless of whether
+	// change notifications are configured. NOTIFY_URL only controls the separate
+	// notify reconciler (and, when set, lets PR-watch publish notifications too).
+	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+
+	var notifier notify.Notifier = noopNotifier{}
+	reconcilers := []reconcile.Reconciler{}
+
 	if notifyURL != "" {
 		if notifyToken == "" {
 			log.Fatal("NOTIFY_TOKEN environment variable not set")
 		}
 
-		logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
-
 		notifyClient := notify.NewClient(notifyURL, notifyToken, nil, logger)
-		notifyReconciler := notify.NewNotifyReconciler(s, notifyClient, notifyFailedWindow, time.Now, logger)
-		prwatchReconciler := prwatch.NewPRWatchReconciler(s, notifyClient, forge.OwnerToken, logger)
-		runner := reconcile.NewRunner(notifyInterval, logger, notifyReconciler, prwatchReconciler)
-
-		go func() {
-			runner.Run(sigCtx)
-		}()
+		notifier = notifyClient
+		reconcilers = append(reconcilers, notify.NewNotifyReconciler(s, notifyClient, notifyFailedWindow, time.Now, logger))
 	}
+
+	reconcilers = append(reconcilers, prwatch.NewPRWatchReconciler(s, notifier, forge.OwnerToken, logger))
+	runner := reconcile.NewRunner(notifyInterval, logger, reconcilers...)
+
+	go func() {
+		runner.Run(sigCtx)
+	}()
 
 	// Create HTTP server
 	httpServer := &http.Server{

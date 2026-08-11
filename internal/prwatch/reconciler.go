@@ -4,9 +4,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"net/url"
-	"strconv"
-	"strings"
 	"time"
 
 	"github.com/boldfield/agentask/internal/forge"
@@ -61,6 +58,16 @@ func (r *PRWatchReconciler) Reconcile(ctx context.Context) error {
 	for _, project := range projects {
 		if err := r.reconcileProject(ctx, project.ID); err != nil {
 			r.logger.Error("reconcile project error", "project_id", project.ID, "error", err)
+		}
+	}
+
+	// Retrofit: close still-open pull requests belonging to tasks already in a
+	// terminal state (superseded, abandoned). This drains the backlog of stale
+	// pull requests that accrued before supersession started closing them
+	// inline, and it's the same safety net for any inline close that failed.
+	for _, project := range projects {
+		if err := r.retrofitClosePRsForTerminalTasks(ctx, project.ID); err != nil {
+			r.logger.Error("retrofit close PR error", "project_id", project.ID, "error", err)
 		}
 	}
 
@@ -162,33 +169,111 @@ func (r *PRWatchReconciler) reconcileTask(ctx context.Context, task store.Task) 
 	return nil
 }
 
+// terminalPRCleanupStates lists the task states whose still-open pull requests should
+// be closed by the retrofit pass: tasks superseded by a replacement, and tasks
+// abandoned outright (e.g. their pull request was closed without merging).
+var terminalPRCleanupStates = []string{"superseded", "abandoned"}
+
+// retrofitClosePRsForTerminalTasks closes still-open pull requests belonging to tasks
+// already in a terminal state. It's the one-shot backlog drain plus the ongoing safety
+// net for any inline close (on supersession) that failed.
+func (r *PRWatchReconciler) retrofitClosePRsForTerminalTasks(ctx context.Context, projectID string) error {
+	for _, state := range terminalPRCleanupStates {
+		tasks, err := r.taskSource.ListTasks(ctx, projectID, store.TaskListFilter{
+			State:             &state,
+			IncludeSuperseded: true,
+			IncludeArchived:   true,
+		})
+		if err != nil {
+			r.logger.Error("retrofit list tasks error", "project_id", projectID, "state", state, "error", err)
+			continue
+		}
+
+		for _, task := range tasks {
+			r.retrofitCloseTaskPR(ctx, task)
+		}
+	}
+
+	return nil
+}
+
+// retrofitCloseTaskPR closes the still-open pull request belonging to a task that has
+// already reached a terminal state. Every failure is logged and swallowed: a stale
+// pull request that can't be closed this pass is picked up again on the next one.
+func (r *PRWatchReconciler) retrofitCloseTaskPR(ctx context.Context, task store.Task) {
+	fullTask, err := r.taskSource.GetTask(ctx, task.ID)
+	if err != nil {
+		r.logger.Error("retrofit get task error", "task_id", task.ID, "error", err)
+		return
+	}
+
+	var prLink *store.TaskLink
+	for i := range fullTask.Links {
+		if fullTask.Links[i].Kind == "pr" {
+			prLink = &fullTask.Links[i]
+			break
+		}
+	}
+
+	if prLink == nil {
+		return
+	}
+
+	owner, repo, prNumber, err := forge.ParsePRURL(prLink.Value)
+	if err != nil {
+		r.logger.Error("retrofit parse PR URL error", "task_id", task.ID, "pr_url", prLink.Value, "error", err)
+		return
+	}
+
+	token, err := r.tokenLookup(owner)
+	if err != nil {
+		r.logger.Error("retrofit token lookup error", "task_id", task.ID, "owner", owner, "error", err)
+		return
+	}
+
+	state, err := r.getPRState(ctx, owner, repo, prNumber, token)
+	if err != nil {
+		r.logger.Error("retrofit get PR state error", "task_id", task.ID, "owner", owner, "repo", repo, "pr_number", prNumber, "error", err)
+		return
+	}
+
+	// Only close open PRs; never touch a merged or already-closed one.
+	if state != "open" {
+		return
+	}
+
+	comment := terminalTaskComment(task, fullTask.SupersededBy)
+	if err := r.postPRComment(ctx, owner, repo, prNumber, token, comment); err != nil {
+		r.logger.Error("retrofit post comment error", "task_id", task.ID, "owner", owner, "repo", repo, "pr_number", prNumber, "error", err)
+		// Continue to close the PR even if the comment failed.
+	}
+
+	if err := forge.ClosePR(ctx, owner, repo, prNumber, token); err != nil {
+		r.logger.Error("retrofit close PR error", "task_id", task.ID, "owner", owner, "repo", repo, "pr_number", prNumber, "error", err)
+		return
+	}
+
+	branch := "mr/" + task.ID[:8]
+	if err := forge.DeleteBranch(ctx, owner, repo, branch, token); err != nil {
+		r.logger.Error("retrofit delete branch error", "task_id", task.ID, "owner", owner, "repo", repo, "branch", branch, "error", err)
+	}
+
+	r.logger.Info("retrofit closed PR for terminal task", "task_id", task.ID, "state", task.State, "owner", owner, "repo", repo, "pr_number", prNumber)
+}
+
+// terminalTaskComment builds the pull-request-close comment for a task in a terminal
+// state, naming the replacement task when one exists so the history stays readable.
+func terminalTaskComment(task store.Task, supersededBy *string) string {
+	if supersededBy != nil {
+		return fmt.Sprintf("Superseded by task %s. Closing this pull request; the current attempt continues there.", *supersededBy)
+	}
+	return fmt.Sprintf("This task is now %s; closing this stale pull request.", task.State)
+}
+
+// parsePRURL delegates to forge.ParsePRURL. Kept as a thin wrapper so existing
+// call sites and tests in this package don't need to reference forge directly.
 func parsePRURL(prURL string) (owner, repo string, number int, err error) {
-	prURL = strings.TrimSuffix(prURL, "/")
-
-	u, err := url.Parse(prURL)
-	if err != nil {
-		return "", "", 0, fmt.Errorf("invalid URL: %w", err)
-	}
-
-	if u.Host != "github.com" {
-		return "", "", 0, fmt.Errorf("not a github.com URL")
-	}
-
-	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
-
-	if len(parts) != 4 || parts[2] != "pull" {
-		return "", "", 0, fmt.Errorf("not a pull request URL")
-	}
-
-	owner = parts[0]
-	repo = parts[1]
-
-	number, err = strconv.Atoi(parts[3])
-	if err != nil {
-		return "", "", 0, fmt.Errorf("invalid pull request number: %w", err)
-	}
-
-	return owner, repo, number, nil
+	return forge.ParsePRURL(prURL)
 }
 
 func parseTime(timeStr string) (time.Time, error) {

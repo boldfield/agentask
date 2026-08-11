@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/url"
 	"path/filepath"
 	"sort"
@@ -16,6 +17,8 @@ import (
 
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
+
+	"github.com/boldfield/agentask/internal/forge"
 )
 
 //go:embed migrations
@@ -2371,6 +2374,8 @@ func (s *sqliteStore) supersedeTaskTx(ctx context.Context, tx *sql.Tx, taskID st
 
 // SupersedeTask atomically creates a replacement task with copied fields and dependencies,
 // re-points all dependents, and marks the old task as superseded.
+// After the transaction commits, it best-effort closes the old task's recorded pull
+// request (if any) and deletes its head branch — see closeSupersededPR.
 // Returns the new Task or ErrNotFound if the old task doesn't exist.
 func (s *sqliteStore) SupersedeTask(ctx context.Context, taskID string, modelOverride *string) (Task, error) {
 	tx, err := s.conn.BeginTx(ctx, nil)
@@ -2388,6 +2393,15 @@ func (s *sqliteStore) SupersedeTask(ctx context.Context, taskID string, modelOve
 	if err := tx.Commit(); err != nil {
 		return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
+
+	// The task state change above is authoritative; closing its pull request is
+	// best-effort cleanup that must never roll back or block the supersession that
+	// already happened. Detach from the request context (which is canceled the
+	// moment the HTTP handler returns) and bound it with its own timeout instead,
+	// so a hung or throttled GitHub API can't hang this call indefinitely.
+	closeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 30*time.Second)
+	defer cancel()
+	s.closeSupersededPR(closeCtx, taskID, newTaskID)
 
 	// Load the new task from the database (this gets the feedback-augmented spec)
 	var newTask Task
@@ -2409,6 +2423,75 @@ func (s *sqliteStore) SupersedeTask(ctx context.Context, taskID string, modelOve
 	}
 
 	return newTask, nil
+}
+
+// closeSupersededPR closes the old task's recorded pull request (if any and still
+// open), posts a comment naming the replacement task, and deletes its head branch.
+// GitHub retains refs/pull/N/head for a closed PR, so the commits stay reachable even
+// after the branch is gone. Every step is best-effort: a failure is logged and the
+// remaining steps are skipped, but the caller never sees an error, since a pull
+// request that can't be closed must never be treated as a failed supersession.
+func (s *sqliteStore) closeSupersededPR(ctx context.Context, oldTaskID, newTaskID string) {
+	logger := slog.Default()
+
+	oldTask, err := s.GetTask(ctx, oldTaskID)
+	if err != nil {
+		logger.Error("failed to load superseded task for PR close", "task_id", oldTaskID, "error", err)
+		return
+	}
+
+	var prLink *TaskLink
+	for i := range oldTask.Links {
+		if oldTask.Links[i].Kind == "pr" {
+			prLink = &oldTask.Links[i]
+			break
+		}
+	}
+
+	if prLink == nil {
+		return
+	}
+
+	owner, repo, prNumber, err := forge.ParsePRURL(prLink.Value)
+	if err != nil {
+		logger.Error("failed to parse PR URL for superseded task", "task_id", oldTaskID, "pr_url", prLink.Value, "error", err)
+		return
+	}
+
+	token, err := forge.OwnerToken(owner)
+	if err != nil {
+		logger.Error("failed to get forge token for PR close", "task_id", oldTaskID, "owner", owner, "error", err)
+		return
+	}
+
+	state, err := forge.GetPRState(ctx, owner, repo, prNumber, token)
+	if err != nil {
+		logger.Error("failed to get PR state for superseded task", "task_id", oldTaskID, "owner", owner, "repo", repo, "pr_number", prNumber, "error", err)
+		return
+	}
+
+	// Idempotent and never touches a merged or already-closed PR.
+	if state != "open" {
+		return
+	}
+
+	comment := fmt.Sprintf("Superseded by task %s. Closing this pull request; the current attempt continues there.", newTaskID)
+	if err := forge.PostPRComment(ctx, owner, repo, prNumber, token, comment); err != nil {
+		logger.Error("failed to post comment on superseded PR", "task_id", oldTaskID, "owner", owner, "repo", repo, "pr_number", prNumber, "error", err)
+		// Continue to close the PR even if the comment failed.
+	}
+
+	if err := forge.ClosePR(ctx, owner, repo, prNumber, token); err != nil {
+		logger.Error("failed to close superseded PR", "task_id", oldTaskID, "owner", owner, "repo", repo, "pr_number", prNumber, "error", err)
+		return
+	}
+
+	branch := "mr/" + oldTaskID[:8]
+	if err := forge.DeleteBranch(ctx, owner, repo, branch, token); err != nil {
+		logger.Error("failed to delete superseded task's branch", "task_id", oldTaskID, "owner", owner, "repo", repo, "branch", branch, "error", err)
+	}
+
+	logger.Info("closed superseded PR", "task_id", oldTaskID, "owner", owner, "repo", repo, "pr_number", prNumber, "replacement_task_id", newTaskID)
 }
 
 // ArchiveTask sets the archived_at timestamp for a task to the current time.

@@ -3,10 +3,13 @@ package prwatch
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -40,7 +43,20 @@ func (f *fakeTaskSource) ListTasks(ctx context.Context, projectID string, filter
 	if f.tasksErr != nil {
 		return nil, f.tasksErr
 	}
-	return f.tasks[projectID], nil
+	tasks := f.tasks[projectID]
+	if filter.State == nil {
+		return tasks, nil
+	}
+	// Mirror the real store's state filtering so tests exercising a specific
+	// TaskListFilter.State (e.g. the retrofit pass's "superseded"/"abandoned"
+	// queries) don't pick up fixture tasks meant for a different query.
+	filtered := make([]store.Task, 0, len(tasks))
+	for _, task := range tasks {
+		if task.State == *filter.State {
+			filtered = append(filtered, task)
+		}
+	}
+	return filtered, nil
 }
 
 func (f *fakeTaskSource) GetTask(ctx context.Context, id string) (store.TaskWithDepsAndLinks, error) {
@@ -562,6 +578,252 @@ func TestParsePRURL(t *testing.T) {
 				if owner != tt.owner || repo != tt.repo || number != tt.number {
 					t.Errorf("parsePRURL() = (%q, %q, %d), want (%q, %q, %d)", owner, repo, number, tt.owner, tt.repo, tt.number)
 				}
+			}
+		})
+	}
+}
+
+// retrofitCalls records which GitHub API calls a fake forge server observed during a
+// retrofit pass, for asserting invocation rather than just the absence of an error.
+type retrofitCalls struct {
+	mu            sync.Mutex
+	closeCount    int
+	comments      []string
+	deletedBranch string
+}
+
+// newRetrofitTestServer starts a fake GitHub API server that reports the given PR state
+// for GET /pulls/{n} and records comment/close/branch-delete calls. It fails the test on
+// any request it doesn't recognize, so a stray real network call can't pass silently.
+func newRetrofitTestServer(t *testing.T, prState string) (*httptest.Server, *retrofitCalls) {
+	t.Helper()
+	calls := &retrofitCalls{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.mu.Lock()
+		defer calls.mu.Unlock()
+
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/"):
+			w.Header().Set("Content-Type", "application/json")
+			switch prState {
+			case "merged":
+				fmt.Fprint(w, `{"merged_at": "2026-08-01T00:00:00Z", "state": "closed"}`)
+			case "closed":
+				fmt.Fprint(w, `{"merged_at": null, "state": "closed"}`)
+			default:
+				fmt.Fprint(w, `{"merged_at": null, "state": "open"}`)
+			}
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			calls.comments = append(calls.comments, string(body))
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/pulls/"):
+			calls.closeCount++
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/git/refs/heads/"):
+			idx := strings.Index(r.URL.Path, "/git/refs/heads/")
+			calls.deletedBranch = r.URL.Path[idx+len("/git/refs/heads/"):]
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+
+	return server, calls
+}
+
+// createTerminalTaskWithPRLink drives a real task through review with a recorded "pr"
+// link, then flips it directly to the given terminal state via raw SQL, bypassing
+// store.SupersedeTask so the live inline-close path never fires. That keeps this
+// fixture isolated to exercising the reconciler's retrofit path on its own.
+func createTerminalTaskWithPRLink(t *testing.T, ctx context.Context, st store.Store, projID, docID, prURL, state string, supersededBy *string) store.Task {
+	t.Helper()
+
+	tasks, err := st.CreateTasks(ctx, projID, []store.TaskInput{{Title: "Task", Spec: "Spec", DocumentID: docID}})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	task := tasks[0]
+
+	if _, err := st.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", task.ID); err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	if _, err := st.ClaimTask(ctx, task.ID, "agent-1", "haiku", 5*time.Minute); err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	links := []store.LinkInput{{Kind: "pr", Value: prURL}}
+	if _, err := st.SubmitTask(ctx, task.ID, "agent-1", "Implementation complete", nil, links, 5, nil); err != nil {
+		t.Fatalf("failed to submit task: %v", err)
+	}
+
+	if supersededBy != nil {
+		if _, err := st.Conn().ExecContext(ctx, "UPDATE task SET state = ?, superseded_by = ? WHERE id = ?", state, *supersededBy, task.ID); err != nil {
+			t.Fatalf("failed to force task terminal state: %v", err)
+		}
+	} else {
+		if _, err := st.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", state, task.ID); err != nil {
+			t.Fatalf("failed to force task terminal state: %v", err)
+		}
+	}
+
+	return task
+}
+
+func newRealTestStoreWithProject(t *testing.T, ctx context.Context) (store.Store, store.Project, store.Document) {
+	t.Helper()
+
+	st, err := store.Open("file::memory:?cache=shared", []string{"haiku", "sonnet", "opus"})
+	if err != nil {
+		t.Fatalf("failed to open store: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+
+	proj, err := st.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+	doc, err := st.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	return st, proj, doc
+}
+
+// TestRetrofitClosesOpenPRForSupersededTaskThroughRealStore drives the retrofit pass
+// through Reconcile -> reconcileProject/retrofitClosePRsForTerminalTasks -> the real
+// store's ListTasks, rather than a fake task source, so it catches filter bugs (e.g. a
+// missing IncludeSuperseded) that a fake ignoring TaskListFilter would miss.
+func TestRetrofitClosesOpenPRForSupersededTaskThroughRealStore(t *testing.T) {
+	ctx := context.Background()
+
+	server, calls := newRetrofitTestServer(t, "open")
+	defer server.Close()
+	oldBaseURL := forge.GitHubBaseURL
+	forge.GitHubBaseURL = server.URL
+	defer func() { forge.GitHubBaseURL = oldBaseURL }()
+
+	st, proj, doc := newRealTestStoreWithProject(t, ctx)
+
+	replacementID := "11111111-2222-3333-4444-555555555555"
+	task := createTerminalTaskWithPRLink(t, ctx, st, proj.ID, doc.ID, "https://github.com/testowner/testrepo/pull/123", "superseded", &replacementID)
+
+	tokenLookup := func(owner string) (string, error) { return "test-token", nil }
+	reconciler := NewPRWatchReconciler(st, &fakeNotifierForReconciler{}, tokenLookup, newTestLogger())
+
+	if err := reconciler.Reconcile(ctx); err != nil {
+		t.Fatalf("Reconcile failed: %v", err)
+	}
+
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	if calls.closeCount != 1 {
+		t.Errorf("expected retrofit to close the stale PR exactly once, got %d", calls.closeCount)
+	}
+	if len(calls.comments) != 1 || !strings.Contains(calls.comments[0], replacementID) {
+		t.Errorf("expected retrofit comment to name the replacement task %s, got %v", replacementID, calls.comments)
+	}
+	wantBranch := "mr/" + task.ID[:8]
+	if calls.deletedBranch != wantBranch {
+		t.Errorf("expected branch %q to be deleted, got %q", wantBranch, calls.deletedBranch)
+	}
+}
+
+// TestRetrofitClosesOpenPRForAbandonedTask covers the "by the same argument abandoned"
+// half of the spec's terminal-state retrofit requirement.
+func TestRetrofitClosesOpenPRForAbandonedTask(t *testing.T) {
+	ctx := context.Background()
+
+	server, calls := newRetrofitTestServer(t, "open")
+	defer server.Close()
+	oldBaseURL := forge.GitHubBaseURL
+	forge.GitHubBaseURL = server.URL
+	defer func() { forge.GitHubBaseURL = oldBaseURL }()
+
+	st, proj, doc := newRealTestStoreWithProject(t, ctx)
+
+	createTerminalTaskWithPRLink(t, ctx, st, proj.ID, doc.ID, "https://github.com/testowner/testrepo/pull/456", "abandoned", nil)
+
+	tokenLookup := func(owner string) (string, error) { return "test-token", nil }
+	reconciler := NewPRWatchReconciler(st, &fakeNotifierForReconciler{}, tokenLookup, newTestLogger())
+
+	if err := reconciler.Reconcile(ctx); err != nil {
+		t.Fatalf("Reconcile failed: %v", err)
+	}
+
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	if calls.closeCount != 1 {
+		t.Errorf("expected retrofit to close the abandoned task's stale PR, got %d close calls", calls.closeCount)
+	}
+	if len(calls.comments) != 1 || !strings.Contains(calls.comments[0], "abandoned") {
+		t.Errorf("expected comment to reference the abandoned state, got %v", calls.comments)
+	}
+}
+
+// TestRetrofitLeavesDoneTaskMergedPRUntouched covers the spec's other required
+// reconciler case: a done task's merged PR is left alone.
+func TestRetrofitLeavesDoneTaskMergedPRUntouched(t *testing.T) {
+	ctx := context.Background()
+
+	server, calls := newRetrofitTestServer(t, "merged")
+	defer server.Close()
+	oldBaseURL := forge.GitHubBaseURL
+	forge.GitHubBaseURL = server.URL
+	defer func() { forge.GitHubBaseURL = oldBaseURL }()
+
+	st, proj, doc := newRealTestStoreWithProject(t, ctx)
+
+	createTerminalTaskWithPRLink(t, ctx, st, proj.ID, doc.ID, "https://github.com/testowner/testrepo/pull/789", "done", nil)
+
+	tokenLookup := func(owner string) (string, error) { return "test-token", nil }
+	reconciler := NewPRWatchReconciler(st, &fakeNotifierForReconciler{}, tokenLookup, newTestLogger())
+
+	if err := reconciler.Reconcile(ctx); err != nil {
+		t.Fatalf("Reconcile failed: %v", err)
+	}
+
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	if calls.closeCount != 0 {
+		t.Errorf("expected retrofit not to touch a done task's PR, got %d close calls", calls.closeCount)
+	}
+	if len(calls.comments) != 0 {
+		t.Errorf("expected no comment on a done task's PR, got %v", calls.comments)
+	}
+}
+
+// TestRetrofitSkipsAlreadyClosedOrMergedSupersededPR proves the retrofit pass, like the
+// supersede-time close, never touches a PR that isn't open.
+func TestRetrofitSkipsAlreadyClosedOrMergedSupersededPR(t *testing.T) {
+	for _, prState := range []string{"merged", "closed"} {
+		t.Run(prState, func(t *testing.T) {
+			ctx := context.Background()
+
+			server, calls := newRetrofitTestServer(t, prState)
+			defer server.Close()
+			oldBaseURL := forge.GitHubBaseURL
+			forge.GitHubBaseURL = server.URL
+			defer func() { forge.GitHubBaseURL = oldBaseURL }()
+
+			st, proj, doc := newRealTestStoreWithProject(t, ctx)
+
+			replacementID := "22222222-3333-4444-5555-666666666666"
+			createTerminalTaskWithPRLink(t, ctx, st, proj.ID, doc.ID, "https://github.com/testowner/testrepo/pull/321", "superseded", &replacementID)
+
+			tokenLookup := func(owner string) (string, error) { return "test-token", nil }
+			reconciler := NewPRWatchReconciler(st, &fakeNotifierForReconciler{}, tokenLookup, newTestLogger())
+
+			if err := reconciler.Reconcile(ctx); err != nil {
+				t.Fatalf("Reconcile failed: %v", err)
+			}
+
+			calls.mu.Lock()
+			defer calls.mu.Unlock()
+			if calls.closeCount != 0 {
+				t.Errorf("expected retrofit not to close an already-%s PR, got %d close calls", prState, calls.closeCount)
 			}
 		})
 	}
