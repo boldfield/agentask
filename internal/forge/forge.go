@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -185,6 +187,112 @@ func PostPRComment(ctx context.Context, owner, repo string, prNumber int, token,
 	}
 
 	return nil
+}
+
+// ClosePR closes a GitHub pull request using the GitHub REST API.
+// It makes a PATCH request to /repos/{owner}/{repo}/pulls/{prNumber} with state="closed".
+func ClosePR(ctx context.Context, owner, repo string, prNumber int, token string) error {
+	url := fmt.Sprintf("%s/repos/%s/%s/pulls/%d", GitHubBaseURL, owner, repo, prNumber)
+
+	payload := map[string]string{
+		"state": "closed",
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal request body: %w", err)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPatch, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	req.Header.Set("Content-Type", "application/json")
+	if token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("close PR failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
+// DeleteBranch deletes a branch from a GitHub repository using the GitHub REST API.
+// It makes a DELETE request to /repos/{owner}/{repo}/git/refs/heads/{branch}.
+// A 404 response (branch already gone) is treated as success, so the caller can call
+// this idempotently without first checking whether the branch still exists.
+func DeleteBranch(ctx context.Context, owner, repo, branch, token string) error {
+	url := fmt.Sprintf("%s/repos/%s/%s/git/refs/heads/%s", GitHubBaseURL, owner, repo, branch)
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Accept", "application/vnd.github.v3+json")
+	if token != "" {
+		req.Header.Set("Authorization", "token "+token)
+	}
+
+	client := &http.Client{}
+	resp, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("failed to make request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode == http.StatusNotFound {
+		return nil
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		respBody, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("delete branch failed with status %d: %s", resp.StatusCode, string(respBody))
+	}
+
+	return nil
+}
+
+// ParsePRURL parses a GitHub pull request URL (e.g. https://github.com/owner/repo/pull/123)
+// and returns the owner, repo, and PR number.
+func ParsePRURL(prURL string) (owner, repo string, number int, err error) {
+	prURL = strings.TrimSuffix(prURL, "/")
+
+	u, err := url.Parse(prURL)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("invalid URL: %w", err)
+	}
+
+	if u.Host != "github.com" {
+		return "", "", 0, fmt.Errorf("not a github.com URL")
+	}
+
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+
+	if len(parts) != 4 || parts[2] != "pull" {
+		return "", "", 0, fmt.Errorf("not a pull request URL")
+	}
+
+	owner = parts[0]
+	repo = parts[1]
+
+	number, err = strconv.Atoi(parts[3])
+	if err != nil {
+		return "", "", 0, fmt.Errorf("invalid pull request number: %w", err)
+	}
+
+	return owner, repo, number, nil
 }
 
 // prAlreadyMerged reports whether the given PR has already been merged, using

@@ -6,7 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
+	"net/http"
+	"net/http/httptest"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -14,6 +18,8 @@ import (
 	"testing"
 	"testing/fstest"
 	"time"
+
+	"github.com/boldfield/agentask/internal/forge"
 )
 
 // defaultTestAllowedModels returns the default allowed models for tests (matching main.go default).
@@ -8313,5 +8319,309 @@ func TestTransitionMergeTaskInProgressToDone(t *testing.T) {
 	insertTask("it", "implement")
 	if _, err := store.TransitionTask(ctx, "it", "done", nil); err == nil {
 		t.Error("non-merge in_progress->done should be rejected, but it was allowed")
+	}
+}
+
+// prCloseCalls records which GitHub API calls a fake forge server observed, so tests
+// can assert that closing a superseded task's pull request was (or wasn't) invoked
+// rather than just that SupersedeTask returned no error.
+type prCloseCalls struct {
+	mu            sync.Mutex
+	getStateCount int
+	comments      []string
+	closeCount    int
+	deletedBranch string
+}
+
+// newSupersedePRTestServer starts a fake GitHub API server that reports the given PR
+// state for GET /pulls/{n} and records comment/close/branch-delete calls. It fails the
+// test on any request it doesn't recognize.
+func newSupersedePRTestServer(t *testing.T, prState string) (*httptest.Server, *prCloseCalls) {
+	t.Helper()
+	calls := &prCloseCalls{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.mu.Lock()
+		defer calls.mu.Unlock()
+
+		switch {
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/pulls/"):
+			calls.getStateCount++
+			w.Header().Set("Content-Type", "application/json")
+			switch prState {
+			case "merged":
+				fmt.Fprint(w, `{"merged_at": "2026-08-01T00:00:00Z", "state": "closed"}`)
+			case "closed":
+				fmt.Fprint(w, `{"merged_at": null, "state": "closed"}`)
+			case "error":
+				w.WriteHeader(http.StatusInternalServerError)
+				fmt.Fprint(w, `{"message": "internal error"}`)
+			default:
+				fmt.Fprint(w, `{"merged_at": null, "state": "open"}`)
+			}
+		case r.Method == http.MethodPost && strings.Contains(r.URL.Path, "/comments"):
+			body, _ := io.ReadAll(r.Body)
+			calls.comments = append(calls.comments, string(body))
+			w.WriteHeader(http.StatusCreated)
+		case r.Method == http.MethodPatch && strings.Contains(r.URL.Path, "/pulls/"):
+			calls.closeCount++
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodDelete && strings.Contains(r.URL.Path, "/git/refs/heads/"):
+			idx := strings.Index(r.URL.Path, "/git/refs/heads/")
+			calls.deletedBranch = r.URL.Path[idx+len("/git/refs/heads/"):]
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			t.Errorf("unexpected request: %s %s", r.Method, r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+
+	return server, calls
+}
+
+// setForgeToken points FORGE_TOKENS at a temp file so forge.OwnerToken resolves a
+// token for owner without touching the real ~/.agentask/forge-tokens.
+func setForgeToken(t *testing.T, owner, token string) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "forge-tokens")
+	content := fmt.Sprintf("%s=%s\n", owner, token)
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write forge tokens file: %v", err)
+	}
+	t.Setenv("FORGE_TOKENS", path)
+}
+
+// createSupersedableTaskWithPRLink creates a project/doc/task, drives it through
+// ready -> claimed -> in_progress -> review with a recorded "pr" link, and returns the
+// task in its post-submit (review) state, ready to be passed to SupersedeTask.
+func createSupersedableTaskWithPRLink(t *testing.T, ctx context.Context, st Store, prURL string) Task {
+	t.Helper()
+
+	proj, err := st.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+	doc, err := st.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+	tasks, err := st.CreateTasks(ctx, proj.ID, []TaskInput{{Title: "Old Task", Spec: "Spec", DocumentID: doc.ID}})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+	task := tasks[0]
+
+	if _, err := st.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", task.ID); err != nil {
+		t.Fatalf("failed to promote task: %v", err)
+	}
+	if _, err := st.ClaimTask(ctx, task.ID, "agent-1", "haiku", 5*time.Minute); err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+	links := []LinkInput{{Kind: "pr", Value: prURL}}
+	if _, err := st.SubmitTask(ctx, task.ID, "agent-1", "Implementation complete", nil, links, 5, nil); err != nil {
+		t.Fatalf("failed to submit task: %v", err)
+	}
+
+	// The task's ID is stable across the state transitions above; the caller only
+	// needs it (to supersede the task and to derive its deterministic branch name).
+	return task
+}
+
+func withMockForge(t *testing.T, server *httptest.Server) {
+	t.Helper()
+	oldBaseURL := forge.GitHubBaseURL
+	forge.GitHubBaseURL = server.URL
+	t.Cleanup(func() { forge.GitHubBaseURL = oldBaseURL })
+}
+
+// armSupersedeCloseSync arms st's background-close completion hook and returns a
+// function that blocks until the async closeSupersededPR spawned by the next
+// SupersedeTask call has finished. SupersedeTask runs that cleanup in a goroutine
+// so a slow forge call can never add latency to the request; tests need this to
+// deterministically observe its effects instead of racing it.
+func armSupersedeCloseSync(t *testing.T, st Store) func() {
+	t.Helper()
+	done := make(chan struct{})
+	st.(*sqliteStore).supersedeCloseHook = func() { close(done) }
+	return func() {
+		t.Helper()
+		select {
+		case <-done:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for background superseded-PR close to finish")
+		}
+	}
+}
+
+func TestSupersedeTaskWithOpenPRLinkClosesIt(t *testing.T) {
+	ctx := context.Background()
+	setForgeToken(t, "testowner", "test-token")
+
+	server, calls := newSupersedePRTestServer(t, "open")
+	defer server.Close()
+	withMockForge(t, server)
+
+	st, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer st.Close()
+
+	oldTask := createSupersedableTaskWithPRLink(t, ctx, st, "https://github.com/testowner/testrepo/pull/123")
+
+	waitForClose := armSupersedeCloseSync(t, st)
+	newTask, err := st.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+	waitForClose()
+
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	if calls.getStateCount == 0 {
+		t.Errorf("expected GetPRState to be called")
+	}
+	if calls.closeCount != 1 {
+		t.Errorf("expected ClosePR to be called exactly once, got %d", calls.closeCount)
+	}
+	if len(calls.comments) != 1 || !strings.Contains(calls.comments[0], newTask.ID) {
+		t.Errorf("expected a comment naming the replacement task %s, got %v", newTask.ID, calls.comments)
+	}
+	wantBranch := "mr/" + oldTask.ID[:8]
+	if calls.deletedBranch != wantBranch {
+		t.Errorf("expected branch %q to be deleted, got %q", wantBranch, calls.deletedBranch)
+	}
+}
+
+func TestSupersedeTaskWithMergedPRDoesNotCloseIt(t *testing.T) {
+	ctx := context.Background()
+	setForgeToken(t, "testowner", "test-token")
+
+	server, calls := newSupersedePRTestServer(t, "merged")
+	defer server.Close()
+	withMockForge(t, server)
+
+	st, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer st.Close()
+
+	oldTask := createSupersedableTaskWithPRLink(t, ctx, st, "https://github.com/testowner/testrepo/pull/123")
+
+	waitForClose := armSupersedeCloseSync(t, st)
+	if _, err := st.SupersedeTask(ctx, oldTask.ID, nil); err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+	waitForClose()
+
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	if calls.closeCount != 0 {
+		t.Errorf("expected ClosePR not to be called for a merged PR, got %d calls", calls.closeCount)
+	}
+	if len(calls.comments) != 0 {
+		t.Errorf("expected no comment to be posted for a merged PR, got %v", calls.comments)
+	}
+	if calls.deletedBranch != "" {
+		t.Errorf("expected no branch delete for a merged PR, got %q", calls.deletedBranch)
+	}
+}
+
+func TestSupersedeTaskWithAlreadyClosedPRIsNotAnError(t *testing.T) {
+	ctx := context.Background()
+	setForgeToken(t, "testowner", "test-token")
+
+	server, calls := newSupersedePRTestServer(t, "closed")
+	defer server.Close()
+	withMockForge(t, server)
+
+	st, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer st.Close()
+
+	oldTask := createSupersedableTaskWithPRLink(t, ctx, st, "https://github.com/testowner/testrepo/pull/123")
+
+	waitForClose := armSupersedeCloseSync(t, st)
+	if _, err := st.SupersedeTask(ctx, oldTask.ID, nil); err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+	waitForClose()
+
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	if calls.closeCount != 0 {
+		t.Errorf("expected ClosePR not to be called for an already-closed PR, got %d calls", calls.closeCount)
+	}
+}
+
+func TestSupersedeTaskWithNoPRLinkIsCleanNoop(t *testing.T) {
+	ctx := context.Background()
+
+	st, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer st.Close()
+
+	proj, err := st.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+	doc, err := st.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+	tasks, err := st.CreateTasks(ctx, proj.ID, []TaskInput{{Title: "Old Task", Spec: "Spec", DocumentID: doc.ID}})
+	if err != nil {
+		t.Fatalf("failed to create tasks: %v", err)
+	}
+	oldTask := tasks[0]
+
+	waitForClose := armSupersedeCloseSync(t, st)
+	newTask, err := st.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed for a task with no pr link: %v", err)
+	}
+	waitForClose()
+	if newTask.ID == oldTask.ID {
+		t.Errorf("expected a new task to be created")
+	}
+}
+
+func TestSupersedeTaskForgeFailureStillSucceeds(t *testing.T) {
+	ctx := context.Background()
+	setForgeToken(t, "testowner", "test-token")
+
+	server, _ := newSupersedePRTestServer(t, "error")
+	defer server.Close()
+	withMockForge(t, server)
+
+	st, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer st.Close()
+
+	oldTask := createSupersedableTaskWithPRLink(t, ctx, st, "https://github.com/testowner/testrepo/pull/123")
+
+	waitForClose := armSupersedeCloseSync(t, st)
+	newTask, err := st.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask should succeed even when the forge call fails: %v", err)
+	}
+	waitForClose()
+	if newTask.ID == oldTask.ID || newTask.State != "backlog" {
+		t.Errorf("expected a fresh replacement task despite the forge failure, got %+v", newTask)
+	}
+
+	oldTaskAfter, err := st.GetTask(ctx, oldTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get old task: %v", err)
+	}
+	if oldTaskAfter.State != "superseded" || oldTaskAfter.SupersededBy == nil || *oldTaskAfter.SupersededBy != newTask.ID {
+		t.Errorf("expected old task to still be superseded by the new task despite the forge failure, got %+v", oldTaskAfter)
 	}
 }

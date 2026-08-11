@@ -571,3 +571,177 @@ func TestPRMergeability(t *testing.T) {
 		t.Errorf("NeedsRework(%q) = false, want true", state)
 	}
 }
+
+func TestClosePR(t *testing.T) {
+	tests := []struct {
+		name         string
+		statusCode   int
+		responseBody string
+		wantErr      bool
+	}{
+		{
+			name:         "successful close",
+			statusCode:   200,
+			responseBody: `{"number": 42, "state": "closed"}`,
+			wantErr:      false,
+		},
+		{
+			name:         "not found",
+			statusCode:   404,
+			responseBody: `{"message": "Not Found"}`,
+			wantErr:      true,
+		},
+		{
+			name:         "unauthorized",
+			statusCode:   401,
+			responseBody: `{"message": "Bad credentials"}`,
+			wantErr:      true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPatch {
+					t.Errorf("expected PATCH, got %s", r.Method)
+				}
+
+				expectedPath := "/repos/testuser/testrepo/pulls/42"
+				if r.URL.Path != expectedPath {
+					t.Errorf("expected path %s, got %s", expectedPath, r.URL.Path)
+				}
+
+				body, _ := io.ReadAll(r.Body)
+				if !strings.Contains(string(body), `"state":"closed"`) {
+					t.Errorf("expected request body to set state=closed, got %s", string(body))
+				}
+
+				w.WriteHeader(tt.statusCode)
+				w.Write([]byte(tt.responseBody))
+			}))
+			defer server.Close()
+
+			oldBaseURL := GitHubBaseURL
+			GitHubBaseURL = server.URL
+			defer func() { GitHubBaseURL = oldBaseURL }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			err := ClosePR(ctx, "testuser", "testrepo", 42, "test-token")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("ClosePR() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestDeleteBranch(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		wantErr    bool
+	}{
+		{
+			name:       "successful delete",
+			statusCode: 204,
+			wantErr:    false,
+		},
+		{
+			name:       "already gone is not an error",
+			statusCode: 404,
+			wantErr:    false,
+		},
+		{
+			name:       "unauthorized",
+			statusCode: 401,
+			wantErr:    true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodDelete {
+					t.Errorf("expected DELETE, got %s", r.Method)
+				}
+
+				expectedPath := "/repos/testuser/testrepo/git/refs/heads/mr/abcd1234"
+				if r.URL.Path != expectedPath {
+					t.Errorf("expected path %s, got %s", expectedPath, r.URL.Path)
+				}
+
+				w.WriteHeader(tt.statusCode)
+			}))
+			defer server.Close()
+
+			oldBaseURL := GitHubBaseURL
+			GitHubBaseURL = server.URL
+			defer func() { GitHubBaseURL = oldBaseURL }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+
+			err := DeleteBranch(ctx, "testuser", "testrepo", "mr/abcd1234", "test-token")
+			if (err != nil) != tt.wantErr {
+				t.Errorf("DeleteBranch() error = %v, wantErr %v", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestParsePRURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		owner   string
+		repo    string
+		number  int
+		wantErr bool
+	}{
+		{
+			name:   "valid PR URL",
+			url:    "https://github.com/boldfield/agentask/pull/297",
+			owner:  "boldfield",
+			repo:   "agentask",
+			number: 297,
+		},
+		{
+			name:   "trailing slash",
+			url:    "https://github.com/boldfield/agentask/pull/297/",
+			owner:  "boldfield",
+			repo:   "agentask",
+			number: 297,
+		},
+		{
+			name:    "not github.com",
+			url:     "https://gitlab.com/boldfield/agentask/pull/297",
+			wantErr: true,
+		},
+		{
+			name:    "not a pull request URL",
+			url:     "https://github.com/boldfield/agentask/issues/297",
+			wantErr: true,
+		},
+		{
+			name:    "invalid PR number",
+			url:     "https://github.com/boldfield/agentask/pull/notanumber",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner, repo, number, err := ParsePRURL(tt.url)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("ParsePRURL() error = %v, wantErr %v", err, tt.wantErr)
+			}
+			if tt.wantErr {
+				return
+			}
+			if owner != tt.owner || repo != tt.repo || number != tt.number {
+				t.Errorf("ParsePRURL() = (%q, %q, %d), want (%q, %q, %d)", owner, repo, number, tt.owner, tt.repo, tt.number)
+			}
+		})
+	}
+}
