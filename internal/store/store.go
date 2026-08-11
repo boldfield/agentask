@@ -8,14 +8,18 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
 	"net/url"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
+
+	"github.com/boldfield/agentask/internal/forge"
 )
 
 //go:embed migrations
@@ -2371,6 +2375,8 @@ func (s *sqliteStore) supersedeTaskTx(ctx context.Context, tx *sql.Tx, taskID st
 
 // SupersedeTask atomically creates a replacement task with copied fields and dependencies,
 // re-points all dependents, and marks the old task as superseded.
+// After the transaction commits, closes the old task's pull request if it exists and is open,
+// posting a comment with the replacement task ID.
 // Returns the new Task or ErrNotFound if the old task doesn't exist.
 func (s *sqliteStore) SupersedeTask(ctx context.Context, taskID string, modelOverride *string) (Task, error) {
 	tx, err := s.conn.BeginTx(ctx, nil)
@@ -2388,6 +2394,9 @@ func (s *sqliteStore) SupersedeTask(ctx context.Context, taskID string, modelOve
 	if err := tx.Commit(); err != nil {
 		return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
+
+	// Try to close the old task's PR if it exists (best-effort cleanup, outside transaction)
+	s.closePRForSupersededTask(ctx, taskID, newTaskID)
 
 	// Load the new task from the database (this gets the feedback-augmented spec)
 	var newTask Task
@@ -2409,6 +2418,103 @@ func (s *sqliteStore) SupersedeTask(ctx context.Context, taskID string, modelOve
 	}
 
 	return newTask, nil
+}
+
+// closePRForSupersededTask closes the pull request of a superseded task and posts a comment.
+// This is a best-effort operation that logs errors but does not fail.
+func (s *sqliteStore) closePRForSupersededTask(ctx context.Context, oldTaskID, newTaskID string) {
+	logger := slog.Default()
+
+	// Get the old task with its links
+	oldTask, err := s.GetTask(ctx, oldTaskID)
+	if err != nil {
+		logger.Error("failed to load superseded task for PR close", "task_id", oldTaskID, "error", err)
+		return
+	}
+
+	// Find the PR link
+	var prLink *TaskLink
+	for i := range oldTask.Links {
+		if oldTask.Links[i].Kind == "pr" {
+			prLink = &oldTask.Links[i]
+			break
+		}
+	}
+
+	if prLink == nil {
+		return
+	}
+
+	// Parse the PR URL
+	owner, repo, prNumber, err := parsePRURL(prLink.Value)
+	if err != nil {
+		logger.Error("failed to parse PR URL for superseded task", "task_id", oldTaskID, "pr_url", prLink.Value, "error", err)
+		return
+	}
+
+	// Get the token for the owner
+	token, err := forge.OwnerToken(owner)
+	if err != nil {
+		logger.Error("failed to get forge token for PR close", "task_id", oldTaskID, "owner", owner, "error", err)
+		return
+	}
+
+	// Check if the PR is open
+	state, err := forge.GetPRState(ctx, owner, repo, prNumber, token)
+	if err != nil {
+		logger.Error("failed to get PR state for superseded task", "task_id", oldTaskID, "owner", owner, "repo", repo, "pr_number", prNumber, "error", err)
+		return
+	}
+
+	// Only close open PRs
+	if state != "open" {
+		return
+	}
+
+	// Post a comment naming the replacement task
+	comment := fmt.Sprintf("Superseded by task %s", newTaskID)
+	if err := forge.PostPRComment(ctx, owner, repo, prNumber, token, comment); err != nil {
+		logger.Error("failed to post comment on superseded PR", "task_id", oldTaskID, "owner", owner, "repo", repo, "pr_number", prNumber, "error", err)
+		// Continue to close the PR even if comment fails
+	}
+
+	// Close the PR
+	if err := forge.ClosePR(ctx, owner, repo, prNumber, token); err != nil {
+		logger.Error("failed to close superseded PR", "task_id", oldTaskID, "owner", owner, "repo", repo, "pr_number", prNumber, "error", err)
+		return
+	}
+
+	logger.Info("closed superseded PR", "task_id", oldTaskID, "owner", owner, "repo", repo, "pr_number", prNumber, "replacement_task_id", newTaskID)
+}
+
+// parsePRURL parses a GitHub PR URL and returns the owner, repo, and PR number.
+func parsePRURL(prURL string) (owner, repo string, number int, err error) {
+	prURL = strings.TrimSuffix(prURL, "/")
+
+	u, err := url.Parse(prURL)
+	if err != nil {
+		return "", "", 0, fmt.Errorf("invalid URL: %w", err)
+	}
+
+	if u.Host != "github.com" {
+		return "", "", 0, fmt.Errorf("not a github.com URL")
+	}
+
+	parts := strings.Split(strings.TrimPrefix(u.Path, "/"), "/")
+
+	if len(parts) != 4 || parts[2] != "pull" {
+		return "", "", 0, fmt.Errorf("not a pull request URL")
+	}
+
+	owner = parts[0]
+	repo = parts[1]
+
+	number, err = strconv.Atoi(parts[3])
+	if err != nil {
+		return "", "", 0, fmt.Errorf("invalid pull request number: %w", err)
+	}
+
+	return owner, repo, number, nil
 }
 
 // ArchiveTask sets the archived_at timestamp for a task to the current time.

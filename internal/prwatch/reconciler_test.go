@@ -566,3 +566,156 @@ func TestParsePRURL(t *testing.T) {
 		})
 	}
 }
+
+func TestRetrofitClosePRsForSupersededTask(t *testing.T) {
+	ctx := context.Background()
+	ts := &fakeTaskSource{
+		projects: []store.Project{
+			{ID: "proj-1"},
+		},
+		tasks: map[string][]store.Task{
+			"proj-1": {
+				{
+					ID:    "task-1",
+					Title: "Test Task",
+					State: "superseded",
+				},
+			},
+		},
+		taskWithDepsAndLinks: map[string]store.TaskWithDepsAndLinks{
+			"task-1": {
+				ID:    "task-1",
+				Title: "Test Task",
+				State: "superseded",
+				Links: []store.TaskLink{
+					{Kind: "pr", Value: "https://github.com/owner/repo/pull/123"},
+				},
+			},
+		},
+	}
+	notifier := &fakeNotifierForReconciler{}
+	tokenLookup := func(owner string) (string, error) { return "token", nil }
+
+	var getStateCalled bool
+	var postCommentCalled bool
+
+	getPRState := func(ctx context.Context, owner, repo string, prNumber int, token string) (string, error) {
+		getStateCalled = true
+		return "open", nil
+	}
+
+	postPRComment := func(ctx context.Context, owner, repo string, prNumber int, token, comment string) error {
+		postCommentCalled = true
+		return nil
+	}
+
+	reconciler := NewPRWatchReconciler(ts, notifier, tokenLookup, newTestLogger())
+	reconciler.getPRState = getPRState
+	reconciler.postPRComment = postPRComment
+
+	err := reconciler.retrofitClosePRsForTerminalTasks(ctx, "proj-1")
+
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if !getStateCalled {
+		t.Error("getPRState was not called")
+	}
+
+	if !postCommentCalled {
+		t.Error("postPRComment was not called")
+	}
+}
+
+func TestRetrofitDoesNotCloseClosedPR(t *testing.T) {
+	ctx := context.Background()
+	ts := &fakeTaskSource{
+		projects: []store.Project{
+			{ID: "proj-1"},
+		},
+		tasks: map[string][]store.Task{
+			"proj-1": {
+				{
+					ID:    "task-1",
+					Title: "Test Task",
+					State: "superseded",
+				},
+			},
+		},
+		taskWithDepsAndLinks: map[string]store.TaskWithDepsAndLinks{
+			"task-1": {
+				ID:    "task-1",
+				Title: "Test Task",
+				State: "superseded",
+				Links: []store.TaskLink{
+					{Kind: "pr", Value: "https://github.com/owner/repo/pull/123"},
+				},
+			},
+		},
+	}
+	notifier := &fakeNotifierForReconciler{}
+	tokenLookup := func(owner string) (string, error) { return "token", nil }
+
+	var closePRCalled bool
+
+	getPRState := func(ctx context.Context, owner, repo string, prNumber int, token string) (string, error) {
+		return "closed", nil
+	}
+
+	reconciler := NewPRWatchReconciler(ts, notifier, tokenLookup, newTestLogger())
+	reconciler.getPRState = getPRState
+
+	err := reconciler.retrofitClosePRsForTerminalTasks(ctx, "proj-1")
+
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if closePRCalled {
+		t.Error("ClosePR should not be called for already-closed PR")
+	}
+}
+
+func TestRetrofitDoesNotCloseMergedPR(t *testing.T) {
+	ctx := context.Background()
+	ts := &fakeTaskSource{
+		projects: []store.Project{
+			{ID: "proj-1"},
+		},
+		tasks: map[string][]store.Task{
+			"proj-1": {
+				{
+					ID:    "task-1",
+					Title: "Test Task",
+					State: "superseded",
+				},
+			},
+		},
+		taskWithDepsAndLinks: map[string]store.TaskWithDepsAndLinks{
+			"task-1": {
+				ID:    "task-1",
+				Title: "Test Task",
+				State: "superseded",
+				Links: []store.TaskLink{
+					{Kind: "pr", Value: "https://github.com/owner/repo/pull/123"},
+				},
+			},
+		},
+	}
+	notifier := &fakeNotifierForReconciler{}
+	tokenLookup := func(owner string) (string, error) { return "token", nil }
+
+	getPRState := func(ctx context.Context, owner, repo string, prNumber int, token string) (string, error) {
+		return "merged", nil
+	}
+
+	reconciler := NewPRWatchReconciler(ts, notifier, tokenLookup, newTestLogger())
+	reconciler.getPRState = getPRState
+
+	err := reconciler.retrofitClosePRsForTerminalTasks(ctx, "proj-1")
+
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+}

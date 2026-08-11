@@ -8315,3 +8315,207 @@ func TestTransitionMergeTaskInProgressToDone(t *testing.T) {
 		t.Error("non-merge in_progress->done should be rejected, but it was allowed")
 	}
 }
+
+func TestSupersedeTaskWithPRLink(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	oldTask := tasks[0]
+
+	// Promote task to ready
+	_, err = store.Conn().ExecContext(ctx, "UPDATE task SET state = ? WHERE id = ?", "ready", oldTask.ID)
+	if err != nil {
+		t.Fatalf("failed to set task to ready: %v", err)
+	}
+
+	// Claim the task first
+	_, err = store.ClaimTask(ctx, oldTask.ID, "agent1", "haiku", 5*time.Minute)
+	if err != nil {
+		t.Fatalf("failed to claim task: %v", err)
+	}
+
+	// Submit task with a PR link
+	_, err = store.SubmitTask(ctx, oldTask.ID, "agent1", "description", nil, []LinkInput{
+		{Kind: "pr", Value: "https://github.com/owner/repo/pull/123"},
+	}, 3, map[string]int{})
+	if err != nil {
+		t.Fatalf("failed to submit task: %v", err)
+	}
+
+	// Verify PR link was created
+	oldTaskWithLinks, err := store.GetTask(ctx, oldTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get task with links: %v", err)
+	}
+
+	var prLink *TaskLink
+	for i := range oldTaskWithLinks.Links {
+		if oldTaskWithLinks.Links[i].Kind == "pr" {
+			prLink = &oldTaskWithLinks.Links[i]
+			break
+		}
+	}
+
+	if prLink == nil {
+		t.Fatal("expected PR link to be created")
+	}
+
+	if prLink.Value != "https://github.com/owner/repo/pull/123" {
+		t.Errorf("expected PR URL to be https://github.com/owner/repo/pull/123, got %s", prLink.Value)
+	}
+
+	// Supersede task
+	newTask, err := store.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+
+	// Verify old task is superseded and marked with new task ID
+	oldTaskAfter, err := store.GetTask(ctx, oldTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get oldTask after supersede: %v", err)
+	}
+
+	if oldTaskAfter.State != "superseded" {
+		t.Errorf("expected oldTask state to be superseded, got %q", oldTaskAfter.State)
+	}
+
+	if oldTaskAfter.SupersededBy == nil || *oldTaskAfter.SupersededBy != newTask.ID {
+		t.Errorf("expected oldTask.SupersededBy to be %s, got %v", newTask.ID, oldTaskAfter.SupersededBy)
+	}
+
+	// Verify new task was created
+	if newTask.ID == oldTask.ID {
+		t.Errorf("expected new task ID to be different from old task ID")
+	}
+}
+
+func TestSupersedeTaskWithoutPRLink(t *testing.T) {
+	ctx := context.Background()
+	store, err := Open("file::memory:?cache=shared", defaultTestAllowedModels())
+	if err != nil {
+		t.Fatalf("failed to open database: %v", err)
+	}
+	defer store.Close()
+
+	proj, err := store.CreateProject(ctx, "Test Project", "test-repo")
+	if err != nil {
+		t.Fatalf("failed to create project: %v", err)
+	}
+
+	doc, err := store.CreateDocument(ctx, proj.ID, "feature_spec", "Test Doc", "main", nil)
+	if err != nil {
+		t.Fatalf("failed to create document: %v", err)
+	}
+
+	tasks, err := store.CreateTasks(ctx, proj.ID, []TaskInput{
+		{Title: "Test Task", Spec: "Spec", DocumentID: doc.ID},
+	})
+	if err != nil {
+		t.Fatalf("failed to create task: %v", err)
+	}
+
+	oldTask := tasks[0]
+
+	// Supersede task without submitting it (no PR link)
+	newTask, err := store.SupersedeTask(ctx, oldTask.ID, nil)
+	if err != nil {
+		t.Fatalf("SupersedeTask failed: %v", err)
+	}
+
+	// Verify old task is superseded
+	oldTaskAfter, err := store.GetTask(ctx, oldTask.ID)
+	if err != nil {
+		t.Fatalf("failed to get oldTask after supersede: %v", err)
+	}
+
+	if oldTaskAfter.State != "superseded" {
+		t.Errorf("expected oldTask state to be superseded, got %q", oldTaskAfter.State)
+	}
+
+	if oldTaskAfter.SupersededBy == nil || *oldTaskAfter.SupersededBy != newTask.ID {
+		t.Errorf("expected oldTask.SupersededBy to be %s, got %v", newTask.ID, oldTaskAfter.SupersededBy)
+	}
+
+	// Verify new task was created
+	if newTask.ID == oldTask.ID {
+		t.Errorf("expected new task ID to be different from old task ID")
+	}
+}
+
+func TestParsePRURL(t *testing.T) {
+	tests := []struct {
+		name    string
+		url     string
+		owner   string
+		repo    string
+		number  int
+		wantErr bool
+	}{
+		{
+			name:   "valid PR URL",
+			url:    "https://github.com/boldfield/agentask/pull/123",
+			owner:  "boldfield",
+			repo:   "agentask",
+			number: 123,
+		},
+		{
+			name:   "valid PR URL with trailing slash",
+			url:    "https://github.com/boldfield/agentask/pull/123/",
+			owner:  "boldfield",
+			repo:   "agentask",
+			number: 123,
+		},
+		{
+			name:    "invalid URL",
+			url:     "not a url",
+			wantErr: true,
+		},
+		{
+			name:    "non-github URL",
+			url:     "https://gitlab.com/owner/repo/merge_requests/123",
+			wantErr: true,
+		},
+		{
+			name:    "invalid PR number",
+			url:     "https://github.com/owner/repo/pull/abc",
+			wantErr: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			owner, repo, number, err := parsePRURL(tt.url)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("parsePRURL() error = %v, wantErr %v", err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr {
+				if owner != tt.owner || repo != tt.repo || number != tt.number {
+					t.Errorf("parsePRURL() = (%q, %q, %d), want (%q, %q, %d)", owner, repo, number, tt.owner, tt.repo, tt.number)
+				}
+			}
+		})
+	}
+}
