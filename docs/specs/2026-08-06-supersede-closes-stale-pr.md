@@ -131,3 +131,53 @@ than inventing a new pattern.
   defect and it is why an unblocked task effectively gets one attempt
   rather than a fresh budget — but it is independent of pull request
   cleanup and wants its own spec.
+
+---
+
+## Update, 2026-08-11: still unimplemented, and the cost is now measured
+
+This spec was written on 2026-08-06 and never decomposed into a task. Other
+parts of the supersession work were tasked and completed — carrying prior
+review feedback into the replacement, auto-promoting the replacement to
+`ready` — but pull request cleanup was not among them. `supersedeTaskTx`
+contains no pull request handling, and nothing anywhere in the repository
+closes a pull request. This is not a regression; it was never built.
+
+Five days later, a sweep across every project on the board found **33 stale
+pull requests**, all belonging to `superseded` tasks, all left OPEN:
+
+| repository | stale PRs |
+|---|---|
+| `opencrr/communityrapidresponse.net` | 16 |
+| `boldfield/email-triage` | 14 |
+| `boldfield/agentask` | 1 |
+| `boldfield/trade-log` | 1 |
+| `boldfield/reala.gent` | 1 |
+
+They were closed by hand. That is the second manual cleanup this pattern has
+required, and the volume scales with escalation depth: email-triage
+accumulated 14 in roughly a day of heavy tier-2 work, with one task alone
+(the tier-2 alerter) contributing three generations.
+
+### One consequence the original spec understates
+
+The original framing leads with reviewer confusion, which is real. The sharper
+risk is **merge hazard**. A stale generation holds an *earlier* attempt at work
+that has since landed in corrected form. Because each generation branches from
+`origin/main`, a stale PR will frequently still merge **cleanly** — so merging
+one silently reintroduces superseded code on top of the fix that replaced it,
+with no conflict to signal the mistake.
+
+In `email-triage` this was concrete: `#31` was the pre-rework diagnostics
+attempt, superseded by the version that merged as `#32`; `#29` was an earlier
+recovery-drain attempt. Either would have reverted a live production fix. A
+human merge gate is the only thing standing between a fleet-driven repository
+and that outcome, and it is being asked to distinguish generations whose titles
+are identical.
+
+### Retrofit
+
+Closing the current backlog is done. The fix should also handle pull requests
+already open when it ships, or the accumulated set stays open forever — a
+one-shot reconciliation over `superseded` tasks with recorded `pr` links is
+enough, and it is the same code path the live case needs.
