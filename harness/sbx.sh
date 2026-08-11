@@ -81,12 +81,18 @@ SEED_ORIGIN="$AGENTASK_HOME/repo-origin.git"    # bare "origin" so origin/main r
 WORKTREE_HOME="${WORKTREE_HOME_ARG:-$AGENTASK_HOME/worktrees}"  # CLI per-task worktrees (local_commit)
 SERVER_LOG="$LOG_DIR/server.log"
 PROJECT_NAME="sbx-local"
+BIN_DIR="$AGENTASK_HOME/bin"                    # container-local build output — NEVER the mounted repo's bin/
+AGENTASK_BIN="$BIN_DIR/agentask"
 
-mkdir -p "$AGENTASK_HOME" "$LOG_DIR"
+mkdir -p "$AGENTASK_HOME" "$LOG_DIR" "$BIN_DIR"
 [ "$DELIVERY_MODE" = "local_commit" ] && mkdir -p "$WORKTREE_HOME"
 
-# Put the freshly-built (or existing) binary first on PATH — agent.sh/CLI call `agentask` by name.
-export PATH="$REPO_ROOT/bin:$PATH"
+# Put our container-local build dir first on PATH — agent.sh/CLI call `agentask` by name. The
+# mounted repo's bin/ is bind-mounted read-write at the same absolute path on host and container, so
+# a binary built on one side is the wrong architecture (or worse, gets clobbered) on the other; see
+# docs/features/sbx-agent-bootstrap.md gap #1. We build under the state directory instead and never
+# touch the mounted repo's binary directory.
+export PATH="$BIN_DIR:$PATH"
 
 say() { echo "[sbx] $*"; }
 die() { echo "[sbx] ERROR: $*" >&2; exit 1; }
@@ -177,11 +183,29 @@ else
   fi
 fi
 
-# ============================== 1. build the binary if missing ==============================
-if [ ! -x "$REPO_ROOT/bin/agentask" ]; then
-  say "building agentask binary (make build)…"
-  ( cd "$REPO_ROOT" && make build ) >>"$LOG_DIR/build.log" 2>&1 || die "make build failed (see $LOG_DIR/build.log)"
+# ============================== 1. preflight toolchain, build the binary ==============================
+# Preflight the Go toolchain against go.mod's declared requirement BEFORE building — the sandbox
+# image is external and can change underneath us (see docs/features/sbx-agent-bootstrap.md), so a
+# toolchain present today is not a contract. Fail with the required version rather than letting the
+# build die under a wall of compiler output.
+REQUIRED_GO="$(awk '/^go /{print $2; exit}' "$REPO_ROOT/go.mod")"
+command -v go >/dev/null 2>&1 || die "no Go toolchain on PATH — go.mod requires go >= $REQUIRED_GO"
+INSTALLED_GO="$(go version | sed -nE 's/.*go([0-9]+\.[0-9]+(\.[0-9]+)?).*/\1/p')"
+[ -n "$INSTALLED_GO" ] || die "could not parse 'go version' output to check against the go.mod requirement (>= $REQUIRED_GO)"
+if [ "$(printf '%s\n%s\n' "$REQUIRED_GO" "$INSTALLED_GO" | sort -V | head -1)" != "$REQUIRED_GO" ]; then
+  die "installed Go $INSTALLED_GO is older than the $REQUIRED_GO go.mod requires — upgrade the toolchain"
 fi
+
+# Rebuild unconditionally rather than trusting (or validating) a pre-existing binary: this was the
+# bug (an executable-bit check that never looked at architecture — see gap #1 in
+# docs/features/sbx-agent-bootstrap.md). A "does it run here" validation check would fix that too,
+# but `go build` is incremental — a no-op rebuild after the first boot is a fraction of a second, not
+# a full compile — so unconditional rebuild is no slower in the common case and has no validation
+# logic of its own to get wrong.
+say "building agentask binary -> $AGENTASK_BIN…"
+VERSION="$(cd "$REPO_ROOT" && git describe --tags --always --dirty 2>/dev/null)"
+( cd "$REPO_ROOT" && go build -ldflags "-X main.version=$VERSION" -o "$AGENTASK_BIN" ./cmd/agentask ) \
+  >>"$LOG_DIR/build.log" 2>&1 || die "go build failed (see $LOG_DIR/build.log)"
 command -v agentask >/dev/null 2>&1 || die "agentask not on PATH after build"
 say "agentask: $(command -v agentask)"
 
