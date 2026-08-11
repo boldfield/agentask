@@ -20,6 +20,9 @@
 #                          task's own model — like the workers). Workers are always dynamic.
 #   common opts: --workers N (2)  --reviewers N (2)  --port P (8080)
 #                --delivery-mode pull_request|local_commit (local_commit)
+#   env: CLAUDE_CODE_OAUTH_TOKEN  optional 'claude setup-token' token (same var the cluster
+#                          deployments use), forwarded into the fleet env — falls back to an
+#                          existing ~/.claude/.credentials.json (sbx's own login) when unset.
 #
 # Ctrl-C / TERM gracefully stops the fleet, then the server. Re-runnable (reuses DB; --seed-demo reuses repo/project).
 set -uo pipefail
@@ -64,7 +67,7 @@ while [ $# -gt 0 ]; do
     --worktree-home)  WORKTREE_HOME_ARG="${2:?}"; shift 2 ;;   # override CLI worktree root (local_commit)
     --seed-demo)      SEED_DEMO=1;                shift ;;     # create+use a throwaway local demo
     -h|--help)
-      sed -n '2,24p' "$_src"; exit 0 ;;   # keep in sync with the header comment block above
+      sed -n '2,27p' "$_src"; exit 0 ;;   # keep in sync with the header comment block above
     *) echo "unknown flag: $1" >&2; exit 1 ;;
   esac
 done
@@ -217,6 +220,35 @@ say "agentask: $(command -v agentask)"
 # error. Fail here, while the operator is still looking at the terminal.
 command -v claude >/dev/null 2>&1 || die "claude CLI not on PATH — the fleet dispatches 'claude -p' and every claude-model task would fail"
 say "claude: $(command -v claude)"
+
+# --- preflight: claude AUTHENTICATION, not just presence ---
+# Presence alone is the weaker half: an installed-but-expired claude passes the check above and the
+# boot still goes green — the health endpoint answers, the fleet starts, agents claim tasks, and
+# every dispatch then fails inside agent.sh, discoverable only by reading worker logs.
+#
+# `claude auth status` was tried first and rejected: it only inspects local credential shape and
+# never talks to the network, so it reports loggedIn=true for a structurally-valid-but-garbage
+# credentials file (verified: a fabricated ~/.claude/.credentials.json with a bogus token and an
+# expiresAt years in the past still reports loggedIn=true/authMethod=claude.ai) — exactly the
+# expired-but-present case this preflight exists to catch. A live `claude -p` call is the only
+# signal that actually distinguishes "authenticated" from "was, once, configured": it exercises the
+# real OAuth-validation path and fails fast on bad/expired/revoked auth before any output tokens are
+# generated (verified: an invalid CLAUDE_CODE_OAUTH_TOKEN gets a same-second "401 OAuth access token
+# is invalid" — no hang, no generation). --max-budget-usd bounds the worst case to a fraction of a
+# cent even on a boot that somehow gets past that.
+say "checking claude authentication…"
+CLAUDE_AUTH_CMD=(claude -p "reply with the single word: ok" --model haiku --max-budget-usd 0.02 --dangerously-skip-permissions)
+if command -v timeout >/dev/null 2>&1; then
+  CLAUDE_AUTH_OUT="$(timeout 30 "${CLAUDE_AUTH_CMD[@]}" 2>&1)"
+else
+  CLAUDE_AUTH_OUT="$("${CLAUDE_AUTH_CMD[@]}" 2>&1)"
+fi
+CLAUDE_AUTH_RC=$?
+if [ "$CLAUDE_AUTH_RC" -ne 0 ]; then
+  die "claude is on PATH but not authenticated — every claude-model dispatch would fail (claude -p said: $CLAUDE_AUTH_OUT). Fix: seed a working ~/.claude/.credentials.json (sbx's own interactive login), or export CLAUDE_CODE_OAUTH_TOKEN (a 'claude setup-token' token — the same variable the cluster deployments use, see deploy/fleet/worker-deployment.yaml) before running sbx.sh."
+fi
+say "claude: authenticated"
+
 command -v codex >/dev/null 2>&1 || die "codex CLI not on PATH — gpt-5.5 is allowlisted and routed via AGENT_CODEX_MODELS, so its review dispatches would fail"
 say "codex: $(command -v codex)"
 
@@ -399,6 +431,18 @@ export AGENT_CLAUDE_FLAGS="--allow-dangerously-skip-permissions"
 export AGENT_CODEX_MODELS="gpt-5.5"
 EOF
 
+# Forward CLAUDE_CODE_OAUTH_TOKEN into the env file too, but only when the operator actually
+# supplied it (in sbx.sh's own environment, inherited from whoever invoked this script) — unlike
+# AGENT_CLAUDE_FLAGS/AGENT_CODEX_MODELS above, which are fixed constants this script always sets,
+# this is optional secret data: an existing valid ~/.claude/.credentials.json (sbx's own login)
+# already authenticates claude fine on its own, so an operator who has one doesn't need to mint a
+# token, and writing an unset var here would just clobber nothing with nothing. Same variable name
+# the cluster deployments use (deploy/fleet/worker-deployment.yaml, deploy/fleet/reviewer-deployment.yaml)
+# — a long-lived `claude setup-token` token, not an API key.
+if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
+  echo "export CLAUDE_CODE_OAUTH_TOKEN=\"$CLAUDE_CODE_OAUTH_TOKEN\"" >> "$AGENTASK_HOME/env"
+fi
+
 # Export for fleet.sh/agent.sh children of THIS process too (env file is the source of truth, but
 # AGENTASK_HOME in particular must be in the environment before agent.sh sources the env file).
 export AGENTASK_URL AGENTASK_TOKEN AGENTASK_WORKTREE_HOME
@@ -407,6 +451,7 @@ export AGENTASK_PROJECT="$PROJECT_ID"
 export AGENTASK_DELIVERY_MODE="$DELIVERY_MODE"
 export AGENT_CLAUDE_FLAGS="--allow-dangerously-skip-permissions"
 export AGENT_CODEX_MODELS="gpt-5.5"
+[ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && export CLAUDE_CODE_OAUTH_TOKEN
 
 # ============================== 8. start the fleet ==============================
 # `set -m` (job control) makes each backgrounded fleet its OWN process-group leader, so $! == its
