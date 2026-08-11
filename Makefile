@@ -235,7 +235,10 @@ sbx-codex-auth:
 	  /tmp/agentask-codex-auth.json.incoming /home/agent/.codex/auth.json
 	@sbx exec $(SBX_NAME) -- sudo rm -f /tmp/agentask-codex-auth.json.incoming
 	@echo "Verifying: running 'codex exec -m gpt-5.5' inside sandbox '$(SBX_NAME)'..."
-	@if ! sbx exec $(SBX_NAME) -- command -v codex >/dev/null 2>&1; then \
+	@# `sbx exec` runs argv directly through the container runtime (like `docker exec`) — there is
+	@# no shell to interpret builtins, so `command -v codex` would try to exec a literal `command`
+	@# binary and always fail. Invoke the codex binary itself with a harmless flag instead.
+	@if ! sbx exec $(SBX_NAME) -- codex --version >/dev/null 2>&1; then \
 	  echo "codex auth seeded, but codex itself is not installed in sandbox '$(SBX_NAME)' yet — cannot verify."; \
 	  echo "Run harness/sbx-agent-setup.sh inside the sandbox first, then re-run 'make sbx-codex-auth'."; \
 	  exit 1; \
