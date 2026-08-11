@@ -131,6 +131,36 @@ in-container session at all.
 account`; `gpt-5.5` succeeds. `gpt-5.5` is also what the production allowlist and reviewer deployment
 already use. If the account later gains `gpt-5.6` it is a one-constant swap.
 
+## `claude` auth: `CLAUDE_CODE_OAUTH_TOKEN` is transplantable (verified)
+
+Deliverable 3 asked whether sbx's `claude` login is deliberately sandbox-scoped — i.e. whether a
+token minted outside the sandbox (`claude setup-token`) can even be handed to the `claude` binary
+running inside one, the way `CLAUDE_CODE_OAUTH_TOKEN` already works for the cluster. It is not
+sandbox-scoped: `CLAUDE_CODE_OAUTH_TOKEN` is read by the `claude` binary itself, generically,
+independent of whatever sandboxing tool launched the process — there is no `sbx`-side gate on it.
+Verified two ways:
+
+- Setting the env var to an arbitrary (invalid) token value changes `claude auth status`'s
+  `authMethod` from `none` to `oauth_token` and `loggedIn` from `false` to `true` — the binary
+  picks the var up unconditionally, before any validation happens.
+- `claude -p` with that same invalid token makes a live call and fails fast with `Failed to
+  authenticate. API Error: 401 OAuth access token is invalid.` — proof the token actually reaches
+  the OAuth-validation path rather than being silently ignored.
+
+This is why `harness/sbx.sh` can simply forward an inherited `CLAUDE_CODE_OAUTH_TOKEN` into the
+fleet env (§ Deliverable 3) rather than needing an `sbx cp`/`sbx exec` host-side seeding step like
+codex's `auth.json` does (Deliverable 4) — codex's *credential file* needs a host-to-container copy
+because there's no equivalent env-var entry point for it, not because sandboxes generically block
+transplanted auth.
+
+The same testing also showed `claude auth status` is the wrong signal for the preflight: it only
+inspects local credential *shape* and never calls the network, so a structurally-valid-but-garbage
+`~/.claude/.credentials.json` (bogus token, `expiresAt` years in the past) still reports
+`loggedIn: true`. It cannot distinguish "authenticated" from "was, once, configured" — exactly the
+expired-but-present case the preflight exists to catch. `harness/sbx.sh`'s preflight therefore uses
+a trivial live `claude -p` call instead (bounded by `--max-budget-usd`), which does exercise the
+real validation path and fails fast on bad/expired/revoked auth.
+
 ## Guiding principle
 
 **Verify, never assume.** Every step provisions against an image this repo does not control. Each
