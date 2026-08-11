@@ -222,7 +222,8 @@ func (r *PRWatchReconciler) retrofitClosePRsForTerminalTasks(ctx context.Context
 	terminalStates := []string{"superseded", "abandoned"}
 	for _, state := range terminalStates {
 		tasks, err := r.taskSource.ListTasks(ctx, projectID, store.TaskListFilter{
-			State: &state,
+			State:             &state,
+			IncludeSuperseded: true,
 		})
 		if err != nil {
 			r.logger.Error("retrofit list tasks error", "project_id", projectID, "state", state, "error", err)

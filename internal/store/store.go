@@ -2395,8 +2395,10 @@ func (s *sqliteStore) SupersedeTask(ctx context.Context, taskID string, modelOve
 		return Task{}, fmt.Errorf("failed to commit transaction: %w", err)
 	}
 
-	// Try to close the old task's PR if it exists (best-effort cleanup, outside transaction)
-	s.closePRForSupersededTask(ctx, taskID, newTaskID)
+	// Try to close the old task's PR if it exists (best-effort cleanup, outside transaction).
+	// Detach from the request context since it will be canceled when the handler returns.
+	bgctx := context.WithoutCancel(ctx)
+	s.closePRForSupersededTask(bgctx, taskID, newTaskID)
 
 	// Load the new task from the database (this gets the feedback-augmented spec)
 	var newTask Task
