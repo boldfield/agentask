@@ -243,7 +243,16 @@ sbx-codex-auth:
 	  echo "Run harness/sbx-agent-setup.sh inside the sandbox first, then re-run 'make sbx-codex-auth'."; \
 	  exit 1; \
 	fi
-	@if sbx exec $(SBX_NAME) -- codex exec -m gpt-5.5 "reply with the single word: ok" >/tmp/sbx-codex-auth-verify.out 2>&1; then \
+	@# Two non-obvious requirements, each verified independently against a live sandbox:
+	@#  --skip-git-repo-check: `sbx exec` starts in /home/agent/workspace, which is NOT a git repo,
+	@#    and codex refuses to run outside a trusted directory ("Not inside a trusted directory and
+	@#    --skip-git-repo-check was not specified"). The fleet never hits this because agent.sh cd's
+	@#    into the repo/worktree before dispatching; this target has no such cwd.
+	@#  </dev/null: with stdin an open pipe rather than a TTY, `codex exec` blocks on "Reading
+	@#    additional input from stdin..." and never runs the prompt. Closing stdin makes the prompt
+	@#    argument the whole input.
+	@# Without both, this verification failed even though the auth copy above had fully succeeded.
+	@if sbx exec $(SBX_NAME) -- codex exec --skip-git-repo-check -m gpt-5.5 "reply with the single word: ok" </dev/null >/tmp/sbx-codex-auth-verify.out 2>&1; then \
 	  echo "OK: codex authenticated in sandbox '$(SBX_NAME)' (gpt-5.5 invocation succeeded)"; \
 	  rm -f /tmp/sbx-codex-auth-verify.out; \
 	else \
