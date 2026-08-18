@@ -32,7 +32,18 @@ func TestListUnaddressedFeedback_UnresolvedThreads(t *testing.T) {
               "isResolved": false,
               "path": "main.go",
               "line": 42,
-              "comments": {
+              "firstComments": {
+                "nodes": [
+                  {
+                    "id": "comment-1",
+                    "body": "This needs fixing",
+                    "author": {
+                      "login": "reviewer"
+                    }
+                  }
+                ]
+              },
+              "lastComments": {
                 "nodes": [
                   {
                     "id": "comment-1",
@@ -49,7 +60,18 @@ func TestListUnaddressedFeedback_UnresolvedThreads(t *testing.T) {
               "isResolved": true,
               "path": "main.go",
               "line": 50,
-              "comments": {
+              "firstComments": {
+                "nodes": [
+                  {
+                    "id": "comment-2",
+                    "body": "Already fixed",
+                    "author": {
+                      "login": "reviewer"
+                    }
+                  }
+                ]
+              },
+              "lastComments": {
                 "nodes": [
                   {
                     "id": "comment-2",
@@ -555,7 +577,18 @@ func TestListUnaddressedFeedback_Pagination(t *testing.T) {
               "isResolved": false,
               "path": "file1.go",
               "line": 10,
-              "comments": {
+              "firstComments": {
+                "nodes": [
+                  {
+                    "id": "comment-1",
+                    "body": "Comment 1",
+                    "author": {
+                      "login": "reviewer"
+                    }
+                  }
+                ]
+              },
+              "lastComments": {
                 "nodes": [
                   {
                     "id": "comment-1",
@@ -593,7 +626,18 @@ func TestListUnaddressedFeedback_Pagination(t *testing.T) {
               "isResolved": false,
               "path": "file2.go",
               "line": 20,
-              "comments": {
+              "firstComments": {
+                "nodes": [
+                  {
+                    "id": "comment-2",
+                    "body": "Comment 2",
+                    "author": {
+                      "login": "reviewer"
+                    }
+                  }
+                ]
+              },
+              "lastComments": {
                 "nodes": [
                   {
                     "id": "comment-2",
@@ -1198,7 +1242,7 @@ func TestListUnaddressedFeedback_SingleIdentityThreads(t *testing.T) {
               "isResolved": false,
               "path": "main.go",
               "line": 10,
-              "comments": {
+              "firstComments": {
                 "nodes": [
                   {
                     "id": "comment-thread-1a",
@@ -1206,7 +1250,11 @@ func TestListUnaddressedFeedback_SingleIdentityThreads(t *testing.T) {
                     "author": {
                       "login": "human"
                     }
-                  },
+                  }
+                ]
+              },
+              "lastComments": {
+                "nodes": [
                   {
                     "id": "comment-thread-1b",
                     "body": "Still not fixed",
@@ -1222,7 +1270,7 @@ func TestListUnaddressedFeedback_SingleIdentityThreads(t *testing.T) {
               "isResolved": false,
               "path": "main.go",
               "line": 20,
-              "comments": {
+              "firstComments": {
                 "nodes": [
                   {
                     "id": "comment-thread-2a",
@@ -1230,7 +1278,11 @@ func TestListUnaddressedFeedback_SingleIdentityThreads(t *testing.T) {
                     "author": {
                       "login": "human"
                     }
-                  },
+                  }
+                ]
+              },
+              "lastComments": {
+                "nodes": [
                   {
                     "id": "comment-thread-2b",
                     "body": "haiku-worker: addressed in abc123",
@@ -1246,7 +1298,18 @@ func TestListUnaddressedFeedback_SingleIdentityThreads(t *testing.T) {
               "isResolved": true,
               "path": "main.go",
               "line": 30,
-              "comments": {
+              "firstComments": {
+                "nodes": [
+                  {
+                    "id": "comment-thread-3a",
+                    "body": "Nit on naming",
+                    "author": {
+                      "login": "human"
+                    }
+                  }
+                ]
+              },
+              "lastComments": {
                 "nodes": [
                   {
                     "id": "comment-thread-3a",
@@ -1313,5 +1376,113 @@ func TestListUnaddressedFeedback_SingleIdentityThreads(t *testing.T) {
 
 	if items[0].ID != "thread-unresolved-human" {
 		t.Errorf("items[0].ID = %q, want %q", items[0].ID, "thread-unresolved-human")
+	}
+}
+
+// TestListUnaddressedFeedback_ThreadLastReplyBeyondFirstPage guards against the pagination
+// boundary bug: fetching only the first N replies and treating the last of that page as the
+// thread's last reply misclassifies long threads. The thread's earliest reply (what a
+// first-N-only fetch would still see as "last" among the first page) is marker-prefixed, but
+// the actual last reply — reachable only via comments(last: 1) — is an unmarked human reply.
+// Classification must follow the true last reply and report the thread as unaddressed.
+func TestListUnaddressedFeedback_ThreadLastReplyBeyondFirstPage(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+
+		if strings.Contains(bodyStr, "reviewThreads") {
+			if !strings.Contains(bodyStr, "lastComments: comments(last: 1)") {
+				t.Errorf("reviewThreads query does not request comments(last: 1) for the thread's true last reply: %s", bodyStr)
+			}
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": [
+            {
+              "id": "thread-long",
+              "isResolved": false,
+              "path": "main.go",
+              "line": 5,
+              "firstComments": {
+                "nodes": [
+                  {
+                    "id": "comment-thread-long-first",
+                    "body": "haiku-worker: addressed in abc123",
+                    "author": {
+                      "login": "human"
+                    }
+                  }
+                ]
+              },
+              "lastComments": {
+                "nodes": [
+                  {
+                    "id": "comment-thread-long-last",
+                    "body": "Actually this regressed, please reopen",
+                    "author": {
+                      "login": "human"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		} else if strings.Contains(bodyStr, "comments") {
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR-node-id-long-thread",
+        "comments": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": []
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	items, err := ListUnaddressedFeedback(ctx, "owner", "repo", 42, "human", "token")
+
+	if err != nil {
+		t.Fatalf("ListUnaddressedFeedback() error = %v, want nil", err)
+	}
+
+	if len(items) != 1 {
+		t.Fatalf("ListUnaddressedFeedback() returned %d items, want 1: %+v", len(items), items)
+	}
+
+	if items[0].ID != "thread-long" {
+		t.Errorf("items[0].ID = %q, want %q", items[0].ID, "thread-long")
 	}
 }

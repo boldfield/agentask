@@ -112,7 +112,16 @@ func fetchReviewThreadsPage(ctx context.Context, owner, repo string, prNumber in
           isResolved
           path
           line
-          comments(first: 100) {
+          firstComments: comments(first: 1) {
+            nodes {
+              id
+              body
+              author {
+                login
+              }
+            }
+          }
+          lastComments: comments(last: 1) {
             nodes {
               id
               body
@@ -177,11 +186,11 @@ func fetchReviewThreadsPage(ctx context.Context, owner, repo string, prNumber in
 							EndCursor   string `json:"endCursor"`
 						} `json:"pageInfo"`
 						Nodes []struct {
-							ID         string `json:"id"`
-							IsResolved bool   `json:"isResolved"`
-							Path       string `json:"path"`
-							Line       int    `json:"line"`
-							Comments   struct {
+							ID            string `json:"id"`
+							IsResolved    bool   `json:"isResolved"`
+							Path          string `json:"path"`
+							Line          int    `json:"line"`
+							FirstComments struct {
 								Nodes []struct {
 									ID     string `json:"id"`
 									Body   string `json:"body"`
@@ -189,7 +198,16 @@ func fetchReviewThreadsPage(ctx context.Context, owner, repo string, prNumber in
 										Login string `json:"login"`
 									} `json:"author"`
 								} `json:"nodes"`
-							} `json:"comments"`
+							} `json:"firstComments"`
+							LastComments struct {
+								Nodes []struct {
+									ID     string `json:"id"`
+									Body   string `json:"body"`
+									Author struct {
+										Login string `json:"login"`
+									} `json:"author"`
+								} `json:"nodes"`
+							} `json:"lastComments"`
 						} `json:"nodes"`
 					} `json:"reviewThreads"`
 				} `json:"pullRequest"`
@@ -209,15 +227,15 @@ func fetchReviewThreadsPage(ctx context.Context, owner, repo string, prNumber in
 		if thread.IsResolved {
 			continue
 		}
-		if len(thread.Comments.Nodes) == 0 {
+		if len(thread.FirstComments.Nodes) == 0 || len(thread.LastComments.Nodes) == 0 {
 			continue
 		}
-		lastComment := thread.Comments.Nodes[len(thread.Comments.Nodes)-1]
+		lastComment := thread.LastComments.Nodes[0]
 		if IsAgentAuthoredComment(lastComment.Body) {
 			continue
 		}
 
-		firstComment := thread.Comments.Nodes[0]
+		firstComment := thread.FirstComments.Nodes[0]
 		items = append(items, FeedbackItem{
 			Kind:   "inline",
 			ID:     thread.ID,

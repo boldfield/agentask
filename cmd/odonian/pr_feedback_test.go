@@ -60,7 +60,18 @@ func TestExecutePRFeedbackList(t *testing.T) {
 											"isResolved": false,
 											"path":       "main.go",
 											"line":       42,
-											"comments": map[string]interface{}{
+											"firstComments": map[string]interface{}{
+												"nodes": []map[string]interface{}{
+													{
+														"id":   "comment-1",
+														"body": "This looks wrong",
+														"author": map[string]string{
+															"login": "reviewer",
+														},
+													},
+												},
+											},
+											"lastComments": map[string]interface{}{
 												"nodes": []map[string]interface{}{
 													{
 														"id":   "comment-1",
@@ -218,7 +229,18 @@ func TestExecutePRFeedbackAck(t *testing.T) {
 											"isResolved": false,
 											"path":       "main.go",
 											"line":       42,
-											"comments": map[string]interface{}{
+											"firstComments": map[string]interface{}{
+												"nodes": []map[string]interface{}{
+													{
+														"id":   "comment-1",
+														"body": "This looks wrong",
+														"author": map[string]string{
+															"login": "reviewer",
+														},
+													},
+												},
+											},
+											"lastComments": map[string]interface{}{
 												"nodes": []map[string]interface{}{
 													{
 														"id":   "comment-1",
@@ -384,7 +406,18 @@ func TestExecutePRFeedbackAckDefaultMarker(t *testing.T) {
 											"isResolved": false,
 											"path":       "main.go",
 											"line":       42,
-											"comments": map[string]interface{}{
+											"firstComments": map[string]interface{}{
+												"nodes": []map[string]interface{}{
+													{
+														"id":   "comment-1",
+														"body": "This looks wrong",
+														"author": map[string]string{
+															"login": "reviewer",
+														},
+													},
+												},
+											},
+											"lastComments": map[string]interface{}{
 												"nodes": []map[string]interface{}{
 													{
 														"id":   "comment-1",
@@ -495,7 +528,18 @@ func TestExecutePRFeedbackAckWithMarkerOverride(t *testing.T) {
 											"isResolved": false,
 											"path":       "main.go",
 											"line":       42,
-											"comments": map[string]interface{}{
+											"firstComments": map[string]interface{}{
+												"nodes": []map[string]interface{}{
+													{
+														"id":   "comment-1",
+														"body": "This looks wrong",
+														"author": map[string]string{
+															"login": "reviewer",
+														},
+													},
+												},
+											},
+											"lastComments": map[string]interface{}{
 												"nodes": []map[string]interface{}{
 													{
 														"id":   "comment-1",
@@ -605,7 +649,18 @@ func TestExecutePRFeedbackAckMarkerSatisfiesPredicate(t *testing.T) {
 											"isResolved": false,
 											"path":       "main.go",
 											"line":       42,
-											"comments": map[string]interface{}{
+											"firstComments": map[string]interface{}{
+												"nodes": []map[string]interface{}{
+													{
+														"id":   "comment-1",
+														"body": "This looks wrong",
+														"author": map[string]string{
+															"login": "reviewer",
+														},
+													},
+												},
+											},
+											"lastComments": map[string]interface{}{
 												"nodes": []map[string]interface{}{
 													{
 														"id":   "comment-1",
