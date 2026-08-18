@@ -54,9 +54,10 @@ release:
 	@if [ "$$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then echo "ERROR: Not on main branch"; exit 1; fi
 	docker build --platform linux/amd64 --build-arg VERSION=$(VERSION) -t ghcr.io/boldfield/odonian:$(VERSION) .
 	docker push ghcr.io/boldfield/odonian:$(VERSION)
-	git tag -a $(VERSION) -m "$(VERSION)"
+	git tag -a $(VERSION) -m "Release $(VERSION)"
 	git push origin $(VERSION)
-	@echo "Released ghcr.io/boldfield/odonian:$(VERSION) (linux/amd64); deploy with: make deploy VERSION=$(VERSION)"
+	@echo "Released ghcr.io/boldfield/odonian:$(VERSION) (linux/amd64)"
+	@echo "Deploy with: make deploy VERSION=$(VERSION)"
 
 # One-time: create a buildx builder that can push to the INSECURE (HTTP) internal registry.
 # Multi-arch `--push` needs the docker-container driver, so a daemon.json insecure-registries entry
