@@ -239,18 +239,19 @@ func listUnacknowledgedGlobalComments(ctx context.Context, owner, repo string, p
 		after = nextCursor
 	}
 
-	// Filter comments: exclude bot-authored, exclude acknowledged (bot reaction or reply)
+	// Filter comments: exclude agent-authored (by marker), exclude acknowledged (bot reaction or marker reply)
 	var items []FeedbackItem
 	for _, comment := range allComments {
-		// Skip comments authored by the bot
-		if comment.Author.Login == botLogin {
+		// Skip comments authored by the fleet, identified by marker prefix (not login,
+		// which is indistinguishable from the human's when they share one GitHub identity)
+		if IsAgentAuthoredComment(comment.Body) {
 			continue
 		}
 
 		// Check if comment has been acknowledged
 		acknowledged := false
 
-		// Check for bot reactions
+		// Check for bot reactions (retained by login: reactions cannot carry markers)
 		for _, reactionGroup := range comment.ReactionGroups {
 			for _, user := range reactionGroup.Users.Nodes {
 				if user.Login == botLogin {
@@ -263,10 +264,10 @@ func listUnacknowledgedGlobalComments(ctx context.Context, owner, repo string, p
 			}
 		}
 
-		// Check for bot replies (bot comment created after this comment)
+		// Check for a later marker-prefixed reply
 		if !acknowledged {
 			for _, other := range allComments {
-				if other.Author.Login == botLogin && other.CreatedAt > comment.CreatedAt {
+				if IsAgentAuthoredComment(other.Body) && other.CreatedAt > comment.CreatedAt {
 					acknowledged = true
 					break
 				}
