@@ -1,11 +1,11 @@
 ---
-name: agentask-breakdown
-description: Use to turn a design into an executable Agentask board — decompose it into model-pinned, bite-size tasks and register the project/document/tasks via the Agentask API. The human brings the work: ALWAYS ask what to break down — never propose topics, ideas, or features to build. Works from an existing design/feature-spec document when the human has one (the common case — go straight to decomposing it); only brainstorms a design collaboratively when they don't. Proposes and takes positions on design choices and task boundaries but STOPS for the human's decision; never finalizes alone. Triggers on "break this down for the board", "decompose this doc into Agentask tasks", "put this feature on the board", "scaffold a project from this design".
+name: odonian-breakdown
+description: Use to turn a design into an executable Odonian board — decompose it into model-pinned, bite-size tasks and register the project/document/tasks via the Odonian API. The human brings the work: ALWAYS ask what to break down — never propose topics, ideas, or features to build. Works from an existing design/feature-spec document when the human has one (the common case — go straight to decomposing it); only brainstorms a design collaboratively when they don't. Proposes and takes positions on design choices and task boundaries but STOPS for the human's decision; never finalizes alone. Triggers on "break this down for the board", "decompose this doc into Odonian tasks", "put this feature on the board", "scaffold a project from this design".
 ---
 
-# Agentask design + breakdown
+# Odonian design + breakdown
 
-Drive the collaborative workflow that turns a design into an executable Agentask board. The human
+Drive the collaborative workflow that turns a design into an executable Odonian board. The human
 brings the intent — **often as a document they already have** — and you facilitate:
 **(start from their doc, or shape one with them) → decompose into bite-size, model-pinned tasks →
 register project/document/tasks via the API.** A model-pinned fleet then drains the board — Haiku
@@ -43,15 +43,15 @@ Then settle two things (ask whichever isn't already obvious from what they gave 
 
 **Target — where do the tasks land?**
 - **Greenfield** — a new project + new repo + a `design` document.
-- **Feature-on-existing** — a new capability on an existing Agentask project; a `feature_spec`
+- **Feature-on-existing** — a new capability on an existing Odonian project; a `feature_spec`
   document, no new repo. (Locate the existing project + repo.)
 
-**Config:** `AGENTASK_URL` and `AGENTASK_TOKEN` must be set (the running Agentask instance + bearer
-token). Confirm both; if missing, ask. Every API call sends `Authorization: Bearer $AGENTASK_TOKEN`.
+**Config:** `ODONIAN_URL` and `ODONIAN_TOKEN` must be set (the running Odonian instance + bearer
+token). Confirm both; if missing, ask. Every API call sends `Authorization: Bearer $ODONIAN_TOKEN`.
 
 **Endpoint shapes** (get these right): list/create under a project at
-`$AGENTASK_URL/projects/$PROJECT/tasks` and `.../documents`; every per-task call is at the ROOT,
-`$AGENTASK_URL/tasks/<id>/{promote,transition}`. Prefer `scripts/agentask.sh` over hand-built
+`$ODONIAN_URL/projects/$PROJECT/tasks` and `.../documents`; every per-task call is at the ROOT,
+`$ODONIAN_URL/tasks/<id>/{promote,transition}`. Prefer `scripts/odonian.sh` over hand-built
 curl — inline `jq` quoting is error-prone, and the script keeps payloads correct.
 
 ## Phase 1 — Brainstorm the design (collaborative)
@@ -87,7 +87,7 @@ feature-spec doc. It must contain:
 
 Behind a pluggable forge seam, **GitHub/`gh` is first-class.** `scripts/create-repo.sh` handles
 `git init` → create the remote → commit the document. For feature-on-existing, skip this — locate
-the existing repo and its Agentask project instead.
+the existing repo and its Odonian project instead.
 
 ## Phase 4 — Decompose (the heart, collaborative)
 
@@ -114,7 +114,7 @@ Non-negotiable decomposition rules:
 
 ## Phase 5 — Register + hand off
 
-Using `scripts/agentask.sh`:
+Using `scripts/odonian.sh`:
 
 1. Create the project (greenfield) or confirm the existing one.
 2. Register the document (`kind` = `design` | `feature_spec`, pointing at its repo ref) — or, if the
@@ -129,7 +129,7 @@ Using `scripts/agentask.sh`:
    what's been promoted.
 
 Report the project id, document id, and task ids, and tell the human how to point the fleet at the
-board (`AGENTASK_PROJECT=<id>` + the worker/reviewer loops).
+board (`ODONIAN_PROJECT=<id>` + the worker/reviewer loops).
 
 ## The gates you do not cross
 

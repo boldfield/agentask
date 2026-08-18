@@ -1,6 +1,6 @@
 # Feature spec — unblocking a task resets its review round counter
 
-**Status:** board milestone (Agentask project). **Date:** 2026-08-06.
+**Status:** board milestone (Odonian project). **Date:** 2026-08-06.
 
 ## Problem
 
@@ -26,8 +26,8 @@ approved unanimously, the task returns to `blocked` having consumed a
 full implement-plus-review cycle.
 
 The deployed thresholds make this sharp rather than theoretical
-(`AGENTASK_ESCALATION_THRESHOLDS=haiku=6,sonnet=4,opus=2,fable=1`, with
-`AGENTASK_ESCALATION_LADDER=haiku,sonnet,opus,fable`). A `fable` task
+(`ODONIAN_ESCALATION_THRESHOLDS=haiku=6,sonnet=4,opus=2,fable=1`, with
+`ODONIAN_ESCALATION_LADDER=haiku,sonnet,opus,fable`). A `fable` task
 has a threshold of 1 and sits at the top of the ladder, so it cannot
 escalate — it can only block. The sigil-programs task
 `daaa0540` ("surl: -c") is in precisely this state: `model=fable`,

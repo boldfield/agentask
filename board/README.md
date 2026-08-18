@@ -1,6 +1,6 @@
 # Bootstrap board
 
-A minimalist, text-file kanban used to build the Agentask MVP before Agentask exists.
+A minimalist, text-file kanban used to build the Odonian MVP before Odonian exists.
 This mirrors the system's own model so we dogfood it.
 
 ## Layout

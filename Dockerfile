@@ -17,16 +17,16 @@ COPY . .
 ARG VERSION=dev
 
 # Build static binary with CGO disabled for pure-Go SQLite
-RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.version=$VERSION" -o /agentask ./cmd/agentask
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags "-X main.version=$VERSION" -o /odonian ./cmd/odonian
 
 # Final stage: distroless static image
 FROM gcr.io/distroless/static:nonroot
 
 # Copy the static binary from builder
-COPY --from=builder /agentask /agentask
+COPY --from=builder /odonian /odonian
 
 # Expose the API port
 EXPOSE 8080
 
 # Run as non-root (nonroot user is built-in to distroless/static:nonroot)
-ENTRYPOINT ["/agentask", "server"]
+ENTRYPOINT ["/odonian", "server"]

@@ -1,13 +1,13 @@
 {
-  "name": "agentask",
+  "name": "odonian",
   "owner": {
     "name": "boldfield"
   },
   "plugins": [
     {
-      "name": "agentask",
+      "name": "odonian",
       "source": ".",
-      "description": "Agentask board skills: design + breakdown, and the human review gate."
+      "description": "Odonian board skills: design + breakdown, and the human review gate."
     }
   ]
 }

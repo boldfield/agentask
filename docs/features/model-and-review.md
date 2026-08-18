@@ -1,11 +1,11 @@
 # Feature: Model assignment & review tasks
 
 Status: feature spec, 2026-06-06
-Kind: feature_spec (for project Agentask)
+Kind: feature_spec (for project Odonian)
 
 ## What this is
 
-Two coupled changes that turn Agentask from a single-pool work queue into a
+Two coupled changes that turn Odonian from a single-pool work queue into a
 **model-aware** one, and make code review a **first-class unit of work** instead of an
 out-of-band human action:
 
@@ -153,7 +153,7 @@ not `ADD COLUMN`):
 ### Allowlist configuration
 
 - The set of valid model strings is **deployment config**, not schema — e.g. an
-  `AGENTASK_MODELS` env var / config key holding a comma-separated set
+  `ODONIAN_MODELS` env var / config key holding a comma-separated set
   (`haiku,sonnet,opus,gpt-5`). Sensible default if unset: `haiku,sonnet,opus`.
 - **Validation happens at create time only**: `CreateTasks` rejects (400, `UNKNOWN_MODEL`) any
   task `model` or `review_models` entry not in the allowlist. The claim path does no allowlist
@@ -386,7 +386,7 @@ get/list.
 **Intent.** Make a task's model a free-form string constrained to a per-deployment allowlist, so
 any provider is possible but typos are caught at creation.
 
-**Build.** Read the set of valid model strings from deployment config (an `AGENTASK_MODELS`
+**Build.** Read the set of valid model strings from deployment config (an `ODONIAN_MODELS`
 setting; sensible default of the three Claude tiers when unset). In task creation, validate the
 task's `model` and every entry of its `review_models` against that set; reject unknown values
 with a clear client error (`UNKNOWN_MODEL`). Accept `model` and `review_models` on the create

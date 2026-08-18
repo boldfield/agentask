@@ -18,7 +18,7 @@ import (
 	"github.com/google/uuid"
 	_ "modernc.org/sqlite"
 
-	"github.com/boldfield/agentask/internal/forge"
+	"github.com/boldfield/odonian/internal/forge"
 )
 
 //go:embed migrations
@@ -84,7 +84,7 @@ func WithEscalationLadder(ladder []string) StoreOption {
 }
 
 // Open opens a database connection and applies all pending migrations.
-// The dbPath should be a file path (e.g., "agentask.db") or "file::memory:?cache=shared"
+// The dbPath should be a file path (e.g., "odonian.db") or "file::memory:?cache=shared"
 // for an in-memory database.
 // It configures WAL mode, foreign keys, and busy timeout via DSN pragmas.
 // allowedModels is the list of valid model identifiers for task creation.

@@ -9,7 +9,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/boldfield/agentask/internal/forge"
+	"github.com/boldfield/odonian/internal/forge"
 )
 
 // parsePRURL parses a GitHub PR URL into its components.

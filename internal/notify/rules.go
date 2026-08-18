@@ -3,7 +3,7 @@ package notify
 import (
 	"fmt"
 
-	"github.com/boldfield/agentask/internal/store"
+	"github.com/boldfield/odonian/internal/store"
 )
 
 func buildNotification(task store.Task, prLink string) (Notification, bool) {
@@ -14,17 +14,17 @@ func buildNotification(task store.Task, prLink string) (Notification, bool) {
 
 	switch task.State {
 	case "approved":
-		event = "agentask-review"
+		event = "odonian-review"
 		priority = 2
 		titlePrefix = "Review & merge: "
 		tags = []string{"eyes"}
 	case "blocked":
-		event = "agentask-blocked"
+		event = "odonian-blocked"
 		priority = 2
 		titlePrefix = "Blocked: "
 		tags = []string{"no_entry"}
 	case "failed":
-		event = "agentask-failed"
+		event = "odonian-failed"
 		priority = 3
 		titlePrefix = "Failed: "
 		tags = []string{"x"}

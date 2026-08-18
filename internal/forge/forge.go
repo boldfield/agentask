@@ -23,7 +23,7 @@ var GitHubBaseURL = "https://api.github.com"
 
 // OwnerToken reads the forge tokens file and returns the token for the given owner.
 // The file path is determined by the FORGE_TOKENS environment variable (if set),
-// or defaults to ~/.agentask/forge-tokens.
+// or defaults to ~/.odonian/forge-tokens.
 // The file format is owner=token per line, with support for:
 //   - Case-insensitive owner matching
 //   - Comments (# and everything after)
@@ -38,12 +38,12 @@ func OwnerToken(owner string) (string, error) {
 	if forgeTokensEnv := os.Getenv("FORGE_TOKENS"); forgeTokensEnv != "" {
 		filePath = forgeTokensEnv
 	} else {
-		// Default to ~/.agentask/forge-tokens
+		// Default to ~/.odonian/forge-tokens
 		home, err := userHomeDirFunc()
 		if err != nil {
 			return "", err
 		}
-		filePath = filepath.Join(home, ".agentask", "forge-tokens")
+		filePath = filepath.Join(home, ".odonian", "forge-tokens")
 	}
 
 	data, err := os.ReadFile(filePath)

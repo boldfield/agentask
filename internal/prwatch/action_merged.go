@@ -4,8 +4,8 @@ import (
 	"context"
 	"log/slog"
 
-	"github.com/boldfield/agentask/internal/notify"
-	"github.com/boldfield/agentask/internal/store"
+	"github.com/boldfield/odonian/internal/notify"
+	"github.com/boldfield/odonian/internal/store"
 )
 
 type taskTx interface {
@@ -19,14 +19,14 @@ func applyMerged(ctx context.Context, tx taskTx, n notify.Notifier, task store.T
 	}
 
 	notification := notify.Notification{
-		Event:    "agentask-merged",
+		Event:    "odonian-merged",
 		Title:    "Merged: " + task.Title,
 		Priority: 4,
-		DedupKey: "agentask-merged:" + task.ID,
+		DedupKey: "odonian-merged:" + task.ID,
 	}
 
 	if err := n.Publish(ctx, notification); err != nil {
-		slog.Error("failed to publish agentask-merged notification", "task_id", task.ID, "error", err)
+		slog.Error("failed to publish odonian-merged notification", "task_id", task.ID, "error", err)
 	}
 
 	return nil

@@ -1,6 +1,6 @@
 # Design: Foreman Design-Orchestration Restructure
 
-**Status:** design — 2026-06-10. Spans two repos: `boldfield/agentask` (substrate + harness) and
+**Status:** design — 2026-06-10. Spans two repos: `boldfield/odonian` (substrate + harness) and
 `boldfield/foreman` (pipeline). All open calls **locked**: server-side merge primitive; scaffold
 pushes Makefile/CI in the initial commit (repo created pre-design); Option B (generic extensible
 prompt + per-consumer extension); per-repo fixture copy (chosen for task isolation); merge-task model
@@ -59,7 +59,7 @@ repos (each carries its own copy derived from this table; the duplication is int
 every consumer task self-contained). Every consumer test asserts against this fixture, so a consumer
 is verified **before any real worker exists**.
 
-### 1.2 Merge-task contract (agentask substrate)
+### 1.2 Merge-task contract (odonian substrate)
 
 A `merge` task is to `approved → done` what a `review` task is to `review → approved`: a spawned,
 claimable child that drives exactly one parent edge.
@@ -74,7 +74,7 @@ model:parent.model, state:"ready", title:"Merge: <parent.title>"}`.
 **Merge task invariants:** exactly one per parent; never reviewed; never spawns children; `target_task_id`
 = parent. The parent state machine is **unchanged** (`review → approved → done`).
 
-**CLI verb `agentask merge <merge-task-id>`** (mechanical, tested Go; all merge correctness lives
+**CLI verb `odonian merge <merge-task-id>`** (mechanical, tested Go; all merge correctness lives
 here — pinned signatures in §1.5). The merger claims a merge task, then acts on it *by its own id*:
 1. `GetTask(merge-task-id)` → `target_task_id` is the parent; `GetTask(parent)`. Require parent
    `state==approved`, `agent_merge==true`, resolvable PR (link or deterministic branch `mr/<id8>`).
@@ -83,11 +83,11 @@ here — pinned signatures in §1.5). The merger claims a merge task, then acts 
 3. `TransitionTask(parent, "done")`, then `TransitionTask(merge-task-id, "done")`.
 - On ANY failure: non-zero exit; parent stays `approved`; the merge task stays claimable → **retryable**.
 
-**Claim filter:** `agentask next --kind merge` returns `ready` merge tasks, matched on `kind` only
+**Claim filter:** `odonian next --kind merge` returns `ready` merge tasks, matched on `kind` only
 (model tier ignored — the merger is LLM-free).
 
 **Harness:** `agent.sh --kind merge` is a NON-LLM loop — `next --kind merge` → `claim` →
-`agentask merge <parent>` → stop. No `claude` dispatch. Runs as a dedicated slot or folded into
+`odonian merge <parent>` → stop. No `claude` dispatch. Runs as a dedicated slot or folded into
 existing agents.
 
 **`review.md` change:** delete the inline-merge step (today's step 5). Reviewers only vote.
@@ -98,7 +98,7 @@ The inter-phase contract is the set of named `ProjectState` fields each phase re
 
 | Phase | Reads | Writes | Side effects |
 |---|---|---|---|
-| **scaffold** (NEW, pre-design) | candidate | `ProjectID`, `DocumentID`, `Metadata["repo_title"]` (= `slugify(candidate.Name)`), `Metadata["built_repo_path"]` | create repo `<owner>/<slug>` with **initial commit = README + canonical Makefile + CI** (no `DESIGN.md`); register Agentask project + design doc. **Use `repo_title` — the existing key every downstream phase reads (queue/tagrelease/abandon/discover); `repo_slug` is read by nothing.** |
+| **scaffold** (NEW, pre-design) | candidate | `ProjectID`, `DocumentID`, `Metadata["repo_title"]` (= `slugify(candidate.Name)`), `Metadata["built_repo_path"]` | create repo `<owner>/<slug>` with **initial commit = README + canonical Makefile + CI** (no `DESIGN.md`); register Odonian project + design doc. **Use `repo_title` — the existing key every downstream phase reads (queue/tagrelease/abandon/discover); `repo_slug` is read by nothing.** |
 | **design** | `ProjectID`, `DocumentID`, candidate | `Design` (merged `DESIGN.md` text), `Metadata[design_task_id]` | seed `track=design` task; poll to `done`; read merged `DESIGN.md` file |
 | **design-gate** | `Design` | (gate verdict) | — |
 | **decompose** | `Design`, `ProjectID` | (build tasks) | seed build tasks `depends_on` the contract |
@@ -122,15 +122,15 @@ across task boundaries. Below is every cross-boundary operation with its exact s
 this design defines it; **EXISTING** = the current declaration, which the task author calls verbatim
 (never re-invents). Pinning these surfaced three things the data contracts hid — noted inline.
 
-**Agentask — merge primitive**
+**Odonian — merge primitive**
 
 | Op (task) | Pinned signature | Producer → Consumer |
 |---|---|---|
 | Merge-task spawn (M1) | inside `SubmitTask` aggregation (`store.go` ~L1789): when `newParentState=="approved" && parentAgentMerge && hasPR`, `INSERT INTO task(… kind='merge', target_task_id=<parent>, state='ready', model=<parentModel>, title='Merge: '+title …)` in the **same tx** (mirror the spawn_review INSERT ~L969). Sits right beside the existing `hasNoOp && !hasPR → 'done'` branch. | M1 → M2,M3 |
-| Claimable (M2) | `agentask next --kind merge` → `GET /projects?claimable=true&kind=merge`; returns `ready`, dep-free merge tasks; merger ignores model tier. exit 0 (id) / 2 (none). | M2 → M4 |
-| **Forge helper (M0, NEW — the hidden seam)** | extract `internal/forge`: `OwnerToken(owner string) (string, error)` + `SquashMerge(ctx, owner, repo string, prNumber int, token string) error` (REST `PUT /repos/{o}/{r}/pulls/{n}/merge`). **This logic currently lives only inside `cmd/agentask-tui`** — without extracting it, the `merge` verb either can't merge or forks a second copy. M3 depends on it; the TUI refactors onto it. | M0 → M3, TUI |
-| `merge` verb (M3) | `agentask merge <merge-task-id>`. Composes EXISTING `tuiclient.GetTask(ctx,id)(TaskDetail,error)` (→ `.TargetTaskID`), `tuiclient.TransitionTask(ctx,id,to string,note *string)error`, + M0's `forge.*`. exit 0 on merge+both-done; non-zero leaves both unchanged. | M3 ← M0; → M4 |
-| Merger (M4) | `agent.sh --kind merge`: `next --kind merge` → `claim <id>` → `agentask merge <id>`; no `claude`. | M4 ← M2,M3 |
+| Claimable (M2) | `odonian next --kind merge` → `GET /projects?claimable=true&kind=merge`; returns `ready`, dep-free merge tasks; merger ignores model tier. exit 0 (id) / 2 (none). | M2 → M4 |
+| **Forge helper (M0, NEW — the hidden seam)** | extract `internal/forge`: `OwnerToken(owner string) (string, error)` + `SquashMerge(ctx, owner, repo string, prNumber int, token string) error` (REST `PUT /repos/{o}/{r}/pulls/{n}/merge`). **This logic currently lives only inside `cmd/odonian-tui`** — without extracting it, the `merge` verb either can't merge or forks a second copy. M3 depends on it; the TUI refactors onto it. | M0 → M3, TUI |
+| `merge` verb (M3) | `odonian merge <merge-task-id>`. Composes EXISTING `tuiclient.GetTask(ctx,id)(TaskDetail,error)` (→ `.TargetTaskID`), `tuiclient.TransitionTask(ctx,id,to string,note *string)error`, + M0's `forge.*`. exit 0 on merge+both-done; non-zero leaves both unchanged. | M3 ← M0; → M4 |
+| Merger (M4) | `agent.sh --kind merge`: `next --kind merge` → `claim <id>` → `odonian merge <id>`; no `claude`. | M4 ← M2,M3 |
 
 `TaskDetail.TargetTaskID *string` is already present (no client change). `review.md` (S3) deletes its inline-merge step.
 
@@ -140,15 +140,15 @@ this design defines it; **EXISTING** = the current declaration, which the task a
 |---|---|---|
 | `slugify` (F1, NEW) | `func slugify(name string) string` in `internal/founder` — lowercase, hyphenate, strip non-alnum, collapse/trim dashes; deterministic. | F1 → F2 |
 | Phase enum (F3, NEW) | add `PhaseScaffold Phase = "scaffold"` to `types.go`. | — |
-| `scaffold.Execute` (F2) | implements EXISTING `PhaseHandler.Execute(ctx, *ProjectState) (Phase, error)`, returns `PhaseDesign`. Calls EXISTING `GHClientInterface.CreatePrivateRepo(ctx, owner, repo)`, `PushInitialCommit(ctx, owner, repo, repoPath, message)`; `AgentaskClientInterface.CreateProject(ctx, name, repo)(*Project,error)`, `CreateDocument(ctx, projectID, kind, title, ref)(*Document,error)`. **Correction (twice over):** writes `state.Metadata["repo_title"] = repoName` + `["built_repo_path"]` — `ProjectState` has **no** struct fields for these (uses `Metadata`), AND the key is **`repo_title`**, the existing key `queue_phase.go:46` / `tagrelease_phase.go:62` / `abandon_phase.go` / `discover.go` all read (they `PhaseAbandon` if it's missing). `repo_slug` was an invented key nothing reads — using it hard-abandons the pipeline at tag-release and queue. | F2 ← F1 |
+| `scaffold.Execute` (F2) | implements EXISTING `PhaseHandler.Execute(ctx, *ProjectState) (Phase, error)`, returns `PhaseDesign`. Calls EXISTING `GHClientInterface.CreatePrivateRepo(ctx, owner, repo)`, `PushInitialCommit(ctx, owner, repo, repoPath, message)`; `OdonianClientInterface.CreateProject(ctx, name, repo)(*Project,error)`, `CreateDocument(ctx, projectID, kind, title, ref)(*Document,error)`. **Correction (twice over):** writes `state.Metadata["repo_title"] = repoName` + `["built_repo_path"]` — `ProjectState` has **no** struct fields for these (uses `Metadata`), AND the key is **`repo_title`**, the existing key `queue_phase.go:46` / `tagrelease_phase.go:62` / `abandon_phase.go` / `discover.go` all read (they `PhaseAbandon` if it's missing). `repo_slug` was an invented key nothing reads — using it hard-abandons the pipeline at tag-release and queue. | F2 ← F1 |
 | Factory + transitions (F3) | factory `Create(PhaseScaffold)`→scaffold; `select` returns `PhaseScaffold` (was `PhaseDesign`); scaffold returns `PhaseDesign`. | F3 ← F2 |
-| `readDesignFromTask` (F4) | EXISTING sig `(d *DesignPhase) readDesignFromTask(ctx, *ProjectState, *agentaskclient.Task) error`; new body uses EXISTING `RepoCloner.CloneRepo(ctx, owner, repo, targetPath) error` → read `DESIGN.md` → `state.Design`; drop `task.Result`. | F4 ← S1f |
+| `readDesignFromTask` (F4) | EXISTING sig `(d *DesignPhase) readDesignFromTask(ctx, *ProjectState, *odonianclient.Task) error`; new body uses EXISTING `RepoCloner.CloneRepo(ctx, owner, repo, targetPath) error` → read `DESIGN.md` → `state.Design`; drop `task.Result`. | F4 ← S1f |
 | decompose parse (F5) | replace `extractInterfaceContract` (`## Behavior`→`## Command Surface`), `validateSingleContract`, `extractDesignMarkdown` (drop JSON strip). Internal; tested vs §1.1 fixture. | F5 ← S1f |
 | Remove setup (F6) | delete `PhaseSetup` + setup's creation/DESIGN.md-write (absorbed by scaffold); re-point `design-gate → decompose`. | F6 ← F2,F3 |
 
-`agentaskclient.CreateTaskRequest` (EXISTING) = `{ProjectID, DocumentID, Title, Spec, Key, DependsOn, Model, ReviewModels, AgentMerge, Track}` — the design phase already sets `Track:"design"`; decompose seeds build tasks `DependsOn` the contract.
+`odonianclient.CreateTaskRequest` (EXISTING) = `{ProjectID, DocumentID, Title, Spec, Key, DependsOn, Model, ReviewModels, AgentMerge, Track}` — the design phase already sets `Track:"design"`; decompose seeds build tasks `DependsOn` the contract.
 
-**Cross-repo (foreman → agentask):** all via the EXISTING HTTP API (foreman's `agentaskclient`): `CreateProject`, `CreateDocument`, `CreateTasks` (with `Track`), `GetTask`. The restructure adds **no** new cross-repo endpoint; the merge primitive is agentask-internal (consumed by the fleet, not foreman).
+**Cross-repo (foreman → odonian):** all via the EXISTING HTTP API (foreman's `odonianclient`): `CreateProject`, `CreateDocument`, `CreateTasks` (with `Track`), `GetTask`. The restructure adds **no** new cross-repo endpoint; the merge primitive is odonian-internal (consumed by the fleet, not foreman).
 
 **What pinning the operations revealed (and the data contracts didn't):**
 1. The `merge` verb takes the **merge-task id**, not the parent id (the merger claims a task, then acts on it) — changes the verb signature and the M4 loop.
@@ -159,10 +159,10 @@ this design defines it; **EXISTING** = the current declaration, which the task a
 
 ## 2. Component changes (each keyed to a §1 contract)
 
-**agentask**
+**odonian**
 - `internal/store`: spawn merge task in the aggregation tx (§1.2).
 - `internal/store`/`internal/api`: `next --kind merge` claimable (§1.2).
-- `cmd/agentask`: `merge` verb (§1.2).
+- `cmd/odonian`: `merge` verb (§1.2).
 - `harness/agent.sh`: `--kind merge` non-LLM branch (§1.2); `harness/merger.sh` slot.
 - `harness/prompts/pull_request/design/implement.md`: extensible (§1.4); `review.md`: tolerant + drop merge (§1.2,§1.4).
 - `testdata/design-canonical.md`: the fixture (§1.1).
@@ -184,33 +184,33 @@ Each task lists: repo · the §1 contract it produces/consumes · isolated accep
 green when its acceptance holds against the §1 fixtures — no sibling task required.
 
 **Group S — schema/contract (DEFINE FIRST; the seam → one author):**
-- **S1** [agentask] add `testdata/design-canonical.md` (fixture) + heading constants. *Produces §1.1.*
+- **S1** [odonian] add `testdata/design-canonical.md` (fixture) + heading constants. *Produces §1.1.*
   Acceptance: fixture conforms to the §1.1 table; a `schema_test` asserts each heading present. Deps: —.
 - **S1f** [foreman] vendor a copy of the §1.1 fixture into `foreman/testdata/`. Deps: S1 (copy source).
-- **S2** [agentask] `implement.md` extensible (§1.4). Acceptance: prompt emits the contract core +
+- **S2** [odonian] `implement.md` extensible (§1.4). Acceptance: prompt emits the contract core +
   "include spec-required sections"; assumes nothing Foreman-specific. Deps: S1.
-- **S3** [agentask] `review.md` tolerant of extra sections + remove merge step (§1.4, §1.2). Deps: S1.
+- **S3** [odonian] `review.md` tolerant of extra sections + remove merge step (§1.4, §1.2). Deps: S1.
 - **S4** [foreman] `design-gen.md` → thin candidate + extension sections, no JSON header (§1.4). Deps: S1.
 
-**Group M — merge primitive (agentask):**
-- **M0a** [agentask] create `internal/forge` (`OwnerToken`, `SquashMerge`) by lifting the logic from
+**Group M — merge primitive (odonian):**
+- **M0a** [odonian] create `internal/forge` (`OwnerToken`, `SquashMerge`) by lifting the logic from
   the cited TUI source (§1.5); package unit-tested vs a mock forge. Deps: —. *(Surfaced only by the
   operation-contract pass.)*
-- **M0b** [agentask] refactor `cmd/agentask-tui` to call `internal/forge`; delete the inline copies.
+- **M0b** [odonian] refactor `cmd/odonian-tui` to call `internal/forge`; delete the inline copies.
   Acceptance: TUI merge still works, no duplicate forge logic. Deps: M0a.
-- **M1** [agentask] store: spawn merge task on `approved && agent_merge && pr` (§1.5). Acceptance:
+- **M1** [odonian] store: spawn merge task on `approved && agent_merge && pr` (§1.5). Acceptance:
   unit test — aggregation to `approved` w/ agent_merge spawns exactly one merge task; `agent_merge=false`
   and `no_op` spawn none. Deps: —.
-- **M2** [agentask] `next --kind merge` claimable filter (§1.5). Acceptance: a `ready` merge task is
+- **M2** [odonian] `next --kind merge` claimable filter (§1.5). Acceptance: a `ready` merge task is
   returned by `next --kind merge`, not by `--kind review/implement`. Deps: M1 (chained — same store).
-- **M3** [agentask] `agentask merge <merge-task-id>` verb (§1.5). Acceptance: against `internal/forge`
+- **M3** [odonian] `odonian merge <merge-task-id>` verb (§1.5). Acceptance: against `internal/forge`
   (mock) + a hand-built merge task, resolves parent via `target_task_id` → merge → parent `done` →
   merge task `done`; failure leaves both unchanged. Deps: **M0a** (forge helper package).
-- **M4** [agentask] `agent.sh --kind merge` non-LLM branch + `merger.sh` (§1.5). Deps: M2, M3.
+- **M4** [odonian] `agent.sh --kind merge` non-LLM branch + `merger.sh` (§1.5). Deps: M2, M3.
 
 **Group F — Foreman restructure:**
 - **F1** [foreman] `slugify` helper + test. *Produces the slug contract.* Deps: —.
-- **F2** [foreman] `scaffold.go`: create repo + initial commit (README/Makefile/CI) + Agentask
+- **F2** [foreman] `scaffold.go`: create repo + initial commit (README/Makefile/CI) + Odonian
   project/doc; set `ProjectID/DocumentID/RepoSlug/RepoOwner` (§1.3). Deps: F1.
 - **F3** [foreman] phase factory: `select → scaffold → design` re-sequence (§1.3). Deps: F2.
 - **F4** [foreman] `readDesignFromTask` reads merged `DESIGN.md` file, drop `task.Result` (§1.3).

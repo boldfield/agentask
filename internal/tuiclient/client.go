@@ -13,7 +13,7 @@ import (
 
 var ErrAlreadyClaimed = errors.New("task already claimed")
 
-// Client is the interface for TUI interactions with the Agentask API.
+// Client is the interface for TUI interactions with the Odonian API.
 type Client interface {
 	ListProjects(ctx context.Context, options ...ProjectListOption) ([]Project, error)
 	GetProject(ctx context.Context, id string) (Project, error)
@@ -122,7 +122,7 @@ type HTTPClient struct {
 	http    *http.Client
 }
 
-// NewHTTPClient creates a new HTTP client for the Agentask API.
+// NewHTTPClient creates a new HTTP client for the Odonian API.
 func NewHTTPClient(baseURL, token string) *HTTPClient {
 	return &HTTPClient{
 		baseURL: baseURL,

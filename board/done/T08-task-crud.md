@@ -23,6 +23,6 @@ depends_on: [T03, T05]
 - A task with an unfinished dep is excluded from `claimable=true`.
 
 ## Result
-PR: https://github.com/boldfield/agentask/pull/10
-Branch: agentask/T08-task-crud
+PR: https://github.com/boldfield/odonian/pull/10
+Branch: odonian/T08-task-crud
 Head SHA: 274124eba6a5576bf40ead6c7e0c77a8edac63f0

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boldfield/agentask/internal/store"
+	"github.com/boldfield/odonian/internal/store"
 )
 
 type fakeTaskSource struct {
@@ -104,12 +104,12 @@ func TestNotifyReconcilerEmitsForApprovedAndBlocked(t *testing.T) {
 		t.Errorf("expected 2 notifications, got %d", len(notifier.published))
 	}
 
-	if notifier.published[0].Event != "agentask-review" {
-		t.Errorf("expected event 'agentask-review' for approved, got '%s'", notifier.published[0].Event)
+	if notifier.published[0].Event != "odonian-review" {
+		t.Errorf("expected event 'odonian-review' for approved, got '%s'", notifier.published[0].Event)
 	}
 
-	if notifier.published[1].Event != "agentask-blocked" {
-		t.Errorf("expected event 'agentask-blocked' for blocked, got '%s'", notifier.published[1].Event)
+	if notifier.published[1].Event != "odonian-blocked" {
+		t.Errorf("expected event 'odonian-blocked' for blocked, got '%s'", notifier.published[1].Event)
 	}
 }
 

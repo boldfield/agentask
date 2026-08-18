@@ -31,7 +31,7 @@ func TestDefaultGHMergerInvalidURL(t *testing.T) {
 		},
 		{
 			name:    "valid PR URL",
-			url:     "https://github.com/boldfield/agentask/pull/42",
+			url:     "https://github.com/boldfield/odonian/pull/42",
 			wantErr: false,
 		},
 	}
@@ -65,7 +65,7 @@ func TestDefaultGHMergerURLParsing(t *testing.T) {
 	// Test that valid PR URLs parse correctly and get to the merge step
 	// (which will fail without a real token/HTTP mock, but that's expected)
 	ctx := context.Background()
-	err := defaultGHMerger(ctx, "https://github.com/boldfield/agentask/pull/42")
+	err := defaultGHMerger(ctx, "https://github.com/boldfield/odonian/pull/42")
 
 	// We expect an error since the merge will fail without proper setup,
 	// but it should be a merge error, not a parse error
@@ -79,7 +79,7 @@ func TestDefaultGHMergerURLParsing(t *testing.T) {
 func TestDefaultGHMergerTokenFetch(t *testing.T) {
 	// Create a temporary forge-tokens file
 	tmpDir := t.TempDir()
-	tokensDir := tmpDir + "/.agentask"
+	tokensDir := tmpDir + "/.odonian"
 	os.MkdirAll(tokensDir, 0o700)
 	tokensFile := tokensDir + "/forge-tokens"
 

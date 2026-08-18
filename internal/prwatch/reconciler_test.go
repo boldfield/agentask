@@ -13,9 +13,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boldfield/agentask/internal/forge"
-	"github.com/boldfield/agentask/internal/notify"
-	"github.com/boldfield/agentask/internal/store"
+	"github.com/boldfield/odonian/internal/forge"
+	"github.com/boldfield/odonian/internal/notify"
+	"github.com/boldfield/odonian/internal/store"
 )
 
 type fakeTaskSource struct {
@@ -169,8 +169,8 @@ func TestReconcileActionDone(t *testing.T) {
 		t.Errorf("expected 1 notification, got %d", len(notifier.publishCalls))
 	}
 
-	if notifier.publishCalls[0].Event != "agentask-merged" {
-		t.Errorf("expected event 'agentask-merged', got %q", notifier.publishCalls[0].Event)
+	if notifier.publishCalls[0].Event != "odonian-merged" {
+		t.Errorf("expected event 'odonian-merged', got %q", notifier.publishCalls[0].Event)
 	}
 }
 

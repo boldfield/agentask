@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boldfield/agentask/internal/store"
+	"github.com/boldfield/odonian/internal/store"
 )
 
 func defaultTestAllowedModels() []string {

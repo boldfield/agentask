@@ -18,8 +18,8 @@ depends_on: [T09]
 
 ## Result
 
-**PR:** https://github.com/boldfield/agentask/pull/14
-**Branch:** agentask/T11-heartbeat
+**PR:** https://github.com/boldfield/odonian/pull/14
+**Branch:** odonian/T11-heartbeat
 **Head SHA:** 7cdb88e87a3c4262de83d6c66af5c2ac0a28b14d
 
 ### Verification

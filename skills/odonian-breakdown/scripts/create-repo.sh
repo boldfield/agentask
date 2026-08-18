@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# create-repo.sh — greenfield repo creation for the agentask-breakdown skill.
+# create-repo.sh — greenfield repo creation for the odonian-breakdown skill.
 # Pluggable forge seam; GitHub (gh) is the only implemented forge for now.
 #
 #   FORGE=github (default).  Requires: git; and for github, an authenticated `gh`.
@@ -7,7 +7,7 @@
 # Usage: create-repo.sh <name> <private|public> <design-doc-path> [description]
 #   <name> may be "repo" (your default account) or "owner/repo" (an org).
 # Creates ./<name-leaf>, git-inits it, commits the design doc as DESIGN.md, creates the
-# remote, and pushes. Prints the repo URL on stdout — feed it to `agentask.sh create-project`.
+# remote, and pushes. Prints the repo URL on stdout — feed it to `odonian.sh create-project`.
 set -euo pipefail
 
 FORGE="${FORGE:-github}"

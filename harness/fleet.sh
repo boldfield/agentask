@@ -56,7 +56,7 @@ case "$KIND" in
 esac
 
 # Export delivery mode for child agents
-export AGENTASK_DELIVERY_MODE="$DELIVERY_MODE"
+export ODONIAN_DELIVERY_MODE="$DELIVERY_MODE"
 
 # --- graceful stop ---
 STOP=0

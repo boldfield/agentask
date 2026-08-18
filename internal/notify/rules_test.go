@@ -3,7 +3,7 @@ package notify
 import (
 	"testing"
 
-	"github.com/boldfield/agentask/internal/store"
+	"github.com/boldfield/odonian/internal/store"
 )
 
 func TestBuildNotification(t *testing.T) {
@@ -23,30 +23,30 @@ func TestBuildNotification(t *testing.T) {
 			state:            "approved",
 			prLink:           "https://github.com/example/pr/123",
 			expectedOk:       true,
-			expectedEvent:    "agentask-review",
+			expectedEvent:    "odonian-review",
 			expectedPriority: 2,
 			expectedTitleHas: "Review & merge: ",
-			expectedDedupKey: "agentask-review:task-1",
+			expectedDedupKey: "odonian-review:task-1",
 		},
 		{
 			name:             "blocked state",
 			state:            "blocked",
 			prLink:           "https://github.com/example/pr/456",
 			expectedOk:       true,
-			expectedEvent:    "agentask-blocked",
+			expectedEvent:    "odonian-blocked",
 			expectedPriority: 2,
 			expectedTitleHas: "Blocked: ",
-			expectedDedupKey: "agentask-blocked:task-1",
+			expectedDedupKey: "odonian-blocked:task-1",
 		},
 		{
 			name:             "failed state",
 			state:            "failed",
 			prLink:           "https://github.com/example/pr/789",
 			expectedOk:       true,
-			expectedEvent:    "agentask-failed",
+			expectedEvent:    "odonian-failed",
 			expectedPriority: 3,
 			expectedTitleHas: "Failed: ",
-			expectedDedupKey: "agentask-failed:task-1",
+			expectedDedupKey: "odonian-failed:task-1",
 		},
 		{
 			name:       "non-notify state (ready)",
@@ -65,10 +65,10 @@ func TestBuildNotification(t *testing.T) {
 			state:             "approved",
 			prLink:            "",
 			expectedOk:        true,
-			expectedEvent:     "agentask-review",
+			expectedEvent:     "odonian-review",
 			expectedPriority:  2,
 			expectedLinkEmpty: true,
-			expectedDedupKey:  "agentask-review:task-1",
+			expectedDedupKey:  "odonian-review:task-1",
 		},
 	}
 

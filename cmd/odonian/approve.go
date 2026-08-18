@@ -7,16 +7,16 @@ import (
 	"io"
 	"os"
 
-	"github.com/boldfield/agentask/internal/localcommit"
-	"github.com/boldfield/agentask/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/localcommit"
+	"github.com/boldfield/odonian/internal/tuiclient"
 )
 
 func executeApprove(ctx context.Context, baseURL, token string, args []string) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	fs := flag.NewFlagSet("approve", flag.ContinueOnError)
@@ -55,10 +55,10 @@ func executeApprove(ctx context.Context, baseURL, token string, args []string) e
 	if localcommit.IsLocalCommit() {
 		repoDir := *repoFlag
 		if repoDir == "" {
-			repoDir = os.Getenv("AGENTASK_REPO")
+			repoDir = os.Getenv("ODONIAN_REPO")
 		}
 		if repoDir == "" {
-			return fmt.Errorf("--repo flag or AGENTASK_REPO environment variable required")
+			return fmt.Errorf("--repo flag or ODONIAN_REPO environment variable required")
 		}
 
 		slug := localcommit.Slugify(task.Title)

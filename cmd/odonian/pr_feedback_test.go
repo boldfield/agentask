@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boldfield/agentask/internal/forge"
+	"github.com/boldfield/odonian/internal/forge"
 )
 
 func TestExecutePRFeedbackListHelp(t *testing.T) {

@@ -6,7 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/boldfield/agentask/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/tuiclient"
 )
 
 func TestWrapText(t *testing.T) {
@@ -117,7 +117,7 @@ func TestBuildDetailContentWithLongURL(t *testing.T) {
 	now := time.Now().Format(time.RFC3339Nano)
 
 	// Use a very long URL to test hard-breaking
-	longURL := "https://github.com/boldfield/agentask/pull/144/review/new/very/long/path/that/exceeds/viewport"
+	longURL := "https://github.com/boldfield/odonian/pull/144/review/new/very/long/path/that/exceeds/viewport"
 
 	task := tuiclient.TaskDetail{
 		ID:        "task-123",

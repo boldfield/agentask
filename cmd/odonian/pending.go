@@ -8,15 +8,15 @@ import (
 	"io"
 	"text/tabwriter"
 
-	"github.com/boldfield/agentask/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/tuiclient"
 )
 
 func executePending(ctx context.Context, baseURL, token string, jsonOutput bool, args []string, out io.Writer) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	fs := flag.NewFlagSet("pending", flag.ContinueOnError)

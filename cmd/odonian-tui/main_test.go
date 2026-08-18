@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boldfield/agentask/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/tuiclient"
 	tea "github.com/charmbracelet/bubbletea"
 )
 

@@ -32,13 +32,13 @@ func LoadConfig(flagURL, flagToken, flagActor string) (*Config, error) {
 	}
 
 	// Override with environment variables
-	if envURL := os.Getenv("AGENTASK_URL"); envURL != "" {
+	if envURL := os.Getenv("ODONIAN_URL"); envURL != "" {
 		cfg.URL = envURL
 	}
-	if envToken := os.Getenv("AGENTASK_TOKEN"); envToken != "" {
+	if envToken := os.Getenv("ODONIAN_TOKEN"); envToken != "" {
 		cfg.Token = envToken
 	}
-	if envActor := os.Getenv("AGENTASK_ACTOR"); envActor != "" {
+	if envActor := os.Getenv("ODONIAN_ACTOR"); envActor != "" {
 		cfg.Actor = envActor
 	}
 
@@ -64,10 +64,10 @@ func LoadConfig(flagURL, flagToken, flagActor string) (*Config, error) {
 
 	// Validate required fields
 	if cfg.URL == "" {
-		return nil, fmt.Errorf("missing AGENTASK_URL (set via config file, AGENTASK_URL env, or --url flag)")
+		return nil, fmt.Errorf("missing ODONIAN_URL (set via config file, ODONIAN_URL env, or --url flag)")
 	}
 	if cfg.Token == "" {
-		return nil, fmt.Errorf("missing AGENTASK_TOKEN (set via config file, AGENTASK_TOKEN env, or --token flag)")
+		return nil, fmt.Errorf("missing ODONIAN_TOKEN (set via config file, ODONIAN_TOKEN env, or --token flag)")
 	}
 
 	return cfg, nil
@@ -82,7 +82,7 @@ type fileConfig struct {
 	PollInterval   string `toml:"poll_interval"` // Parse as string, then duration
 }
 
-// loadFromFile loads configuration from ~/.config/agentask/config.toml
+// loadFromFile loads configuration from ~/.config/odonian/config.toml
 func loadFromFile(cfg *Config) error {
 	// Resolve config file path
 	configHome := os.Getenv("XDG_CONFIG_HOME")
@@ -95,7 +95,7 @@ func loadFromFile(cfg *Config) error {
 		configHome = filepath.Join(home, ".config")
 	}
 
-	configPath := filepath.Join(configHome, "agentask", "config.toml")
+	configPath := filepath.Join(configHome, "odonian", "config.toml")
 
 	// Check if file exists
 	if _, err := os.Stat(configPath); os.IsNotExist(err) {

@@ -1,13 +1,13 @@
 # syntax=docker/dockerfile:1
-# Agentask WORKER / REVIEWER fleet image — the heavy one.
+# Odonian WORKER / REVIEWER fleet image — the heavy one.
 # It runs `claude -p` (subscription auth via CLAUDE_CODE_OAUTH_TOKEN) against a real build, so it
-# carries: claude CLI (Node), git + gh, a general build toolchain (Go, Rust, Python, C), the agentask
+# carries: claude CLI (Node), git + gh, a general build toolchain (Go, Rust, Python, C), the odonian
 # CLI, and the harness. Modeled on the proven `nightshift` image. Built amd64-only for now (the cp
 # cluster); arm64 is added later alongside the cross-arch build/test dimension.
 ARG GO_VERSION=1.25
 
-# --- Build the agentask CLI (static, same as the server/merger image) ---
-FROM --platform=$BUILDPLATFORM golang:${GO_VERSION} AS agentask-builder
+# --- Build the odonian CLI (static, same as the server/merger image) ---
+FROM --platform=$BUILDPLATFORM golang:${GO_VERSION} AS odonian-builder
 ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -15,7 +15,7 @@ RUN go mod download
 COPY . .
 ARG VERSION=dev
 RUN CGO_ENABLED=0 GOOS=${TARGETOS} GOARCH=${TARGETARCH} \
-    go build -ldflags "-X main.version=${VERSION}" -o /out/agentask ./cmd/agentask
+    go build -ldflags "-X main.version=${VERSION}" -o /out/odonian ./cmd/odonian
 
 # --- Runtime: Node base (for claude) + toolchains ---
 FROM node:20-slim
@@ -42,7 +42,7 @@ RUN set -eux; \
     install "/tmp/gh_${ver}_linux_${arch}/bin/gh" /usr/local/bin/gh; \
     rm -rf /tmp/gh*
 
-# Go (for Go tools, incl. agentask itself).
+# Go (for Go tools, incl. odonian itself).
 COPY --from=golang:1.25-bookworm /usr/local/go /usr/local/go
 
 # claude CLI (subscription auth comes at runtime via CLAUDE_CODE_OAUTH_TOKEN env).
@@ -51,8 +51,8 @@ RUN npm install -g @anthropic-ai/claude-code
 # Codex CLI (OpenAI Codex tool).
 RUN npm install -g @openai/codex
 
-# agentask CLI + harness + the shared fleet entrypoint.
-COPY --from=agentask-builder /out/agentask /usr/local/bin/agentask
+# odonian CLI + harness + the shared fleet entrypoint.
+COPY --from=odonian-builder /out/odonian /usr/local/bin/odonian
 COPY harness/ /harness/
 COPY deploy/fleet/fleet-entrypoint.sh /usr/local/bin/fleet-entrypoint.sh
 RUN chmod +x /usr/local/bin/fleet-entrypoint.sh /harness/agent.sh
@@ -66,7 +66,7 @@ RUN ln -sf /usr/local/go/bin/go /usr/local/bin/go && \
 RUN useradd -m -u 1000 -o -g 1000 agent
 USER 1000
 ENV HOME=/home/agent \
-    AGENTASK_HOME=/home/agent/.agentask \
+    ODONIAN_HOME=/home/agent/.odonian \
     PATH="/usr/local/go/bin:/home/agent/.cargo/bin:${PATH}"
 
 # Rust toolchain (per-user via rustup) — many faictory tools are Rust crates.

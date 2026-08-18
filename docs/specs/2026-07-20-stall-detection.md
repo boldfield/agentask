@@ -1,6 +1,6 @@
 # Feature spec — board stall detection (alert when claimable work stops moving)
 
-**Status:** board milestone (Agentask project). **Date:** 2026-07-20.
+**Status:** board milestone (Odonian project). **Date:** 2026-07-20.
 
 ## Problem
 
@@ -8,7 +8,7 @@ On 2026-07-09 the review queue deadlocked and **nothing alerted for 10 days.**
 
 The trigger was a revoked codex refresh token: every `gpt-5.5` review dispatch
 exited `rc=1`. The amplifier was that `harness/agent.sh` peeks the queue head
-*without claiming it* (`agentask next`, no `--claim`), so the failing task stayed
+*without claiming it* (`odonian next`, no `--claim`), so the failing task stayed
 `ready` and stayed the head forever. Four reviewer pods re-dispatched the same
 doomed task ~3120 times each. An `opus` review sitting three minutes behind it in
 the `ORDER BY created_at, id` queue was unreachable the entire time, and implement
@@ -75,31 +75,31 @@ No schema change and no store change. `ListTasks` already supports the
   every tick for every matching task. That is tolerable for `approved` (the task
   moves on) but unusable for a stall that persists for days. `StallReconciler`
   keeps an in-memory `map[projectID]lastAlertedAt` and re-alerts only once per
-  `AGENTASK_STALL_REALERT`. In-memory is sufficient: the server is single-replica
+  `ODONIAN_STALL_REALERT`. In-memory is sufficient: the server is single-replica
   (`replicas: 1`, `Recreate`), and a restart re-alerting once is harmless.
 
 ## Config
 
 | env | default | meaning |
 |---|---|---|
-| `AGENTASK_STALL_THRESHOLD` | `6h` | no progress for this long (with claimable work present) = stalled. `0` disables. |
-| `AGENTASK_STALL_REALERT` | `24h` | minimum gap between repeat alerts for the same project. |
+| `ODONIAN_STALL_THRESHOLD` | `6h` | no progress for this long (with claimable work present) = stalled. `0` disables. |
+| `ODONIAN_STALL_REALERT` | `24h` | minimum gap between repeat alerts for the same project. |
 
 Both parse with `time.ParseDuration`, matching the existing duration env vars.
 The reconciler registers only when `NOTIFY_URL` is set, matching how
-`NotifyReconciler` is wired in `cmd/agentask/main.go`.
+`NotifyReconciler` is wired in `cmd/odonian/main.go`.
 
 ## Acceptance
 
 - A project with claimable work and no state change for > threshold produces
-  exactly one notification, then no more until `AGENTASK_STALL_REALERT` elapses.
+  exactly one notification, then no more until `ODONIAN_STALL_REALERT` elapses.
 - A project with claimable work that *is* progressing produces none.
 - A project with no claimable work produces none, however old it is.
 - A task that becomes claimable via a dependency completing does **not** trigger
   an alert on the strength of its own `created_at` — this is the regression test
   for the wrong-signal trap above.
 - A fully `done` project never alerts.
-- `AGENTASK_STALL_THRESHOLD=0` disables the reconciler entirely.
+- `ODONIAN_STALL_THRESHOLD=0` disables the reconciler entirely.
 
 ## Out of scope
 

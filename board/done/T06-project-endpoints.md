@@ -19,6 +19,6 @@ depends_on: [T03, T05]
 
 ## Result
 
-PR: https://github.com/boldfield/agentask/pull/8
-Branch: agentask/T06-project-endpoints
+PR: https://github.com/boldfield/odonian/pull/8
+Branch: odonian/T06-project-endpoints
 Head SHA: 648de47b26b24f99d649e99e48a87e62db9e6798

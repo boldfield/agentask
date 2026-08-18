@@ -1,6 +1,6 @@
 # Feature spec — workers address all unaddressed PR feedback + acknowledge it
 
-**Status:** board milestone (Agentask project). **Date:** 2026-06-26.
+**Status:** board milestone (Odonian project). **Date:** 2026-06-26.
 
 ## Problem
 
@@ -31,7 +31,7 @@ skips it.
 
 This is GitHub forge logic and belongs in Go next to the existing forge
 code (`internal/forge/`: `SquashMerge`, `pr_review.go`, `OwnerToken`),
-exposed as `agentask` CLI subcommands the prompts call — not a parallel
+exposed as `odonian` CLI subcommands the prompts call — not a parallel
 shell+jq implementation. Go gives CI-gated unit tests (the harness shell
 tests are not run in CI) and a mockable HTTP seam (forge already has
 `GitHubBaseURL`).
@@ -50,8 +50,8 @@ tests are not run in CI) and a mockable HTTP seam (forge already has
   "addressed" marker, since conversation comments have no native
   resolved state).
 
-- **CLI surface.** `agentask pr-feedback list <pr-url>` emits the
-  normalized unaddressed items; `agentask pr-feedback ack <pr-url>
+- **CLI surface.** `odonian pr-feedback list <pr-url>` emits the
+  normalized unaddressed items; `odonian pr-feedback ack <pr-url>
   <item-id> <sha>` marks one addressed. Token resolution reuses the
   existing per-owner path (`forge.OwnerToken` by repo owner).
 
@@ -66,7 +66,7 @@ tests are not run in CI) and a mockable HTTP seam (forge already has
 ## Scope / boundaries
 
 - **In scope:** the two forge functions (list, ack), the
-  `agentask pr-feedback` CLI subcommands, the implement-prompt rewrite,
+  `odonian pr-feedback` CLI subcommands, the implement-prompt rewrite,
   and the reviewer-prompt alignment — for **`pull_request` delivery
   mode only** (`local_commit` mode commits directly and has no PR).
 - **Out of scope:** changing the review/escalation state machine; the
@@ -79,7 +79,7 @@ tests are not run in CI) and a mockable HTTP seam (forge already has
 1. `forge-feedback-list` (deps: none) — list unaddressed feedback, Go +
    tests.
 2. `forge-feedback-ack` (deps: 1) — resolve/reply/react ack, Go + tests.
-3. `cli-pr-feedback` (deps: 1, 2) — `agentask pr-feedback list/ack`
+3. `cli-pr-feedback` (deps: 1, 2) — `odonian pr-feedback list/ack`
    subcommands.
 4. `prompt-implement-rework` (deps: 3) — rewrite the rework section of
    both `pull_request` implement prompts.
@@ -88,7 +88,7 @@ tests are not run in CI) and a mockable HTTP seam (forge already has
 
 ## Done definition
 
-All five merged; `agentask pr-feedback list/ack` work against a PR with
+All five merged; `odonian pr-feedback list/ack` work against a PR with
 mixed resolved/unresolved inline threads and global comments; a
 reworking worker addresses every unaddressed item and leaves resolved
 threads + acked comments behind; re-review sees only genuinely

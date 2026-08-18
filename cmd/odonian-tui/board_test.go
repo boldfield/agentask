@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boldfield/agentask/internal/tuiclient"
-	"github.com/boldfield/agentask/internal/tuiconfig"
+	"github.com/boldfield/odonian/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/tuiconfig"
 	tea "github.com/charmbracelet/bubbletea"
 )
 

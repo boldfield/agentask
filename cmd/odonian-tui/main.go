@@ -6,16 +6,16 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/boldfield/agentask/internal/tuiclient"
-	"github.com/boldfield/agentask/internal/tuiconfig"
+	"github.com/boldfield/odonian/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/tuiconfig"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
 func main() {
 	// Parse flags
 	var flagURL, flagToken, flagActor string
-	flag.StringVar(&flagURL, "url", "", "Agentask URL")
-	flag.StringVar(&flagToken, "token", "", "Agentask token")
+	flag.StringVar(&flagURL, "url", "", "Odonian URL")
+	flag.StringVar(&flagToken, "token", "", "Odonian token")
 	flag.StringVar(&flagActor, "actor", "", "Actor name for reviews (defaults to $USER)")
 	flag.Parse()
 

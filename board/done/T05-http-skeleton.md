@@ -11,12 +11,12 @@ In `internal/api`:
 
 - `net/http` server using Go 1.22 method+pattern routing (`mux.HandleFunc("POST /projects", ...)`).
 - Bearer-token auth middleware: reject requests whose `Authorization: Bearer <token>` does
-  not match `AGENTASK_TOKEN`. Exempt `GET /healthz`.
+  not match `ODONIAN_TOKEN`. Exempt `GET /healthz`.
 - `GET /healthz` → 200 `{"status":"ok"}`.
 - JSON request-decode and response-encode helpers; consistent error envelope
   `{"error":{"code","message"}}` with correct status codes (400/401/404/409/500).
-- Wire the server into `cmd/agentask/main.go` (read `AGENTASK_TOKEN`, `AGENTASK_DB`,
-  `AGENTASK_ADDR` from env; sane defaults).
+- Wire the server into `cmd/odonian/main.go` (read `ODONIAN_TOKEN`, `ODONIAN_DB`,
+  `ODONIAN_ADDR` from env; sane defaults).
 
 ## Acceptance criteria
 - `GET /healthz` returns 200 without auth.
@@ -25,6 +25,6 @@ In `internal/api`:
 
 ## Result
 
-- PR: https://github.com/boldfield/agentask/pull/7
-- Branch: agentask/T05-http-skeleton
+- PR: https://github.com/boldfield/odonian/pull/7
+- Branch: odonian/T05-http-skeleton
 - Head SHA: f74ec17

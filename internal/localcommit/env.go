@@ -5,10 +5,10 @@ import (
 	"strings"
 )
 
-// DeliveryMode reads AGENTASK_DELIVERY_MODE, trims whitespace, lowercases it,
+// DeliveryMode reads ODONIAN_DELIVERY_MODE, trims whitespace, lowercases it,
 // and defaults to "pull_request" if unset, empty, or unknown.
 func DeliveryMode() string {
-	mode := os.Getenv("AGENTASK_DELIVERY_MODE")
+	mode := os.Getenv("ODONIAN_DELIVERY_MODE")
 	mode = strings.TrimSpace(mode)
 	mode = strings.ToLower(mode)
 	if mode != "local_commit" {

@@ -41,20 +41,20 @@ else
   test_fail "agent.sh missing local_commit conditional"
 fi
 
-# Test 3: Check that AGENTASK_WORKTREE_HOME is required in local_commit
-echo "Test 3: agent.sh requires AGENTASK_WORKTREE_HOME in local_commit"
-if grep -q 'AGENTASK_WORKTREE_HOME.*local_commit' "$SCRIPT_TO_TEST"; then
-  test_pass "agent.sh validates AGENTASK_WORKTREE_HOME"
+# Test 3: Check that ODONIAN_WORKTREE_HOME is required in local_commit
+echo "Test 3: agent.sh requires ODONIAN_WORKTREE_HOME in local_commit"
+if grep -q 'ODONIAN_WORKTREE_HOME.*local_commit' "$SCRIPT_TO_TEST"; then
+  test_pass "agent.sh validates ODONIAN_WORKTREE_HOME"
 else
-  test_fail "agent.sh missing AGENTASK_WORKTREE_HOME validation"
+  test_fail "agent.sh missing ODONIAN_WORKTREE_HOME validation"
 fi
 
-# Test 4: Check that agent.sh exports AGENTASK_WORKTREE_HOME
-echo "Test 4: agent.sh exports AGENTASK_WORKTREE_HOME in local_commit"
-if grep -q 'export AGENTASK_WORKTREE_HOME' "$SCRIPT_TO_TEST"; then
-  test_pass "agent.sh exports AGENTASK_WORKTREE_HOME"
+# Test 4: Check that agent.sh exports ODONIAN_WORKTREE_HOME
+echo "Test 4: agent.sh exports ODONIAN_WORKTREE_HOME in local_commit"
+if grep -q 'export ODONIAN_WORKTREE_HOME' "$SCRIPT_TO_TEST"; then
+  test_pass "agent.sh exports ODONIAN_WORKTREE_HOME"
 else
-  test_fail "agent.sh doesn't export AGENTASK_WORKTREE_HOME"
+  test_fail "agent.sh doesn't export ODONIAN_WORKTREE_HOME"
 fi
 
 # Test 5: Check that clone is skipped in local_commit (no ensure_clone call)
@@ -108,12 +108,12 @@ else
   test_fail "fleet.sh missing --delivery-mode flag"
 fi
 
-# Test 10: Check fleet.sh exports AGENTASK_DELIVERY_MODE
-echo "Test 10: fleet.sh exports AGENTASK_DELIVERY_MODE"
-if grep -q 'export AGENTASK_DELIVERY_MODE' "$FLEET_SCRIPT"; then
-  test_pass "fleet.sh exports AGENTASK_DELIVERY_MODE"
+# Test 10: Check fleet.sh exports ODONIAN_DELIVERY_MODE
+echo "Test 10: fleet.sh exports ODONIAN_DELIVERY_MODE"
+if grep -q 'export ODONIAN_DELIVERY_MODE' "$FLEET_SCRIPT"; then
+  test_pass "fleet.sh exports ODONIAN_DELIVERY_MODE"
 else
-  test_fail "fleet.sh doesn't export AGENTASK_DELIVERY_MODE"
+  test_fail "fleet.sh doesn't export ODONIAN_DELIVERY_MODE"
 fi
 
 # Test 11: Verify fleet.sh invokes agent.sh directly with --kind and --model

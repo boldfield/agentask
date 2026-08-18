@@ -9,7 +9,7 @@ import (
 
 func TestCleanupAbandon(t *testing.T) {
 	// Skip path validation during tests since we use t.TempDir()
-	t.Setenv("AGENTASK_SKIP_PATH_VALIDATION", "1")
+	t.Setenv("ODONIAN_SKIP_PATH_VALIDATION", "1")
 
 	t.Run("removes worktree and wip branch", func(t *testing.T) {
 		// Create a temporary git repo
@@ -37,7 +37,7 @@ func TestCleanupAbandon(t *testing.T) {
 		if err := os.Mkdir(worktreeHome, 0755); err != nil {
 			t.Fatalf("failed to create worktree home: %v", err)
 		}
-		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+		t.Setenv("ODONIAN_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-123"
 		worktreePath := filepath.Join(worktreeHome, iid)
@@ -107,7 +107,7 @@ func TestCleanupAbandon(t *testing.T) {
 		if err := os.Mkdir(worktreeHome, 0755); err != nil {
 			t.Fatalf("failed to create worktree home: %v", err)
 		}
-		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+		t.Setenv("ODONIAN_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-456"
 		slug := "my-feature"
@@ -161,7 +161,7 @@ func TestCleanupAbandon(t *testing.T) {
 		if err := os.Mkdir(worktreeHome, 0755); err != nil {
 			t.Fatalf("failed to create worktree home: %v", err)
 		}
-		t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+		t.Setenv("ODONIAN_WORKTREE_HOME", worktreeHome)
 
 		iid := "task-789"
 

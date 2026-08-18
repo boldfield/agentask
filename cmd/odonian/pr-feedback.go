@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"os"
 
-	"github.com/boldfield/agentask/internal/forge"
+	"github.com/boldfield/odonian/internal/forge"
 )
 
 func executePRFeedback(ctx context.Context, args []string, out io.Writer) error {
@@ -33,7 +33,7 @@ func executePRFeedback(ctx context.Context, args []string, out io.Writer) error 
 }
 
 func printPRFeedbackHelp(w io.Writer) {
-	fmt.Fprintf(w, `agentask pr-feedback - Manage PR feedback
+	fmt.Fprintf(w, `odonian pr-feedback - Manage PR feedback
 
 Subcommands:
   list <pr-url>                   List unaddressed feedback items as JSON lines
@@ -41,7 +41,7 @@ Subcommands:
 
 Environment:
   GH_TOKEN                        GitHub token (fallback if not in forge-tokens)
-  FORGE_TOKENS                    Path to forge tokens file (defaults to ~/.agentask/forge-tokens)
+  FORGE_TOKENS                    Path to forge tokens file (defaults to ~/.odonian/forge-tokens)
 `)
 }
 

@@ -25,6 +25,6 @@ Define the schema in `migrations/0001_init.sql` per DESIGN.md §2:
 - A unit test opens an in-memory/temp DB, migrates, and asserts the tables exist.
 
 ## Result
-- **PR URL:** https://github.com/boldfield/agentask/pull/2
-- **Branch:** agentask/T02-schema-migrations
+- **PR URL:** https://github.com/boldfield/odonian/pull/2
+- **Branch:** odonian/T02-schema-migrations
 - **Head commit SHA:** c1e4042

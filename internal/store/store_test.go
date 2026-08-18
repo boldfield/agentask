@@ -19,7 +19,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"github.com/boldfield/agentask/internal/forge"
+	"github.com/boldfield/odonian/internal/forge"
 )
 
 // defaultTestAllowedModels returns the default allowed models for tests (matching main.go default).
@@ -8380,7 +8380,7 @@ func newSupersedePRTestServer(t *testing.T, prState string) (*httptest.Server, *
 }
 
 // setForgeToken points FORGE_TOKENS at a temp file so forge.OwnerToken resolves a
-// token for owner without touching the real ~/.agentask/forge-tokens.
+// token for owner without touching the real ~/.odonian/forge-tokens.
 func setForgeToken(t *testing.T, owner, token string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "forge-tokens")

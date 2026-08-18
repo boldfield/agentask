@@ -25,6 +25,6 @@ foundation for the CI-green review verdict in DESIGN.md §5.
 - The status check appears on the PR with the stable job/context name.
 
 ## Result
-- PR: https://github.com/boldfield/agentask/pull/4
-- Branch: agentask/T17-ci-github-actions
+- PR: https://github.com/boldfield/odonian/pull/4
+- Branch: odonian/T17-ci-github-actions
 - Head SHA: 1efa55a0790af4993fcc8dc17c860776c99352d2

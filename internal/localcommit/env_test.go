@@ -45,9 +45,9 @@ func TestDeliveryMode(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.env == "" {
-				t.Setenv("AGENTASK_DELIVERY_MODE", "")
+				t.Setenv("ODONIAN_DELIVERY_MODE", "")
 			} else {
-				t.Setenv("AGENTASK_DELIVERY_MODE", tt.env)
+				t.Setenv("ODONIAN_DELIVERY_MODE", tt.env)
 			}
 			got := DeliveryMode()
 			if got != tt.expected {
@@ -98,9 +98,9 @@ func TestIsLocalCommit(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.env == "" {
-				t.Setenv("AGENTASK_DELIVERY_MODE", "")
+				t.Setenv("ODONIAN_DELIVERY_MODE", "")
 			} else {
-				t.Setenv("AGENTASK_DELIVERY_MODE", tt.env)
+				t.Setenv("ODONIAN_DELIVERY_MODE", tt.env)
 			}
 			got := IsLocalCommit()
 			if got != tt.expected {

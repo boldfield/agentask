@@ -6,32 +6,32 @@ VERSION ?= $(shell git describe --tags --always --dirty)
 FLEET_REGISTRY  ?= docker.summercamp.eastharbor.casa:32050
 FLEET_TAG       ?= latest
 FLEET_PLATFORMS ?= linux/amd64,linux/arm64
-FLEET_BUILDER   ?= agentask-fleet
+FLEET_BUILDER   ?= odonian-fleet
 
 # Cluster contexts + namespace for fleet rollouts. Worker/reviewer run on the amd64 cp
 # cluster; the merger runs on the arm64 lab (Pi) cluster. Override per-environment.
 CP_CONTEXT      ?= admin@summercamp-cp
 LAB_CONTEXT     ?= admin@summercamp-lab
-FLEET_NAMESPACE ?= agentask-fleet
+FLEET_NAMESPACE ?= odonian-fleet
 
-# Server deployment (the agentask API). SERVER_CONTEXT empty = use the CURRENT kube
+# Server deployment (the odonian API). SERVER_CONTEXT empty = use the CURRENT kube
 # context, matching `make deploy` (which sets no --context).
 SERVER_CONTEXT   ?=
-SERVER_NAMESPACE ?= agentask
+SERVER_NAMESPACE ?= odonian
 
 # `sbx` sandbox container the host-side codex auth seeding targets (see sbx-codex-auth below).
-SBX_NAME ?= claude-agentask-sbx
+SBX_NAME ?= claude-odonian-sbx
 
 build:
 	mkdir -p bin
-	go build -ldflags "-X main.version=$(VERSION)" -o bin/agentask ./cmd/agentask
+	go build -ldflags "-X main.version=$(VERSION)" -o bin/odonian ./cmd/odonian
 
 tui:
 	mkdir -p bin
-	go build -o bin/agentask-tui ./cmd/agentask-tui
+	go build -o bin/odonian-tui ./cmd/odonian-tui
 
 run: build
-	./bin/agentask
+	./bin/odonian
 
 test:
 	go test ./...
@@ -52,20 +52,20 @@ release:
 	@if ! git diff --quiet; then echo "ERROR: Working tree has uncommitted changes"; exit 1; fi
 	@if ! git diff --cached --quiet; then echo "ERROR: Index has staged changes"; exit 1; fi
 	@if [ "$$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then echo "ERROR: Not on main branch"; exit 1; fi
-	docker build --platform linux/amd64 --build-arg VERSION=$(VERSION) -t ghcr.io/boldfield/agentask:$(VERSION) .
-	docker push ghcr.io/boldfield/agentask:$(VERSION)
+	docker build --platform linux/amd64 --build-arg VERSION=$(VERSION) -t ghcr.io/boldfield/odonian:$(VERSION) .
+	docker push ghcr.io/boldfield/odonian:$(VERSION)
 	git tag $(VERSION)
 	git push origin $(VERSION)
-	@echo "Released ghcr.io/boldfield/agentask:$(VERSION) (linux/amd64); deploy with: make deploy VERSION=$(VERSION)"
+	@echo "Released ghcr.io/boldfield/odonian:$(VERSION) (linux/amd64); deploy with: make deploy VERSION=$(VERSION)"
 
 # One-time: create a buildx builder that can push to the INSECURE (HTTP) internal registry.
 # Multi-arch `--push` needs the docker-container driver, so a daemon.json insecure-registries entry
 # isn't enough — buildkit itself must mark the registry as http. Re-run any time to recreate it.
 fleet-builder:
-	@printf '[registry."%s"]\n  http = true\n  insecure = true\n' '$(FLEET_REGISTRY)' > /tmp/agentask-buildkitd.toml
+	@printf '[registry."%s"]\n  http = true\n  insecure = true\n' '$(FLEET_REGISTRY)' > /tmp/odonian-buildkitd.toml
 	-docker buildx rm $(FLEET_BUILDER) 2>/dev/null
 	docker buildx create --name $(FLEET_BUILDER) --driver docker-container \
-	  --config /tmp/agentask-buildkitd.toml --bootstrap
+	  --config /tmp/odonian-buildkitd.toml --bootstrap
 	@echo "buildx builder '$(FLEET_BUILDER)' ready (insecure HTTP push to $(FLEET_REGISTRY))"
 
 # Build + push the multi-arch MERGER fleet image to the internal registry.
@@ -73,20 +73,20 @@ fleet-builder:
 merger-image:
 	docker buildx build --builder $(FLEET_BUILDER) --platform $(FLEET_PLATFORMS) \
 	  --build-arg VERSION=$(VERSION) \
-	  -t $(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG) \
-	  -t $(FLEET_REGISTRY)/agentask/merger:$(VERSION) \
+	  -t $(FLEET_REGISTRY)/odonian/merger:$(FLEET_TAG) \
+	  -t $(FLEET_REGISTRY)/odonian/merger:$(VERSION) \
 	  -f deploy/fleet/Dockerfile.merger --push .
-	@echo "Pushed $(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG) and :$(VERSION) ($(FLEET_PLATFORMS))"
+	@echo "Pushed $(FLEET_REGISTRY)/odonian/merger:$(FLEET_TAG) and :$(VERSION) ($(FLEET_PLATFORMS))"
 
 # Build + push the heavy WORKER/REVIEWER fleet image (claude + toolchains). amd64-only for now (the
 # cp cluster); arm64 comes with the cross-arch build/test dimension. Needs `make fleet-builder` once.
 fleet-image:
 	docker buildx build --builder $(FLEET_BUILDER) --platform linux/amd64 \
 	  --build-arg VERSION=$(VERSION) \
-	  -t $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG) \
-	  -t $(FLEET_REGISTRY)/agentask/fleet:$(VERSION) \
+	  -t $(FLEET_REGISTRY)/odonian/fleet:$(FLEET_TAG) \
+	  -t $(FLEET_REGISTRY)/odonian/fleet:$(VERSION) \
 	  -f deploy/fleet/Dockerfile.fleet --push .
-	@echo "Pushed $(FLEET_REGISTRY)/agentask/fleet:$(FLEET_TAG) and :$(VERSION) (linux/amd64)"
+	@echo "Pushed $(FLEET_REGISTRY)/odonian/fleet:$(FLEET_TAG) and :$(VERSION) (linux/amd64)"
 
 # Fail fast if a tag pinned in the worker/reviewer manifests was never built and pushed. This
 # is what would have caught #273: it pins v0.15.0-8-g4beac47 before any VERSION-tagged image
@@ -150,11 +150,11 @@ diff-fleet:
 # (digest-pinned, same mechanism as fleet-deploy). Re-roll without rebuild:
 #   kubectl --context $(LAB_CONTEXT) -n $(FLEET_NAMESPACE) rollout restart deploy/merger
 merger-deploy: merger-image
-	@echo "Resolving digest for $(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG)..."
+	@echo "Resolving digest for $(FLEET_REGISTRY)/odonian/merger:$(FLEET_TAG)..."
 	@STDERR_FILE=$$(mktemp); \
 	DIGEST=""; \
 	for attempt in 1 2 3 4 5; do \
-	  DIGEST=$$(docker buildx imagetools inspect --builder $(FLEET_BUILDER) "$(FLEET_REGISTRY)/agentask/merger:$(FLEET_TAG)" 2>"$$STDERR_FILE" | awk '/^Digest:/{print $$2; exit}'); \
+	  DIGEST=$$(docker buildx imagetools inspect --builder $(FLEET_BUILDER) "$(FLEET_REGISTRY)/odonian/merger:$(FLEET_TAG)" 2>"$$STDERR_FILE" | awk '/^Digest:/{print $$2; exit}'); \
 	  if echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then break; fi; \
 	  if [ $$attempt -lt 5 ]; then sleep 2; fi; \
 	done; \
@@ -165,7 +165,7 @@ merger-deploy: merger-image
 	  exit 1; \
 	fi; \
 	rm -f "$$STDERR_FILE"; \
-	REF="$(FLEET_REGISTRY)/agentask/merger@$$DIGEST"; \
+	REF="$(FLEET_REGISTRY)/odonian/merger@$$DIGEST"; \
 	echo "Deploying $$REF to merger ($(LAB_CONTEXT))"; \
 	kubectl --context $(LAB_CONTEXT) -n $(FLEET_NAMESPACE) set image deploy/merger merger="$$REF"; \
 	kubectl --context $(LAB_CONTEXT) -n $(FLEET_NAMESPACE) rollout status deploy/merger --timeout=300s
@@ -219,7 +219,7 @@ codex-auth:
 # container, so — exactly like the cluster's codex-auth above — auth is seeded by copying the
 # host's already-authenticated ~/.codex/auth.json in, not by logging in there. This is a Makefile
 # target (not a mode of harness/sbx.sh) because sbx.sh's whole job is to run INSIDE the sandbox and
-# boot the Agentask stack; this step runs the OPPOSITE direction, from the HOST, reaching INTO a
+# boot the Odonian stack; this step runs the OPPOSITE direction, from the HOST, reaching INTO a
 # sandbox via `sbx cp`/`sbx exec` — it belongs with the other host-side codex-auth target instead.
 #
 # The in-sandbox counterpart, harness/sbx-agent-setup.sh, installs codex but cannot authenticate
@@ -230,10 +230,10 @@ sbx-codex-auth:
 	  || { echo "ERROR: ~/.codex/auth.json has no refresh token — re-run 'codex login'"; exit 1; }
 	@echo "Seeding codex auth into sandbox '$(SBX_NAME)' from ~/.codex/auth.json"
 	@sbx exec $(SBX_NAME) -- sudo install -d -o agent -g agent -m 700 /home/agent/.codex
-	@sbx cp "$$HOME/.codex/auth.json" "$(SBX_NAME):/tmp/agentask-codex-auth.json.incoming"
+	@sbx cp "$$HOME/.codex/auth.json" "$(SBX_NAME):/tmp/odonian-codex-auth.json.incoming"
 	@sbx exec $(SBX_NAME) -- sudo install -o agent -g agent -m 600 \
-	  /tmp/agentask-codex-auth.json.incoming /home/agent/.codex/auth.json
-	@sbx exec $(SBX_NAME) -- sudo rm -f /tmp/agentask-codex-auth.json.incoming
+	  /tmp/odonian-codex-auth.json.incoming /home/agent/.codex/auth.json
+	@sbx exec $(SBX_NAME) -- sudo rm -f /tmp/odonian-codex-auth.json.incoming
 	@echo "Verifying: running 'codex exec -m gpt-5.5' inside sandbox '$(SBX_NAME)'..."
 	@# `sbx exec` runs argv directly through the container runtime (like `docker exec`) — there is
 	@# no shell to interpret builtins, so `command -v codex` would try to exec a literal `command`
@@ -263,11 +263,11 @@ sbx-codex-auth:
 	fi
 
 deploy:
-	@echo "Resolving image digest for ghcr.io/boldfield/agentask:$(VERSION)..."
+	@echo "Resolving image digest for ghcr.io/boldfield/odonian:$(VERSION)..."
 	@STDERR_FILE=$$(mktemp); \
 	DIGEST=""; \
 	for attempt in 1 2 3 4 5; do \
-	  DIGEST=$$(docker buildx imagetools inspect "ghcr.io/boldfield/agentask:$(VERSION)" 2>"$$STDERR_FILE" | awk '/^Digest:/{print $$2; exit}'); \
+	  DIGEST=$$(docker buildx imagetools inspect "ghcr.io/boldfield/odonian:$(VERSION)" 2>"$$STDERR_FILE" | awk '/^Digest:/{print $$2; exit}'); \
 	  if echo "$$DIGEST" | grep -qE '^sha256:[a-f0-9]{64}$$'; then break; fi; \
 	  if [ $$attempt -lt 5 ]; then sleep 2; fi; \
 	done; \
@@ -278,9 +278,9 @@ deploy:
 	  exit 1; \
 	fi; \
 	rm -f "$$STDERR_FILE"; \
-	echo "Deploying ghcr.io/boldfield/agentask@$$DIGEST"; \
-	kubectl -n agentask set image deploy/agentask agentask="ghcr.io/boldfield/agentask@$$DIGEST"; \
-	kubectl -n agentask rollout status deploy/agentask --timeout=180s
+	echo "Deploying ghcr.io/boldfield/odonian@$$DIGEST"; \
+	kubectl -n odonian set image deploy/odonian odonian="ghcr.io/boldfield/odonian@$$DIGEST"; \
+	kubectl -n odonian rollout status deploy/odonian --timeout=180s
 
 # Read-only: show the image (digest or tag) and ready replicas each deployment is currently
 # running, across all deployments / both clusters. The server uses the CURRENT kube context
@@ -290,7 +290,7 @@ deploy:
 versions:
 	@printf '%-10s %-22s %-15s %-58s %s\n' DEPLOYMENT CONTEXT NAMESPACE IMAGE READY
 	@for spec in \
-	  "$(SERVER_CONTEXT)|$(SERVER_NAMESPACE)|agentask" \
+	  "$(SERVER_CONTEXT)|$(SERVER_NAMESPACE)|odonian" \
 	  "$(CP_CONTEXT)|$(FLEET_NAMESPACE)|worker" \
 	  "$(CP_CONTEXT)|$(FLEET_NAMESPACE)|reviewer" \
 	  "$(LAB_CONTEXT)|$(FLEET_NAMESPACE)|merger"; do \

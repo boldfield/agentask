@@ -9,7 +9,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/boldfield/agentask/internal/store"
+	"github.com/boldfield/odonian/internal/store"
 )
 
 // Server wraps the HTTP server with its dependencies: store, auth token, and lease TTL.

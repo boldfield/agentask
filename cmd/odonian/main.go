@@ -22,14 +22,14 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"github.com/boldfield/agentask/internal/api"
-	"github.com/boldfield/agentask/internal/forge"
-	"github.com/boldfield/agentask/internal/localcommit"
-	"github.com/boldfield/agentask/internal/notify"
-	"github.com/boldfield/agentask/internal/prwatch"
-	"github.com/boldfield/agentask/internal/reconcile"
-	"github.com/boldfield/agentask/internal/store"
-	"github.com/boldfield/agentask/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/api"
+	"github.com/boldfield/odonian/internal/forge"
+	"github.com/boldfield/odonian/internal/localcommit"
+	"github.com/boldfield/odonian/internal/notify"
+	"github.com/boldfield/odonian/internal/prwatch"
+	"github.com/boldfield/odonian/internal/reconcile"
+	"github.com/boldfield/odonian/internal/store"
+	"github.com/boldfield/odonian/internal/tuiclient"
 )
 
 var version = "dev"
@@ -102,12 +102,12 @@ func printUsage() {
 }
 
 func printUsageWriter(w io.Writer) {
-	fmt.Fprintf(w, `agentask version %s
+	fmt.Fprintf(w, `odonian version %s
 
-usage: agentask <command> [options]
+usage: odonian <command> [options]
 
 Commands:
-  server                 Start the agentask server
+  server                 Start the odonian server
   projects               List all projects
   project                Show project details
   tasks                  List tasks for a project
@@ -131,62 +131,62 @@ Commands:
 
 func runServer() {
 	// Print version
-	fmt.Printf("agentask version %s\n", version)
+	fmt.Printf("odonian version %s\n", version)
 
 	// Read configuration from environment
-	authToken := os.Getenv("AGENTASK_TOKEN")
+	authToken := os.Getenv("ODONIAN_TOKEN")
 	if authToken == "" {
-		log.Fatal("AGENTASK_TOKEN environment variable not set")
+		log.Fatal("ODONIAN_TOKEN environment variable not set")
 	}
 
-	dbPath := os.Getenv("AGENTASK_DB")
+	dbPath := os.Getenv("ODONIAN_DB")
 	if dbPath == "" {
-		dbPath = "agentask.db"
+		dbPath = "odonian.db"
 	}
 
-	addr := os.Getenv("AGENTASK_ADDR")
+	addr := os.Getenv("ODONIAN_ADDR")
 	if addr == "" {
 		addr = ":8080"
 	}
 
-	leaseTTLStr := os.Getenv("AGENTASK_LEASE_TTL")
+	leaseTTLStr := os.Getenv("ODONIAN_LEASE_TTL")
 	if leaseTTLStr == "" {
 		leaseTTLStr = "5m"
 	}
 	leaseTTL, err := time.ParseDuration(leaseTTLStr)
 	if err != nil {
-		log.Fatalf("failed to parse AGENTASK_LEASE_TTL: %v", err)
+		log.Fatalf("failed to parse ODONIAN_LEASE_TTL: %v", err)
 	}
 
-	maxReviewRoundsStr := os.Getenv("AGENTASK_MAX_REVIEW_ROUNDS")
+	maxReviewRoundsStr := os.Getenv("ODONIAN_MAX_REVIEW_ROUNDS")
 	if maxReviewRoundsStr == "" {
 		maxReviewRoundsStr = "5"
 	}
 	maxReviewRounds, err := strconv.Atoi(maxReviewRoundsStr)
 	if err != nil {
-		log.Fatalf("failed to parse AGENTASK_MAX_REVIEW_ROUNDS: %v", err)
+		log.Fatalf("failed to parse ODONIAN_MAX_REVIEW_ROUNDS: %v", err)
 	}
 
 	// Parse escalation thresholds
-	escalationThresholds := parseEscalationThresholds(os.Getenv("AGENTASK_ESCALATION_THRESHOLDS"))
+	escalationThresholds := parseEscalationThresholds(os.Getenv("ODONIAN_ESCALATION_THRESHOLDS"))
 
 	// Parse model allowlist
-	allowedModels := parseAllowedModels(os.Getenv("AGENTASK_MODELS"))
+	allowedModels := parseAllowedModels(os.Getenv("ODONIAN_MODELS"))
 	if len(allowedModels) == 0 {
-		log.Fatal("AGENTASK_MODELS configuration resulted in empty allowlist")
+		log.Fatal("ODONIAN_MODELS configuration resulted in empty allowlist")
 	}
 
 	// Parse escalation ladder
-	escalationLadder := parseEscalationLadder(os.Getenv("AGENTASK_ESCALATION_LADDER"), allowedModels)
+	escalationLadder := parseEscalationLadder(os.Getenv("ODONIAN_ESCALATION_LADDER"), allowedModels)
 
 	// Parse event retention configuration
-	eventTerminalRetentionDaysStr := os.Getenv("AGENTASK_EVENT_TERMINAL_RETENTION_DAYS")
+	eventTerminalRetentionDaysStr := os.Getenv("ODONIAN_EVENT_TERMINAL_RETENTION_DAYS")
 	if eventTerminalRetentionDaysStr == "" {
 		eventTerminalRetentionDaysStr = "1"
 	}
 	eventTerminalRetentionDays, err := strconv.Atoi(eventTerminalRetentionDaysStr)
 	if err != nil {
-		log.Fatalf("failed to parse AGENTASK_EVENT_TERMINAL_RETENTION_DAYS: %v", err)
+		log.Fatalf("failed to parse ODONIAN_EVENT_TERMINAL_RETENTION_DAYS: %v", err)
 	}
 
 	// Parse notification configuration
@@ -306,8 +306,8 @@ func runClient(verb string, args []string) error {
 	jsonOutput, args := splitJSONFlag(args)
 
 	// Read configuration from environment
-	baseURL := os.Getenv("AGENTASK_URL")
-	token := os.Getenv("AGENTASK_TOKEN")
+	baseURL := os.Getenv("ODONIAN_URL")
+	token := os.Getenv("ODONIAN_TOKEN")
 	ctx := context.Background()
 
 	// Dispatch to verb handler
@@ -370,10 +370,10 @@ func runClient(verb string, args []string) error {
 func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool, args []string, out io.Writer) error {
 	// Validate configuration
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	// Parse flags
@@ -426,10 +426,10 @@ func executeProjects(ctx context.Context, baseURL, token string, jsonOutput bool
 func executeProject(ctx context.Context, baseURL, token string, jsonOutput bool, args []string, out io.Writer) error {
 	// Validate configuration
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	// Extract project ID from arguments
@@ -471,10 +471,10 @@ func executeProject(ctx context.Context, baseURL, token string, jsonOutput bool,
 
 func executeTasks(ctx context.Context, baseURL, token string, jsonOutput bool, args []string, out io.Writer) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	fs := flag.NewFlagSet("tasks", flag.ContinueOnError)
@@ -533,10 +533,10 @@ func executeTasks(ctx context.Context, baseURL, token string, jsonOutput bool, a
 
 func executeShow(ctx context.Context, baseURL, token string, jsonOutput bool, args []string, out io.Writer) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	taskID := ""
@@ -586,10 +586,10 @@ func executeShow(ctx context.Context, baseURL, token string, jsonOutput bool, ar
 
 func executeTransition(ctx context.Context, baseURL, token string, args []string) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	if len(args) < 1 {
@@ -656,10 +656,10 @@ func parseFlagsWithPositionals(fs *flag.FlagSet, args []string) ([]string, error
 func executeClaim(ctx context.Context, baseURL, token string, args []string) error {
 	// Validate configuration
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	// Parse flags
@@ -698,10 +698,10 @@ func executeClaim(ctx context.Context, baseURL, token string, args []string) err
 
 func executeSubmit(ctx context.Context, baseURL, token string, args []string) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	fs := flag.NewFlagSet("submit", flag.ContinueOnError)
@@ -850,10 +850,10 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 
 func executeHeartbeat(ctx context.Context, baseURL, token string, args []string) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	fs := flag.NewFlagSet("heartbeat", flag.ContinueOnError)
@@ -922,7 +922,7 @@ func parseEscalationLadder(ladderStr string, allowedModels []string) []string {
 			continue
 		}
 		if !allowedModelsM[model] {
-			log.Fatalf("escalation ladder contains model %q not in AGENTASK_MODELS allowlist", model)
+			log.Fatalf("escalation ladder contains model %q not in ODONIAN_MODELS allowlist", model)
 		}
 		if !seen[model] {
 			seen[model] = true
@@ -960,10 +960,10 @@ func parseEscalationThresholds(thresholdsStr string) map[string]int {
 
 func executeNext(ctx context.Context, baseURL, token string, jsonOutput bool, args []string) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	fs := flag.NewFlagSet("next", flag.ContinueOnError)
@@ -1052,10 +1052,10 @@ func executeNext(ctx context.Context, baseURL, token string, jsonOutput bool, ar
 
 func executePromote(ctx context.Context, baseURL, token string, args []string) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	if len(args) < 1 {
@@ -1074,10 +1074,10 @@ func executePromote(ctx context.Context, baseURL, token string, args []string) e
 
 func executeMerge(ctx context.Context, baseURL, token string, args []string) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	if len(args) < 1 {
@@ -1113,7 +1113,7 @@ func executeMerge(ctx context.Context, baseURL, token string, args []string) err
 		return fmt.Errorf("parent task has agent_merge=false")
 	}
 
-	// `agentask merge` MUST be safely re-runnable: a merge job that merged the PR but
+	// `odonian merge` MUST be safely re-runnable: a merge job that merged the PR but
 	// died before finalizing the merge task gets reclaimed and runs again, so a retry
 	// has to converge instead of erroring. The parent task advances to 'done' as part
 	// of a successful merge, so its state tells us whether the merge still needs doing:
@@ -1272,15 +1272,15 @@ func parsePRURL(prURL string) (owner, repo string, number int, err error) {
 
 func executeWtEnsure(ctx context.Context, baseURL, token string, args []string) error {
 	if baseURL == "" {
-		return fmt.Errorf("AGENTASK_URL environment variable not set")
+		return fmt.Errorf("ODONIAN_URL environment variable not set")
 	}
 	if token == "" {
-		return fmt.Errorf("AGENTASK_TOKEN environment variable not set")
+		return fmt.Errorf("ODONIAN_TOKEN environment variable not set")
 	}
 
 	// Check if in local_commit mode
 	if !localcommit.IsLocalCommit() {
-		return fmt.Errorf("wt-ensure requires local_commit mode (set AGENTASK_DELIVERY_MODE=local_commit)")
+		return fmt.Errorf("wt-ensure requires local_commit mode (set ODONIAN_DELIVERY_MODE=local_commit)")
 	}
 
 	// Parse flags
@@ -1298,13 +1298,13 @@ func executeWtEnsure(ctx context.Context, baseURL, token string, args []string) 
 	}
 	taskID := positionals[0]
 
-	// Resolve repoDir from --repo flag or AGENTASK_REPO
+	// Resolve repoDir from --repo flag or ODONIAN_REPO
 	repoDir := *repoFlag
 	if repoDir == "" {
-		repoDir = os.Getenv("AGENTASK_REPO")
+		repoDir = os.Getenv("ODONIAN_REPO")
 	}
 	if repoDir == "" {
-		return fmt.Errorf("--repo flag or AGENTASK_REPO environment variable required")
+		return fmt.Errorf("--repo flag or ODONIAN_REPO environment variable required")
 	}
 
 	// Get task details to retrieve the title

@@ -1,11 +1,11 @@
-# Agentask — MVP Design
+# Odonian — MVP Design
 
 Status: MVP design, approved 2026-06-04
 Owner: brian@oldfield.io
 
 ## 1. What this is
 
-Agentask is an **API-only coordination substrate for a pool of AI agents draining a
+Odonian is an **API-only coordination substrate for a pool of AI agents draining a
 backlog of work.** It is not a kanban product. "Kanban" is the human's mental model of
 the underlying machinery: a work queue with a state machine, atomic task claiming, and
 crash recovery. Agents do not look at a board; they call an API.
@@ -23,8 +23,8 @@ It exists to power this workflow:
 ### Non-goals (MVP)
 
 - No board UI / visualization / WIP limits / drag-drop. The pretty board is a later read-model.
-- No document storage / CMS. Designs live in their project's git repo; Agentask stores refs.
-- No repo provisioning. Creating repos is a human step, not an Agentask feature.
+- No document storage / CMS. Designs live in their project's git repo; Odonian stores refs.
+- No repo provisioning. Creating repos is a human step, not an Odonian feature.
 - No horizontal scaling. Single replica, SQLite. (See Deployment.)
 - No multi-approval policy engine. Human is the review gate for the MVP.
 
@@ -43,7 +43,7 @@ Event      id, task_id, actor, kind, verdict, note, created_at  -- append-only a
 
 - A `Project` maps to one code repo, known at registration (the repo already exists by then).
 - A `Project` has **one** `design` document (the base) and **many** `feature_spec` documents.
-- Design content lives in the project's repo (`DESIGN.md`, `docs/features/*.md`). Agentask
+- Design content lives in the project's repo (`DESIGN.md`, `docs/features/*.md`). Odonian
   stores only `ref`. The `Document` table is the **central index** across all projects —
   central discovery without central storage.
 - `Task.document_id` ties a task back to the design/feature it was decomposed from.
@@ -165,7 +165,7 @@ body — no per-agent identity for the MVP.
 
 ## 9. Bootstrap plan
 
-Agentask is built using a minimalist, text-file kanban (see `board/`) so we dogfood the
+Odonian is built using a minimalist, text-file kanban (see `board/`) so we dogfood the
 exact mental model before the system exists. During bootstrap there is no real concurrency
 (one human + one assistant), so the atomic-claim problem does not yet exist — which is why
 a text-file board is a fine bootstrap and a deliberately bad final design.
@@ -175,5 +175,5 @@ a text-file board is a fine bootstrap and a deliberately bad final design.
 - "Moving" a task = `git mv` between state dirs.
 - `DESIGN.md` (this file) is the base design document.
 
-Once the MVP runs, we register Agentask itself as a Project in Agentask and migrate the
+Once the MVP runs, we register Odonian itself as a Project in Odonian and migrate the
 remaining work onto the real board.
