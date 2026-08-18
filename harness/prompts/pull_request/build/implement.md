@@ -89,7 +89,11 @@ rely on sensing elapsed time.
      step 8; on a rework it already exists.)
    - You MUST address every returned item in your diff. After the commit that fixes each item (you
      create those commits in step 8), run `odonian pr-feedback ack <pr-url> <item-id> <sha>`, where
-     `<sha>` is the commit that addressed it.
+     `<sha>` is the commit that addressed it. **`odonian pr-feedback ack` automatically stamps replies
+     with your worker marker** (e.g., `haiku-worker:`) — the tooling uses this marker to distinguish
+     agent comments from human ones (the fleet shares the human's GitHub login, so markers are how
+     tooling identifies who wrote each comment). If you post a reply to the PR manually (not via
+     `ack`), prefix it with `<model>-worker:` (e.g., `opus-worker:`) so the fleet recognizes it.
    - Then re-run `odonian pr-feedback list <pr-url>` and confirm it returns **nothing outstanding**.
      That empty result is the pass condition.
 
