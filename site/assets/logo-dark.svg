@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 48 48">
+  <!-- Odonian mark, "Syndicate Moon" — dark-background variant. -->
+  <g fill="#faf6ef">
+    <circle cx="37.5" cy="27.6" r="2.7"/>
+    <circle cx="33.9" cy="33.9" r="2.7"/>
+    <circle cx="27.6" cy="37.5" r="2.7"/>
+    <circle cx="20.4" cy="37.5" r="2.7"/>
+    <circle cx="14.1" cy="33.9" r="2.7"/>
+    <circle cx="10.5" cy="27.6" r="2.7"/>
+    <circle cx="10.5" cy="20.4" r="2.7"/>
+    <circle cx="14.1" cy="14.1" r="2.7"/>
+    <circle cx="20.4" cy="10.5" r="2.7"/>
+  </g>
+  <circle cx="34.6" cy="13.4" r="5.5" fill="#bf5b3f"/>
+</svg>
