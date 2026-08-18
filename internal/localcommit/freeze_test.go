@@ -40,7 +40,7 @@ func TestFreeze_FirstFreeze(t *testing.T) {
 	worktreeHome := filepath.Join(cwd, "test-worktree-home")
 	os.MkdirAll(worktreeHome, 0755)
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
-	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", worktreeHome)
 
 	runCmd(t, repoDir, "git", "init", "-b", "main")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
@@ -103,7 +103,7 @@ func TestFreeze_WipNotOnCheckedOutBranch(t *testing.T) {
 	worktreeHome := filepath.Join(cwd, "test-worktree-home-notmerged")
 	os.MkdirAll(worktreeHome, 0755)
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
-	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", worktreeHome)
 
 	runCmd(t, repoDir, "git", "init", "-b", "main")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
@@ -147,7 +147,7 @@ func TestFreeze_FFAdvance(t *testing.T) {
 	worktreeHome := filepath.Join(cwd, "test-worktree-home-ffadvance")
 	os.MkdirAll(worktreeHome, 0755)
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
-	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", worktreeHome)
 
 	runCmd(t, repoDir, "git", "init", "-b", "main")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
@@ -205,7 +205,7 @@ func TestFreeze_Footgun(t *testing.T) {
 	worktreeHome := filepath.Join(cwd, "test-worktree-home-footgun")
 	os.MkdirAll(worktreeHome, 0755)
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
-	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", worktreeHome)
 
 	runCmd(t, mainDir, "git", "init", "-b", "main")
 	runCmd(t, mainDir, "git", "config", "user.email", "test@example.com")
@@ -271,7 +271,7 @@ func TestFreeze_AlreadyRemovedWorktree(t *testing.T) {
 	worktreeHome := filepath.Join(cwd, "test-worktree-home-removed")
 	os.MkdirAll(worktreeHome, 0755)
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
-	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", worktreeHome)
 
 	runCmd(t, repoDir, "git", "init", "-b", "main")
 	runCmd(t, repoDir, "git", "config", "user.email", "test@example.com")
@@ -322,7 +322,7 @@ func TestFreeze_PrefixCollision(t *testing.T) {
 	worktreeHome := filepath.Join(cwd, "test-worktree-home-prefix")
 	os.MkdirAll(worktreeHome, 0755)
 	t.Cleanup(func() { os.RemoveAll(worktreeHome) })
-	t.Setenv("AGENTASK_WORKTREE_HOME", worktreeHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", worktreeHome)
 
 	runCmd(t, mainDir, "git", "init", "-b", "main")
 	runCmd(t, mainDir, "git", "config", "user.email", "test@example.com")

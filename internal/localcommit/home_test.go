@@ -45,8 +45,8 @@ func TestWorktreeHome(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("AGENTASK_WORKTREE_HOME", tt.worktreeHomeEnv)
-			t.Setenv("AGENTASK_HOME", tt.homeEnv)
+			t.Setenv("ODONIAN_WORKTREE_HOME", tt.worktreeHomeEnv)
+			t.Setenv("ODONIAN_HOME", tt.homeEnv)
 
 			got, err := WorktreeHome()
 
@@ -97,8 +97,8 @@ func TestEnsureDurableWorktreeHome(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv("AGENTASK_WORKTREE_HOME", tt.worktreeHomeEnv)
-			t.Setenv("AGENTASK_HOME", tt.homeEnv)
+			t.Setenv("ODONIAN_WORKTREE_HOME", tt.worktreeHomeEnv)
+			t.Setenv("ODONIAN_HOME", tt.homeEnv)
 
 			err := EnsureDurableWorktreeHome()
 			if (err != nil) != tt.wantError {

@@ -19,8 +19,8 @@ depends_on: [T13]
 
 ## Result
 
-**PR:** https://github.com/boldfield/agentask/pull/18  
-**Branch:** agentask/T16-api-docs  
+**PR:** https://github.com/boldfield/odonian/pull/18  
+**Branch:** odonian/T16-api-docs  
 **Head SHA:** 74c1f92  
 **CI Status:** Both checks passing (test ✓, docker ✓)
 

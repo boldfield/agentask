@@ -18,6 +18,6 @@ depends_on: [T09, T04]
 - Submit by a non-assignee or from a non-`in_progress` state → 409.
 
 ## Result
-- **PR URL**: https://github.com/boldfield/agentask/pull/15
-- **Branch**: agentask/T12-submit
+- **PR URL**: https://github.com/boldfield/odonian/pull/15
+- **Branch**: odonian/T12-submit
 - **Head SHA**: c4ab895c8d1c6b85e4b7acf6f05e9cd1c6a4c8e2

@@ -1,8 +1,8 @@
 # Binaries
 /bin/
 /dist/
-/agentask
-/agentask-tui
+/odonian
+/odonian-tui
 *.exe
 
 # Go

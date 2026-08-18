@@ -1,16 +1,16 @@
 # local_commit delivery mode — task breakdown (FOR REVIEW, not yet on the board)
 
 **Target board:** project `83c4152e`, new document **"local_commit delivery mode"**.
-**Delivery mode for THIS build:** `pull_request` (we are *building* local_commit, not using it). Targets `boldfield/agentask`.
+**Delivery mode for THIS build:** `pull_request` (we are *building* local_commit, not using it). Targets `boldfield/odonian`.
 **Models:** every task `review_models = [opus, sonnet]`. Author = **haiku** for all coding; **opus** for prompts (H1, H2) and skill (S1, S2).
 **Status:** 22 tasks. Author + hold. Cut to the board only on your go.
 
 ## Shared conventions (pinned contracts — every task inherits these; do not re-derive)
 - **New package:** `internal/localcommit`. Pure-ish Go wrappers over `git`, each with a `_test.go` using a temp git repo (`t.TempDir()` + `git init`).
-- **Env:** `AGENTASK_DELIVERY_MODE` ∈ {`pull_request` (default), `local_commit`}; `AGENTASK_WORKTREE_HOME` (durable worktree root; fallback `$AGENTASK_HOME`).
+- **Env:** `ODONIAN_DELIVERY_MODE` ∈ {`pull_request` (default), `local_commit`}; `ODONIAN_WORKTREE_HOME` (durable worktree root; fallback `$ODONIAN_HOME`).
 - **Refs:** base = `origin/main`; MR branch = `wi/<slug>`; per-item WIP = `wip/<iid>`. `<iid>` = the task id; `<slug>` = `Slugify(document title)`.
 - **Link kind `commit` already exists** server-side (`internal/store/store.go:1531` `validKinds`) — no server change for the SHA link.
-- **CLI dispatch:** all verbs add a `case` in `cmd/agentask/main.go` (line ~72) + an `executeXxx`. **Any task touching `main.go` is part of the U→V CHAIN** (linear `depends_on`) — never parallel — because they serialize-conflict on that file (the 2026-06-09 lesson).
+- **CLI dispatch:** all verbs add a `case` in `cmd/odonian/main.go` (line ~72) + an `executeXxx`. **Any task touching `main.go` is part of the U→V CHAIN** (linear `depends_on`) — never parallel — because they serialize-conflict on that file (the 2026-06-09 lesson).
 - **Commit messages for CLI-generated local_commit commits:** SHORT, templated from task title, **NO `Co-Authored-By` trailer** (deliberate scoped override).
 - **Existing typed client:** `internal/tuiclient` already has `GetTask`, `ListTasks`, `SubmitTask`, `TransitionTask`, `ReviewTask`, `ClaimTask`, `PromoteTask`. Reuse — do not hand-roll HTTP.
 
@@ -31,13 +31,13 @@
 
 ### L2 — `localcommit/env.go`: delivery-mode read
 - **Files:** `internal/localcommit/env.go`, `env_test.go`
-- **Contract:** `func DeliveryMode() string` (reads `AGENTASK_DELIVERY_MODE`, default `"pull_request"`, lowercased/trimmed); `func IsLocalCommit() bool` (== `"local_commit"`).
+- **Contract:** `func DeliveryMode() string` (reads `ODONIAN_DELIVERY_MODE`, default `"pull_request"`, lowercased/trimmed); `func IsLocalCommit() bool` (== `"local_commit"`).
 - **Tests:** unset→pull_request; `local_commit`→true; mixed case/whitespace; unknown value→treated as pull_request (not local).
 - **Deps:** none. **Models:** haiku / [opus, sonnet].
 
 ### L3 — `localcommit/home.go`: durable worktree-home resolution
 - **Files:** `internal/localcommit/home.go`, `home_test.go`
-- **Contract:** `func WorktreeHome() (string, error)` — return `$AGENTASK_WORKTREE_HOME` if set, else `$AGENTASK_HOME`; **error** if neither set, or if the resolved path is under `/tmp` or `/var/folders` (tmpfs durability guard — a bounced item's `wip/<iid>` must survive the rework loop).
+- **Contract:** `func WorktreeHome() (string, error)` — return `$ODONIAN_WORKTREE_HOME` if set, else `$ODONIAN_HOME`; **error** if neither set, or if the resolved path is under `/tmp` or `/var/folders` (tmpfs durability guard — a bounced item's `wip/<iid>` must survive the rework loop).
 - **Tests:** WORKTREE_HOME wins over HOME; HOME fallback; neither→error; `/tmp/...`→error.
 - **Deps:** none. **Models:** haiku / [opus, sonnet].
 
@@ -91,7 +91,7 @@
 # Group U — universal human-gate verbs · author **haiku** · CHAIN on `main.go` · useful in pull_request mode too
 
 ### U1 — `pending --project <id>` verb
-- **Files:** `cmd/agentask/main.go` (+ `executepending.go` if splitting), `main_test.go`
+- **Files:** `cmd/odonian/main.go` (+ `executepending.go` if splitting), `main_test.go`
 - **Contract:** list tasks for a project in state `review` or `approved` (the human-gate queue). Columns: id, state, kind, title. Honors global `--json`. Reuse `tuiclient.ListTasks` with a state filter (or client-side filter).
 - **Tests:** filters to review/approved only; `--json` shape; empty → clean exit 0.
 - **Deps:** framework. **Models:** haiku / [opus, sonnet].
@@ -120,12 +120,12 @@
 
 ### V1 — `wt-ensure <id>` verb (worktree add)
 - **Files:** `main.go`/`executewtensure.go`, `main_test.go`
-- **Contract:** new verb the worker calls right after claim. `IsLocalCommit()` required (error in pull_request mode). Resolve `repoDir` (mounted repo; from `--repo`/`AGENTASK_REPO`), `tip = ResolveTip(repoDir, slug)`, then `AddWorktree(repoDir, iid, tip)`; print `wtPath` to stdout (the worker `cd`s there). Idempotent on re-claim.
+- **Contract:** new verb the worker calls right after claim. `IsLocalCommit()` required (error in pull_request mode). Resolve `repoDir` (mounted repo; from `--repo`/`ODONIAN_REPO`), `tip = ResolveTip(repoDir, slug)`, then `AddWorktree(repoDir, iid, tip)`; print `wtPath` to stdout (the worker `cd`s there). Idempotent on re-claim.
 - **Tests:** prints worktree path; idempotent second call; pull_request mode → error. (Use a temp repo + stub `IsLocalCommit`.)
 - **Deps:** U4 (chain), L4. **Models:** haiku / [opus, sonnet].
 
 ### V2 — `submit` local_commit branch
-- **Files:** `cmd/agentask/main.go` `executeSubmit` (line ~590), `main_test.go`
+- **Files:** `cmd/odonian/main.go` `executeSubmit` (line ~590), `main_test.go`
 - **Contract:** when `IsLocalCommit()`: ignore `--pr/--branch`; build a short message from the task title (or `--message` override); `CommitAll` on first submit, `AmendAll` on a rework re-submit (detect: `wip/<iid>` already has a commit beyond `tip`); then `SubmitTask` attaching a `commit:<sha>` link. pull_request path unchanged.
 - **Tests:** first submit → commit + `commit` link with SHA; re-submit → amend (single commit, new SHA); pull_request path still attaches `pr`/`branch`.
 - **Deps:** V1 (chain), L5. **Models:** haiku / [opus, sonnet].
@@ -154,18 +154,18 @@
 
 ### H1 — local_commit worker prompt · author **opus**
 - **Files:** `harness/prompts/local_commit/build/implement.md`
-- **Contract:** no clone, no push, no `gh`. Flow: `agentask next --kind implement --claim` → `agentask wt-ensure <id>` (cd into printed worktree) → **edit files only** (the CLI makes every commit) → `agentask submit` (CLI commits + links SHA) → on reject, re-claim, amend in the same worktree, re-submit. Emphasize: never run git commit/branch/push yourself.
+- **Contract:** no clone, no push, no `gh`. Flow: `odonian next --kind implement --claim` → `odonian wt-ensure <id>` (cd into printed worktree) → **edit files only** (the CLI makes every commit) → `odonian submit` (CLI commits + links SHA) → on reject, re-claim, amend in the same worktree, re-submit. Emphasize: never run git commit/branch/push yourself.
 - **Tests:** n/a (prompt) — reviewers check it against the verb contracts above.
 - **Deps:** V2, V1 (verbs must exist). **Models:** opus / [opus, sonnet].
 
 ### H2 — local_commit reviewer prompt · author **opus**
 - **Files:** `harness/prompts/local_commit/build/review.md`
-- **Contract:** no clone. `agentask next --kind review --claim` → `agentask diff <target-id>` to see the commit (no PR) → submit a verdict via `agentask submit --verdict`. N reviewers screen; the human freezes on approve.
+- **Contract:** no clone. `odonian next --kind review --claim` → `odonian diff <target-id>` to see the commit (no PR) → submit a verdict via `odonian submit --verdict`. N reviewers screen; the human freezes on approve.
 - **Deps:** V3. **Models:** opus / [opus, sonnet].
 
 ### H3 — `agent.sh`/`fleet.sh` local_commit mode (shell) · author **haiku**
-- **Files:** `harness/agent.sh`, `harness/fleet.sh` (or `~/.agentask/` equivalents)
-- **Contract:** branch on `AGENTASK_DELIVERY_MODE=local_commit`: skip clone, set/require `AGENTASK_WORKTREE_HOME`, select the local_commit prompt, drop the push/`gh pr` steps. pull_request path unchanged.
+- **Files:** `harness/agent.sh`, `harness/fleet.sh` (or `~/.odonian/` equivalents)
+- **Contract:** branch on `ODONIAN_DELIVERY_MODE=local_commit`: skip clone, set/require `ODONIAN_WORKTREE_HOME`, select the local_commit prompt, drop the push/`gh pr` steps. pull_request path unchanged.
 - **Tests:** shell smoke — local mode skips clone and sets the home var; pull_request mode unchanged.
 - **Deps:** H1 (prompt exists). **Models:** haiku / [opus, sonnet].
 
@@ -175,12 +175,12 @@
 
 ### S1 — `/review` skill: pending + diff display · author **opus**
 - **Files:** `.claude/skills/review/SKILL.md` (+ any helper)
-- **Contract:** conversational wrapper that runs `agentask pending --project <id>` and `agentask diff <id>` and presents the queue + the commit/diff for a human decision. Read-only; makes no decision.
+- **Contract:** conversational wrapper that runs `odonian pending --project <id>` and `odonian diff <id>` and presents the queue + the commit/diff for a human decision. Read-only; makes no decision.
 - **Deps:** U1, U2/V3. **Models:** opus / [opus, sonnet].
 
 ### S2 — `/review` skill: approve / reject actions · author **opus**
 - **Files:** `.claude/skills/review/SKILL.md`
-- **Contract:** on the human's call, run `agentask approve <id>` (= freeze in local_commit) or `agentask reject <id> --note … [--abandon]`. The skill RECORDS the human's decision; it never makes it (the boundary: CLI does mechanics, human does judgment).
+- **Contract:** on the human's call, run `odonian approve <id>` (= freeze in local_commit) or `odonian reject <id> --note … [--abandon]`. The skill RECORDS the human's decision; it never makes it (the boundary: CLI does mechanics, human does judgment).
 - **Deps:** S1, U3/U4, V4/V5. **Models:** opus / [opus, sonnet].
 
 ---

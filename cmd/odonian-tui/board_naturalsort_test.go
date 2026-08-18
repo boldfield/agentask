@@ -3,7 +3,7 @@ package main
 import (
 	"testing"
 
-	"github.com/boldfield/agentask/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/tuiclient"
 )
 
 func TestNaturalLess(t *testing.T) {

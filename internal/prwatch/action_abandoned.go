@@ -3,7 +3,7 @@ package prwatch
 import (
 	"context"
 
-	"github.com/boldfield/agentask/internal/store"
+	"github.com/boldfield/odonian/internal/store"
 )
 
 func applyAbandoned(ctx context.Context, tx taskTx, task store.Task, reason string) error {

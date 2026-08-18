@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boldfield/agentask/internal/forge"
-	"github.com/boldfield/agentask/internal/store"
+	"github.com/boldfield/odonian/internal/forge"
+	"github.com/boldfield/odonian/internal/store"
 )
 
 func TestApplyBouncePostsComment(t *testing.T) {

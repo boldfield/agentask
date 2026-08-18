@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/boldfield/agentask/internal/tuiclient"
-	"github.com/boldfield/agentask/internal/tuiconfig"
+	"github.com/boldfield/odonian/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/tuiconfig"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"

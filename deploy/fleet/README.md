@@ -1,7 +1,7 @@
-# Agentask fleet on Kubernetes
+# Odonian fleet on Kubernetes
 
 Run the worker/reviewer/merger fleet in-cluster instead of on a laptop. **Merger-first**: the merger
-is non-LLM and repo-less (`agentask merge` is pure REST), so it proves the in-cluster plumbing with
+is non-LLM and repo-less (`odonian merge` is pure REST), so it proves the in-cluster plumbing with
 zero subscription-auth risk. Workers and reviewers (which need `claude` + a build toolchain) come
 next, on a separate, heavier image.
 
@@ -9,18 +9,18 @@ next, on a separate, heavier image.
 
 - Two **separate** clusters: `summercamp-cp` (3× amd64) and `summercamp-lab` (8× arm64 Pis). They
   are not one mixed cluster, so fleet pods reach the server via its **public ingress**
-  (`https://agentask.summercamp.eastharbor.casa`), not a cluster-DNS service name.
+  (`https://odonian.summercamp.eastharbor.casa`), not a cluster-DNS service name.
 - **Placement:** mergers are cheap → run them on the **Pi (lab)** cluster. Workers/reviewers are
   memory-hungry (they build/test the target repo) → the **amd64 (cp)** cluster, with the 8 GB Pi as
   overflow. The real cap is the **subscription rate**, not node count — keep claude-agent replicas
   modest (the harness backs off on rate-limit).
-- Images live in the internal registry `docker.summercamp.eastharbor.casa:32050/agentask/*`.
+- Images live in the internal registry `docker.summercamp.eastharbor.casa:32050/odonian/*`.
 
 ## Build + push the merger image (multi-arch)
 
 ```bash
 make fleet-builder                     # ONCE: buildx builder that can push to the insecure (HTTP) registry
-make merger-image                      # buildx → docker.summercamp.eastharbor.casa:32050/agentask/merger:latest
+make merger-image                      # buildx → docker.summercamp.eastharbor.casa:32050/odonian/merger:latest
 make merger-image FLEET_TAG=v1         # pin a tag
 ```
 
@@ -37,13 +37,13 @@ LAB=admin@summercamp-lab
 kubectl --context $LAB apply -f deploy/fleet/namespace.yaml
 
 # Secrets (tokens never touch a committed file — see secret.example.yaml):
-TOKEN=$(kubectl --context admin@summercamp-cp -n agentask get secret agentask-secret -o jsonpath='{.data.token}' | base64 -d)
-kubectl --context $LAB -n agentask-fleet create secret generic agentask-fleet --from-literal=token="$TOKEN"
-kubectl --context $LAB -n agentask-fleet create secret generic agentask-forge-tokens \
-  --from-file=forge-tokens="$HOME/.agentask/forge-tokens"
+TOKEN=$(kubectl --context admin@summercamp-cp -n odonian get secret odonian-secret -o jsonpath='{.data.token}' | base64 -d)
+kubectl --context $LAB -n odonian-fleet create secret generic odonian-fleet --from-literal=token="$TOKEN"
+kubectl --context $LAB -n odonian-fleet create secret generic odonian-forge-tokens \
+  --from-file=forge-tokens="$HOME/.odonian/forge-tokens"
 
 kubectl --context $LAB apply -f deploy/fleet/merger-deployment.yaml
-kubectl --context $LAB -n agentask-fleet logs -l app.kubernetes.io/component=merger -f
+kubectl --context $LAB -n odonian-fleet logs -l app.kubernetes.io/component=merger -f
 ```
 
 You should see it poll, claim `merge`-kind tasks across all boards, and squash-merge — no claude
@@ -59,7 +59,7 @@ involved.
 ## Workers + reviewers (amd64 / cp cluster)
 
 These run `claude -p` against a real build, so they use the heavier `Dockerfile.fleet` (claude CLI +
-Go/Rust/Python/C toolchains + git/gh + the harness + agentask CLI). **amd64-only for now** — the
+Go/Rust/Python/C toolchains + git/gh + the harness + odonian CLI). **amd64-only for now** — the
 arm64 (Pi) build comes later with the cross-arch build/test dimension. The merger stays multi-arch
 and keeps running on the Pis.
 
@@ -88,11 +88,11 @@ so the value never transits anything else:
 
 ```sh
 claude setup-token   # prints a token; copy it
-kubectl --context admin@summercamp-cp -n agentask-fleet \
+kubectl --context admin@summercamp-cp -n odonian-fleet \
   create secret generic claude-oauth --from-literal=token='<paste-token>'
 ```
 
-The `agentask-fleet` (server API token) and `agentask-forge-tokens` secrets from the merger setup are
+The `odonian-fleet` (server API token) and `odonian-forge-tokens` secrets from the merger setup are
 reused — create them in this namespace on the cp cluster too if they aren't there yet.
 
 ### 2b. codex auth for gpt-5.5 reviewers — READ THIS, IT EXPIRES
@@ -142,24 +142,24 @@ open/PR-review as usual. `replicas` is the only knob to match local concurrency.
 
 ### Repo clone cache (multi-project mode)
 
-In multi-project mode (`AGENTASK_PROJECT=all`, the fleet default) each pod clones every repo it
-ever touches into `$AGENTASK_HOME/repos`. Reviewers accumulate the widest set — one clone per repo
+In multi-project mode (`ODONIAN_PROJECT=all`, the fleet default) each pod clones every repo it
+ever touches into `$ODONIAN_HOME/repos`. Reviewers accumulate the widest set — one clone per repo
 they've ever reviewed — because they poll across all boards. On 2026-08-07 that unbounded cache
 filled the 20Gi `emptyDir` HOME and got 37 pods evicted (23 reviewer / 14 worker) with `Usage of
 EmptyDir volume "home" exceeds the limit "20Gi"`, with no node under disk/memory/PID pressure — it
 was purely the per-pod cap.
 
 `harness/agent.sh` now prunes that cache itself, once per dispatch, before setting up the task's
-clone/worktree: it measures `$AGENTASK_HOME` usage and, once it crosses a high-water mark, deletes
-the least-recently-used clones (oldest `.agentask-last-used` marker first, never the clone the
+clone/worktree: it measures `$ODONIAN_HOME` usage and, once it crosses a high-water mark, deletes
+the least-recently-used clones (oldest `.odonian-last-used` marker first, never the clone the
 in-flight task needs) until usage is back at or under a low-water mark. Two env vars tune it:
 
-- `AGENTASK_REPOS_HIGH_GIB` (default `14`) — usage above this triggers a prune pass.
-- `AGENTASK_REPOS_LOW_GIB` (default `8`) — prune deletes clones until usage is at or below this.
+- `ODONIAN_REPOS_HIGH_GIB` (default `14`) — usage above this triggers a prune pass.
+- `ODONIAN_REPOS_LOW_GIB` (default `8`) — prune deletes clones until usage is at or below this.
 
 Defaults are sized for the current 20Gi emptyDir (being raised to 30Gi separately as breathing
 room, not as a substitute for this bound), leaving headroom for worktrees and tool caches, which
-also live under `$AGENTASK_HOME` but are not touched by this prune — only `$AGENTASK_HOME/repos`
+also live under `$ODONIAN_HOME` but are not touched by this prune — only `$ODONIAN_HOME/repos`
 is in scope.
 
 ### Releasing a new fleet image

@@ -17,15 +17,15 @@ func TestExtractGitHubOwnerRepo(t *testing.T) {
 	}{
 		{
 			name:     "valid https url",
-			url:      "https://github.com/boldfield/agentask",
+			url:      "https://github.com/boldfield/odonian",
 			wantOwn:  "boldfield",
-			wantRepo: "agentask",
+			wantRepo: "odonian",
 		},
 		{
 			name:     "valid https url with .git",
-			url:      "https://github.com/boldfield/agentask.git",
+			url:      "https://github.com/boldfield/odonian.git",
 			wantOwn:  "boldfield",
-			wantRepo: "agentask",
+			wantRepo: "odonian",
 		},
 		{
 			name:    "empty url",
@@ -34,7 +34,7 @@ func TestExtractGitHubOwnerRepo(t *testing.T) {
 		},
 		{
 			name:    "non-github url",
-			url:     "https://gitlab.com/boldfield/agentask",
+			url:     "https://gitlab.com/boldfield/odonian",
 			wantErr: true,
 		},
 		{
@@ -81,16 +81,16 @@ func TestFindOpenPRURL(t *testing.T) {
 	t.Run("successful pr resolution", func(t *testing.T) {
 		commandContextFunc = func(ctx context.Context, name string, args ...string) *exec.Cmd {
 			// Return a mock command that outputs a JSON array with a PR
-			return exec.Command("echo", `[{"html_url": "https://github.com/boldfield/agentask/pull/123"}]`)
+			return exec.Command("echo", `[{"html_url": "https://github.com/boldfield/odonian/pull/123"}]`)
 		}
 
 		ctx := context.Background()
-		prURL, err := findOpenPRURL(ctx, "boldfield", "agentask", "feature-branch")
+		prURL, err := findOpenPRURL(ctx, "boldfield", "odonian", "feature-branch")
 		if err != nil {
 			t.Fatalf("findOpenPRURL() error = %v, want nil", err)
 		}
-		if prURL != "https://github.com/boldfield/agentask/pull/123" {
-			t.Errorf("prURL = %q, want https://github.com/boldfield/agentask/pull/123", prURL)
+		if prURL != "https://github.com/boldfield/odonian/pull/123" {
+			t.Errorf("prURL = %q, want https://github.com/boldfield/odonian/pull/123", prURL)
 		}
 	})
 
@@ -102,7 +102,7 @@ func TestFindOpenPRURL(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		_, err := findOpenPRURL(ctx, "boldfield", "agentask", "feature-branch")
+		_, err := findOpenPRURL(ctx, "boldfield", "odonian", "feature-branch")
 		if err == nil {
 			t.Errorf("findOpenPRURL() error = nil, want error")
 		}
@@ -115,7 +115,7 @@ func TestFindOpenPRURL(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		_, err := findOpenPRURL(ctx, "boldfield", "agentask", "feature-branch")
+		_, err := findOpenPRURL(ctx, "boldfield", "odonian", "feature-branch")
 		if err == nil {
 			t.Errorf("findOpenPRURL() error = nil, want error")
 		}
@@ -132,7 +132,7 @@ func TestFindOpenPRURL(t *testing.T) {
 		}
 
 		ctx := context.Background()
-		_, err := findOpenPRURL(ctx, "boldfield", "agentask", "feature-branch")
+		_, err := findOpenPRURL(ctx, "boldfield", "odonian", "feature-branch")
 		if err == nil {
 			t.Errorf("findOpenPRURL() error = nil, want error")
 		}
@@ -151,16 +151,16 @@ func TestParsePRURL(t *testing.T) {
 	}{
 		{
 			name:      "valid pr url",
-			prURL:     "https://github.com/boldfield/agentask/pull/42",
+			prURL:     "https://github.com/boldfield/odonian/pull/42",
 			wantOwner: "boldfield",
-			wantRepo:  "agentask",
+			wantRepo:  "odonian",
 			wantNum:   42,
 		},
 		{
 			name:      "valid pr url with trailing slash",
-			prURL:     "https://github.com/boldfield/agentask/pull/42/",
+			prURL:     "https://github.com/boldfield/odonian/pull/42/",
 			wantOwner: "boldfield",
-			wantRepo:  "agentask",
+			wantRepo:  "odonian",
 			wantNum:   42,
 		},
 		{
@@ -170,12 +170,12 @@ func TestParsePRURL(t *testing.T) {
 		},
 		{
 			name:    "not a github url",
-			prURL:   "https://gitlab.com/boldfield/agentask/pull/42",
+			prURL:   "https://gitlab.com/boldfield/odonian/pull/42",
 			wantErr: true,
 		},
 		{
 			name:    "not a pull request url",
-			prURL:   "https://github.com/boldfield/agentask/issues/42",
+			prURL:   "https://github.com/boldfield/odonian/issues/42",
 			wantErr: true,
 		},
 	}

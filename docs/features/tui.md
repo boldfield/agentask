@@ -1,11 +1,11 @@
-# Feature: Agentask TUI
+# Feature: Odonian TUI
 
 Status: feature spec, 2026-06-05
-Kind: feature_spec (for project Agentask)
+Kind: feature_spec (for project Odonian)
 
 ## What this is
 
-A minimal terminal UI for Agentask — a keyboard-driven board you live next to in the
+A minimal terminal UI for Odonian — a keyboard-driven board you live next to in the
 terminal. It fixes the one ergonomic hole in the system: today the human side of the loop
 is `curl | jq`. The TUI lets a human **see the board** (what's in backlog, being worked,
 waiting for review) and **act on it** (promote backlog → ready; approve/reject reviews)
@@ -40,8 +40,8 @@ the API-only design: humans and agents drive the same single source of truth.
 ## Stack & architecture
 
 - **Go + Bubble Tea** (Charm): `bubbletea` for the loop, `lipgloss` for styling, `bubbles`
-  for list/viewport/textinput widgets. New binary `cmd/agentask-tui` (builds to
-  `bin/agentask-tui`); add a `tui` Makefile target.
+  for list/viewport/textinput widgets. New binary `cmd/odonian-tui` (builds to
+  `bin/odonian-tui`); add a `tui` Makefile target.
 - An **API client** behind an interface (`internal/tuiclient`), wrapping the HTTP API,
   configured from the resolved config (below). It defines its own small response structs
   (external client; does **not** import `internal/store`). Methods: `ListProjects`,
@@ -54,13 +54,13 @@ the API-only design: humans and agents drive the same single source of truth.
 
 Resolution order (highest wins): **flags > environment > config file > defaults**.
 
-- Config file (TOML) at `$XDG_CONFIG_HOME/agentask/config.toml` (default
-  `~/.config/agentask/config.toml`). Keys: `url`, `token`, `actor`, `default_project`,
+- Config file (TOML) at `$XDG_CONFIG_HOME/odonian/config.toml` (default
+  `~/.config/odonian/config.toml`). Keys: `url`, `token`, `actor`, `default_project`,
   `poll_interval` (default `2s`).
-- Env: `AGENTASK_URL`, `AGENTASK_TOKEN`, `AGENTASK_ACTOR` (same vars the agents use).
+- Env: `ODONIAN_URL`, `ODONIAN_TOKEN`, `ODONIAN_ACTOR` (same vars the agents use).
 - `actor` (the reviewer identity recorded on review events) defaults to the OS `$USER` when
   unset.
-- **Token handling:** prefer `AGENTASK_TOKEN` (env). The file *may* hold `token`, but the
+- **Token handling:** prefer `ODONIAN_TOKEN` (env). The file *may* hold `token`, but the
   TUI warns once if a token is read from a world-readable file. No token is ever written to
   disk by the TUI.
 - A missing/invalid `url`/`token` produces a clear startup error, not a panic.
@@ -134,7 +134,7 @@ Both resolve a `Document.ref` to a VCS browse URL the same way `o` resolves a PR
 TUI fetches `GET /projects/{id}/documents` (to map `document_id → ref` and find the design
 doc), then builds `project.repo` + `/blob/` + (`Document.commit` if pinned, else the default
 branch) + `/ref` and opens it. If a `ref` is already a URL, open it directly; if there's no
-repo, no design doc, or the ref can't be resolved, show a brief message. Agentask stores only
+repo, no design doc, or the ref can't be resolved, show a brief message. Odonian stores only
 the ref — the TUI builds the URL (GitHub-shaped; abstract for other forges later).
 
 ## Keybindings (full)
@@ -177,12 +177,12 @@ the ref — the TUI builds the URL (GitHub-shaped; abstract for other forges lat
 Tightly coupled UI (one Bubble Tea model), so a **linear chain** — one claimable at a time
 (`depends_on` enforces it):
 
-1. **TUI-1 — scaffold, config, client, project picker.** `cmd/agentask-tui`; config
+1. **TUI-1 — scaffold, config, client, project picker.** `cmd/odonian-tui`; config
    resolution (file + env + flags, precedence, `$USER` default for actor, token warning);
    the `tuiclient` interface + HTTP impl (`ListProjects/ListTasks/GetTask/ListDocuments/
    PromoteTask/ReviewTask/TransitionTask`) + a mock; a Bubble Tea app that connects, shows a project
    picker (auto-select on one/default), and quits on `q`; `tui` Makefile target.
-   **Acceptance:** builds; `make tui` produces `bin/agentask-tui`; with valid config it lists
+   **Acceptance:** builds; `make tui` produces `bin/odonian-tui`; with valid config it lists
    projects (or auto-selects); bad config errors cleanly; client httptest + a model test pass.
    *(no deps)*
 2. **TUI-2 — board view, nav, polling.** Focused-column/tabs layout; bucket `ListTasks` by
@@ -209,7 +209,7 @@ Tightly coupled UI (one Bubble Tea model), so a **linear chain** — one claimab
 
 ## Feature-level acceptance
 
-- `agentask-tui` builds, connects to a live Agentask via the resolved config, shows the board
+- `odonian-tui` builds, connects to a live Odonian via the resolved config, shows the board
   for a chosen project, promotes a backlog task, and approves/rejects a review task — all
   verified against the deployed instance.
 - Uses only the public HTTP API (no DB access, no `internal/store` import).
@@ -218,7 +218,7 @@ Tightly coupled UI (one Bubble Tea model), so a **linear chain** — one claimab
 
 - **Inline PR diffs in the review/detail pane** — the TUI fetches the diff from the VCS host
   using the stored `pr` link (`gh pr diff`, or the GitHub diff API), rendered in a scrollable,
-  syntax-colored viewport. **Agentask never stores the diff** — the `TaskLink(pr|commit)` is
+  syntax-colored viewport. **Odonian never stores the diff** — the `TaskLink(pr|commit)` is
   the ref, the client resolves it (consistent with "stores refs, not content"). Zero backend
   change; VCS-coupled (abstract the diff source if going multi-forge).
 - **Event timeline** per task — requires a new `GET /tasks/{id}/events` endpoint (the event

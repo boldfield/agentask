@@ -15,6 +15,6 @@ depends_on: [T08]
 - Promoting a task not in `backlog` → 409.
 
 ## Result
-- PR: https://github.com/boldfield/agentask/pull/12
-- Branch: agentask/T10-promote
+- PR: https://github.com/boldfield/odonian/pull/12
+- Branch: odonian/T10-promote
 - Head SHA: 49e04a7

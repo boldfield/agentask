@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/boldfield/agentask/internal/tuiclient"
-	"github.com/boldfield/agentask/internal/tuiconfig"
+	"github.com/boldfield/odonian/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/tuiconfig"
 	tea "github.com/charmbracelet/bubbletea"
 )
 
@@ -41,7 +41,7 @@ func buildApprovedModel(t *testing.T, approvedClient *tuiclient.MockClient) *Boa
 		Actor:        "reviewer-bot",
 		PollInterval: 100 * time.Millisecond,
 	}
-	project := tuiclient.Project{ID: "project-1", Name: "Test", Repo: "https://github.com/boldfield/agentask"}
+	project := tuiclient.Project{ID: "project-1", Name: "Test", Repo: "https://github.com/boldfield/odonian"}
 
 	model := NewBoardModel(approvedClient, config, project)
 	m, _ := model.Update(tea.WindowSizeMsg{Width: 80, Height: 24})

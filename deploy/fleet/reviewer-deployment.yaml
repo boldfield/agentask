@@ -2,9 +2,9 @@ apiVersion: apps/v1
 kind: Deployment
 metadata:
   name: reviewer
-  namespace: agentask-fleet
+  namespace: odonian-fleet
   labels:
-    app.kubernetes.io/name: agentask-fleet
+    app.kubernetes.io/name: odonian-fleet
     app.kubernetes.io/component: reviewer
 spec:
   # Matches the laptop fleet (4 reviewers). Apply to the amd64 (cp) cluster — reviewers reproduce the
@@ -17,7 +17,7 @@ spec:
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: agentask-fleet
+        app.kubernetes.io/name: odonian-fleet
         app.kubernetes.io/component: reviewer
     spec:
       securityContext:
@@ -32,7 +32,7 @@ spec:
         # codex-home emptyDir from the read-only codex-auth secret (mounted side-path here).
         - name: codex-auth-setup
           # Version tag is bumped by hand on release; make fleet-image must have pushed this tag first.
-          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-16-g78910a2
+          image: docker.summercamp.eastharbor.casa:32050/odonian/fleet:v0.15.0-16-g78910a2
           command: ["sh", "-c", "cp /etc/codex-auth/auth.json /home/agent/.codex/auth.json && chmod 600 /home/agent/.codex/auth.json"]
           volumeMounts:
             - { name: codex-home, mountPath: /home/agent/.codex }
@@ -43,21 +43,21 @@ spec:
       containers:
         - name: reviewer
           # Version tag is bumped by hand on release; make fleet-image must have pushed this tag first.
-          image: docker.summercamp.eastharbor.casa:32050/agentask/fleet:v0.15.0-16-g78910a2
+          image: docker.summercamp.eastharbor.casa:32050/odonian/fleet:v0.15.0-16-g78910a2
           args: ["--kind", "review"]
           env:
-            - name: AGENTASK_URL
-              value: "https://agentask.summercamp.eastharbor.casa"
-            - name: AGENTASK_PROJECT
+            - name: ODONIAN_URL
+              value: "https://odonian.summercamp.eastharbor.casa"
+            - name: ODONIAN_PROJECT
               value: "all"
-            - name: AGENTASK_DELIVERY_MODE
+            - name: ODONIAN_DELIVERY_MODE
               value: "pull_request"
             - name: HOME
               value: /home/agent
-            - name: AGENTASK_HOME
-              value: /home/agent/.agentask
-            - name: AGENTASK_TOKEN
-              valueFrom: { secretKeyRef: { name: agentask-fleet, key: token } }
+            - name: ODONIAN_HOME
+              value: /home/agent/.odonian
+            - name: ODONIAN_TOKEN
+              valueFrom: { secretKeyRef: { name: odonian-fleet, key: token } }
             - name: CLAUDE_CODE_OAUTH_TOKEN
               valueFrom: { secretKeyRef: { name: claude-oauth, key: token } }
             - name: AGENT_CODEX_MODELS
@@ -81,7 +81,7 @@ spec:
           emptyDir: { sizeLimit: 30Gi }
         - name: forge-tokens
           secret:
-            secretName: agentask-forge-tokens
+            secretName: odonian-forge-tokens
         - name: codex-auth
           secret:
             secretName: codex-auth

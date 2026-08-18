@@ -88,9 +88,9 @@ func TestOwnerToken(t *testing.T) {
 			}
 			defer os.RemoveAll(tmpDir)
 
-			agtDir := filepath.Join(tmpDir, ".agentask")
+			agtDir := filepath.Join(tmpDir, ".odonian")
 			if err := os.MkdirAll(agtDir, 0755); err != nil {
-				t.Fatalf("failed to create .agentask dir: %v", err)
+				t.Fatalf("failed to create .odonian dir: %v", err)
 			}
 
 			tokenFile := filepath.Join(agtDir, "forge-tokens")
@@ -701,31 +701,31 @@ func TestParsePRURL(t *testing.T) {
 	}{
 		{
 			name:   "valid PR URL",
-			url:    "https://github.com/boldfield/agentask/pull/297",
+			url:    "https://github.com/boldfield/odonian/pull/297",
 			owner:  "boldfield",
-			repo:   "agentask",
+			repo:   "odonian",
 			number: 297,
 		},
 		{
 			name:   "trailing slash",
-			url:    "https://github.com/boldfield/agentask/pull/297/",
+			url:    "https://github.com/boldfield/odonian/pull/297/",
 			owner:  "boldfield",
-			repo:   "agentask",
+			repo:   "odonian",
 			number: 297,
 		},
 		{
 			name:    "not github.com",
-			url:     "https://gitlab.com/boldfield/agentask/pull/297",
+			url:     "https://gitlab.com/boldfield/odonian/pull/297",
 			wantErr: true,
 		},
 		{
 			name:    "not a pull request URL",
-			url:     "https://github.com/boldfield/agentask/issues/297",
+			url:     "https://github.com/boldfield/odonian/issues/297",
 			wantErr: true,
 		},
 		{
 			name:    "invalid PR number",
-			url:     "https://github.com/boldfield/agentask/pull/notanumber",
+			url:     "https://github.com/boldfield/odonian/pull/notanumber",
 			wantErr: true,
 		},
 	}

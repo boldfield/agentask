@@ -1,9 +1,9 @@
 ---
 name: review
-description: Use to drive the human review gate from inside an interactive `claude` session — show the queue of tasks awaiting a decision, show the diff for one of them, and, on the human's explicit instruction, record their verdict by running `agentask approve`/`reject`. The skill NEVER decides on its own — the human supplies the judgment, the CLI does the mechanics. Triggers on requests like "what's waiting for review?", "show me the review queue", "let me review the board", "show me the diff for <task>", "approve <task>", or "reject <task> because …".
+description: Use to drive the human review gate from inside an interactive `claude` session — show the queue of tasks awaiting a decision, show the diff for one of them, and, on the human's explicit instruction, record their verdict by running `odonian approve`/`reject`. The skill NEVER decides on its own — the human supplies the judgment, the CLI does the mechanics. Triggers on requests like "what's waiting for review?", "show me the review queue", "let me review the board", "show me the diff for <task>", "approve <task>", or "reject <task> because …".
 ---
 
-# Agentask review (human gate)
+# Odonian review (human gate)
 
 A conversational wrapper for the **human review gate**. The sandbox's only interface is an
 interactive `claude` session, so this skill is how a human inspects what is waiting, reads a diff,
@@ -13,7 +13,7 @@ and the diff so the human can decide, then executes the decision they hand back.
 ## The one rule that overrides everything
 
 **The human decides; this skill only records.** It never forms its own opinion of a diff and never
-approves or rejects on its own initiative. It runs `agentask approve`/`reject` **only** when the
+approves or rejects on its own initiative. It runs `odonian approve`/`reject` **only** when the
 human gives an explicit instruction to do so ("approve it", "reject it because X"). The skill is
 the steward of the board state, not the reviewer: the CLI does the mechanics (transition, freeze,
 cleanup), and the human supplies the judgment. If you are unsure whether the human has actually
@@ -31,12 +31,12 @@ decided, ask — do not guess and do not act.
 
 ## Phase 0 — Configuration
 
-- `AGENTASK_URL` and `AGENTASK_TOKEN` must be set (the running Agentask instance + bearer token);
+- `ODONIAN_URL` and `ODONIAN_TOKEN` must be set (the running Odonian instance + bearer token);
   the CLI reads them from the environment. If either is missing, ask the human.
-- You need the **project id**. Use `$AGENTASK_PROJECT` if it is set; otherwise ask the human, or
-  run `agentask projects` to list them and let the human pick.
-- In `local_commit` mode (`AGENTASK_DELIVERY_MODE=local_commit`) the approve/reject mechanics touch
-  the git repo, so the repo directory must be resolvable — `$AGENTASK_REPO` (or a `--repo <dir>`
+- You need the **project id**. Use `$ODONIAN_PROJECT` if it is set; otherwise ask the human, or
+  run `odonian projects` to list them and let the human pick.
+- In `local_commit` mode (`ODONIAN_DELIVERY_MODE=local_commit`) the approve/reject mechanics touch
+  the git repo, so the repo directory must be resolvable — `$ODONIAN_REPO` (or a `--repo <dir>`
   the human supplies). If it is unset when an action needs it, the CLI errors; ask the human.
 
 ## Phase 1 — Show the queue
@@ -44,7 +44,7 @@ decided, ask — do not guess and do not act.
 Run:
 
 ```
-agentask pending --project <project-id>
+odonian pending --project <project-id>
 ```
 
 This lists every task in the **`review`** or **`approved`** state for that project — the work
@@ -59,25 +59,25 @@ Present this queue to the human and ask which task they want to inspect.
 For the task the human chose, run:
 
 ```
-agentask diff <task-id>
+odonian diff <task-id>
 ```
 
 What it shows depends on the delivery mode:
 
 - **`pull_request` mode** (default): prints the PR URL, then — if `gh` is on PATH — the PR diff
   (`gh pr diff <url>`), best-effort.
-- **`local_commit` mode** (`AGENTASK_DELIVERY_MODE=local_commit`): shows the diff of the task's
+- **`local_commit` mode** (`ODONIAN_DELIVERY_MODE=local_commit`): shows the diff of the task's
   `commit` link against the base (`origin/main`). Add `--full` to show the entire commit instead
   of just the diff against base. The repo directory comes from `--repo <dir>` or, if unset,
-  `$AGENTASK_REPO`.
+  `$ODONIAN_REPO`.
 
 Useful flags:
 
 - `--full` — full commit rather than diff-against-base (local_commit mode).
-- `--repo <dir>` — repository directory (local_commit mode; defaults to `$AGENTASK_REPO`).
+- `--repo <dir>` — repository directory (local_commit mode; defaults to `$ODONIAN_REPO`).
 
 **Show the RAW diff, verbatim — never summarize, analyze, or judge it.** Output exactly what
-`agentask diff` prints, so the human reads the actual changes. Do **NOT** replace the diff with a
+`odonian diff` prints, so the human reads the actual changes. Do **NOT** replace the diff with a
 bulleted summary, a "what this adds" checklist, or any assessment ("looks good", "the defect is
 fixed", "this is the clean scaffold the reviewers wanted") — that is forming an opinion of the diff,
 which this skill never does. The human reads the diff and decides; your job is to put the real bytes
@@ -96,7 +96,7 @@ When the human says to approve a task (one in the **`approved`** state — it ha
 verdict and is on the human's merge lane):
 
 ```
-agentask approve <task-id>
+odonian approve <task-id>
 ```
 
 - The task must be in `approved`; `approve` errors otherwise.
@@ -112,7 +112,7 @@ When the human says to reject a task (one in **`review`** or **`approved`**), yo
 reason from them — `--note` is required:
 
 ```
-agentask reject <task-id> --note "<the human's reason>"
+odonian reject <task-id> --note "<the human's reason>"
 ```
 
 - Without `--abandon`, this transitions the task to **`ready`** for rework (the implementer
@@ -122,14 +122,14 @@ agentask reject <task-id> --note "<the human's reason>"
   intact). Use this only when the human wants to drop the work entirely, not send it back:
 
   ```
-  agentask reject <task-id> --note "<reason>" --abandon
+  odonian reject <task-id> --note "<reason>" --abandon
   ```
 
 ## The approve = freeze footgun (local_commit mode)
 
 `approve` does the board transition **first**, then the git freeze. If the freeze fails *after* the
 transition has already moved the task to `done`, the task is `done` but the branch is **not** frozen
-— and re-running plain `agentask approve <task-id>` will fail with `task is in "done" state, expected
+— and re-running plain `odonian approve <task-id>` will fail with `task is in "done" state, expected
 approved`, because the transition guard no longer matches.
 
 The most common cause is the MR branch being checked out somewhere, which surfaces as:
@@ -138,7 +138,7 @@ The most common cause is the MR branch being checked out somewhere, which surfac
 MR branch wi/<slug> is checked out at <path>; cd out or run 'git checkout --detach' there, then re-approve
 ```
 
-**Recovery — `agentask approve <task-id> --freeze-only`.** Clear the cause the message names (e.g.
+**Recovery — `odonian approve <task-id> --freeze-only`.** Clear the cause the message names (e.g.
 `cd` out of that worktree or run `git checkout --detach` there), then re-run approve with
 `--freeze-only`. That flag **skips the already-done transition** and retries **only** the freeze, so
 the WIP branch lands on the MR branch and the worktree/WIP branch are cleaned up. Do not try to
@@ -153,5 +153,5 @@ re-approve without it — the state guard will keep rejecting you.
   the human has explicitly stated, and you never invent a `--note` reason — it comes from the human.
 - In `pull_request` mode you never run the actual PR merge yourself; `approve` records the board
   state, the human merges the PR.
-- You touch the repo only through the `agentask` verbs (`diff`, `approve`, `reject`); you never
+- You touch the repo only through the `odonian` verbs (`diff`, `approve`, `reject`); you never
   hand-edit branches, worktrees, or commits.

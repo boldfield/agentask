@@ -38,7 +38,7 @@ func setupRepoForWorktree(t *testing.T) string {
 func TestAddWorktree_Fresh(t *testing.T) {
 	repoDir := setupRepoForWorktree(t)
 	wtHome := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", wtHome)
 
 	iid := "task-123"
 	wtPath, err := AddWorktree(repoDir, iid, "origin/main")
@@ -84,7 +84,7 @@ func TestAddWorktree_Fresh(t *testing.T) {
 func TestAddWorktree_Idempotent(t *testing.T) {
 	repoDir := setupRepoForWorktree(t)
 	wtHome := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", wtHome)
 
 	iid := "task-456"
 
@@ -108,7 +108,7 @@ func TestAddWorktree_Idempotent(t *testing.T) {
 func TestAddWorktree_WithMRBranch(t *testing.T) {
 	repoDir := setupRepoForWorktree(t)
 	wtHome := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", wtHome)
 
 	// Create a wi/<slug> branch
 	slug := "my-feature"
@@ -162,7 +162,7 @@ func TestAddWorktree_WithMRBranch(t *testing.T) {
 func TestAddWorktree_WithOriginMain(t *testing.T) {
 	repoDir := setupRepoForWorktree(t)
 	wtHome := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", wtHome)
 
 	iid := "task-origin-main"
 	wtPath, err := AddWorktree(repoDir, iid, "origin/main")

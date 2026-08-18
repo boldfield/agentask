@@ -18,6 +18,6 @@ depends_on: [T06]
 - `kind` outside the allowed set → 400.
 
 ## Result
-- **PR URL**: https://github.com/boldfield/agentask/pull/9
-- **Branch**: agentask/T07-document-endpoints
+- **PR URL**: https://github.com/boldfield/odonian/pull/9
+- **Branch**: odonian/T07-document-endpoints
 - **Head SHA**: 6a0e1eff0e0ab38e6a79dbbff549c64e9b806682

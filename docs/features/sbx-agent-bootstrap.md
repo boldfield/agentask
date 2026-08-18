@@ -1,12 +1,12 @@
 # Feature: sbx agent bootstrap (provision the sandbox: toolchain, agents, auth, board config)
 
 Status: feature spec, 2026-08-10
-Kind: feature_spec (for project Agentask)
+Kind: feature_spec (for project Odonian)
 
 ## What this is
 
-`harness/sbx.sh` already boots the whole Agentask stack — server + worker/reviewer fleet — inside an
-`sbx` sandbox container with all state under `/tmp/agentask`. What it does **not** do is provision
+`harness/sbx.sh` already boots the whole Odonian stack — server + worker/reviewer fleet — inside an
+`sbx` sandbox container with all state under `/tmp/odonian`. What it does **not** do is provision
 the container it runs in.
 
 **The sandbox image is externally defined.** It is supplied by Docker Sandboxes, not built from this
@@ -23,7 +23,7 @@ sandbox can be provisioned from whatever the external image happens to be, and a
 
 Scope is the **sandbox only**. The cluster fleet is untouched.
 
-## Measured starting state (verified in the running `claude-agentask-sbx` container)
+## Measured starting state (verified in the running `claude-odonian-sbx` container)
 
 Treat this table as *observed today*, not as a contract. Every row is a property of an external
 image that can change; the bootstrap must verify each rather than rely on it.
@@ -38,30 +38,30 @@ image that can change; the bootstrap must verify each rather than rely on it.
 | npm global prefix | `/usr/local/share/npm-global`, root-owned (not writable by `agent`) |
 | `sudo -n` | works — passwordless |
 | `~/.claude/skills` | does not exist |
-| repo mounts | bind-mounted **read-write at the same absolute paths as the host**, e.g. `/Users/boldfield/projects/agentask` |
+| repo mounts | bind-mounted **read-write at the same absolute paths as the host**, e.g. `/Users/boldfield/projects/odonian` |
 | container arch | `aarch64` |
 
 ## The gaps
 
 ### 1. `sbx.sh` trusts a pre-built binary whose architecture it never checks
 
-`harness/sbx.sh` builds the CLI only when the mounted repo's `bin/agentask` is not executable. The
+`harness/sbx.sh` builds the CLI only when the mounted repo's `bin/odonian` is not executable. The
 test is the **executable bit alone** — architecture is never considered. Because the repo is mounted
 read-write at the same path on both sides, that binary is shared between a macOS host and a Linux
 container, and the check is wrong in both directions:
 
 - A **host-built** binary is present and executable, so the container skips the build and puts a
-  Mach-O binary on `PATH`. Every `agentask` call inside the container then dies with an exec format
+  Mach-O binary on `PATH`. Every `odonian` call inside the container then dies with an exec format
   error — at dispatch time, deep in a worker log, not at boot.
 - A **container-built** binary is written back through the mount and **clobbers the host's**
-  `bin/agentask`.
+  `bin/odonian`.
 
-This is not hypothetical; it is the current state of the working copy. `bin/agentask` on the host is
+This is not hypothetical; it is the current state of the working copy. `bin/odonian` on the host is
 an `ELF 64-bit LSB executable, ARM aarch64` — built inside the container and written back out.
 Running it on the host gives `exec format error`; the identical file inside the container reports
-`agentask version v0.15.0-17-g99af944`.
+`odonian version v0.15.0-17-g99af944`.
 
-The script's own stated invariant is that everything it writes lives under `/tmp/agentask`; the
+The script's own stated invariant is that everything it writes lives under `/tmp/odonian`; the
 mounted `bin/` was carved out as a deliberate exception, and that exception is the bug.
 
 ### 2. Neither agent CLI is installed — and the boot now hard-fails without them
@@ -106,21 +106,21 @@ container**; it needs `sbx cp` and is therefore a separate host-side entry point
 
 ### 6. The sandbox server rejects `gpt-5.5`, and would misroute it anyway
 
-`sbx.sh` starts the server with `AGENTASK_MODELS="haiku,sonnet,opus,fable"` — no `gpt-5.5` — so a
+`sbx.sh` starts the server with `ODONIAN_MODELS="haiku,sonnet,opus,fable"` — no `gpt-5.5` — so a
 task carrying `review_models: ["opus","gpt-5.5"]` fails at create time with `UNKNOWN_MODEL`. And
 `sbx.sh` never sets `AGENT_CODEX_MODELS`, so even once allowed, `agent.sh` would dispatch that review
 as `claude -p --model gpt-5.5` instead of routing it through `codex exec`.
 
 Its escalation config has also drifted from production: it carries the original thresholds and
-predates `AGENTASK_ESCALATION_LADDER` existing at all. Production defines the ladder separately and
+predates `ODONIAN_ESCALATION_LADDER` existing at all. Production defines the ladder separately and
 deliberately **excludes** `gpt-5.5`, so a review-only model never becomes an escalation tier for
 implementation work.
 
 ### 7. Nothing teaches the in-container Claude the two-reviewer default
 
 The server's fallback when `review_models` is empty is hardcoded to a single Claude reviewer, and
-`skills/agentask-breakdown/scripts/agentask.sh` documents exactly that. An interactive Claude reading
-it will keep creating single-reviewer tasks. Nor are the repo's four Agentask skills visible to an
+`skills/odonian-breakdown/scripts/odonian.sh` documents exactly that. An interactive Claude reading
+it will keep creating single-reviewer tasks. Nor are the repo's four Odonian skills visible to an
 in-container session at all.
 
 ## Model choice: `gpt-5.5`, not `gpt-5.6`
@@ -170,7 +170,7 @@ green boot must mean the stack can actually do work.
 
 ## Scope
 
-### Deliverable 1 — arch-correct, container-local build of the `agentask` binary
+### Deliverable 1 — arch-correct, container-local build of the `odonian` binary
 
 Fix the build step in `harness/sbx.sh` so the binary it runs is always built for the machine running
 it, and so it never writes into the mounted repo.
@@ -185,7 +185,7 @@ it, and so it never writes into the mounted repo.
 - Preflight the toolchain before building: a Go toolchain must be present and satisfy `go.mod`. If it
   is absent or too old, fail immediately with a message naming the required version, rather than
   emitting a wall of compiler output.
-- Do not modify or delete the host's existing `bin/agentask`. Leaving a stale wrong-arch binary in
+- Do not modify or delete the host's existing `bin/odonian`. Leaving a stale wrong-arch binary in
   the mounted repo is acceptable; silently overwriting it is not.
 
 ### Deliverable 2 — install and verify both agent CLIs (`harness/sbx-agent-setup.sh`, in-container)
@@ -200,8 +200,8 @@ parsing style, same logging helpers. Idempotent — re-running is a clean no-op.
   credentials alone. The goal is a guaranteed-present CLI, not a guaranteed-fresh one.
 - **Verify after installing.** Both binaries must resolve on `PATH` and report a version. A package
   manager exiting zero is not evidence of a working binary.
-- **Wire the Agentask skills in.** Link the repo's four skills — `agentask-board`,
-  `agentask-breakdown`, `agentask-ops`, `review` — into the location an in-container `claude` session
+- **Wire the Odonian skills in.** Link the repo's four skills — `odonian-board`,
+  `odonian-breakdown`, `odonian-ops`, `review` — into the location an in-container `claude` session
   reads skills from. Symlink rather than copy, so editing a skill in the mounted repo takes effect
   with no re-provisioning; this mirrors the harness's existing split between versioned code in the
   repo and unversioned state elsewhere. Resolve the repo path from the script's own location, never
@@ -212,7 +212,7 @@ parsing style, same logging helpers. Idempotent — re-running is a clean no-op.
   must carry both review models unless the human overrides. State the reason for the pair — two
   independent reviewers, one Claude and one Codex — so the rule survives paraphrase.
 - **Write a `claude` settings file** granting a permission allowlist for routine local-board traffic:
-  HTTP calls to the local server port, the `agentask` CLI, and git. Merge into existing settings
+  HTTP calls to the local server port, the `odonian` CLI, and git. Merge into existing settings
   rather than overwriting.
 - Take the port as an argument, defaulting to the boot script's default.
 
@@ -251,7 +251,7 @@ agent user's codex config directory, mode `0600`, owned by that user.
 
 ### Deliverable 5 — `sbx.sh` model config alignment
 
-- Add `gpt-5.5` to the server's `AGENTASK_MODELS`.
+- Add `gpt-5.5` to the server's `ODONIAN_MODELS`.
 - Set `AGENT_CODEX_MODELS` to `gpt-5.5` in the generated fleet environment file **and** in the
   exported environment the fleet children inherit, matching how the script already handles its other
   fleet variables, so `agent.sh` routes those reviews through `codex exec`.
@@ -261,7 +261,7 @@ agent user's codex config directory, mode `0600`, owned by that user.
 
 ### Deliverable 6 — correct the documented review default
 
-`skills/agentask-breakdown/scripts/agentask.sh` states the default is a single Claude reviewer.
+`skills/odonian-breakdown/scripts/odonian.sh` states the default is a single Claude reviewer.
 Update its usage text and example task object so the two-reviewer pair is what a reader copies, and
 correct any matching claim in the skill's own instructions. Be precise: the server's fallback is
 unchanged and remains a single reviewer — the accurate statement is that callers should pass the pair
@@ -282,8 +282,8 @@ explicitly. Documentation only; no server or deployment changes.
 
 ## Acceptance criteria
 
-1. After boot, the `agentask` binary on `PATH` inside the container executes there, and the host's
-   `bin/agentask` is not modified by the boot.
+1. After boot, the `odonian` binary on `PATH` inside the container executes there, and the host's
+   `bin/odonian` is not modified by the boot.
 2. Booting with a wrong-architecture binary already present in the mounted repo succeeds rather than
    failing at dispatch with an exec format error.
 3. A missing or too-old Go toolchain fails at boot with a message naming the required version.

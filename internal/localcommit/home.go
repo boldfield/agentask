@@ -7,8 +7,8 @@ import (
 	"strings"
 )
 
-// WorktreeHome resolves the worktree root directory: AGENTASK_WORKTREE_HOME if set,
-// otherwise AGENTASK_HOME. It errors only when neither is set.
+// WorktreeHome resolves the worktree root directory: ODONIAN_WORKTREE_HOME if set,
+// otherwise ODONIAN_HOME. It errors only when neither is set.
 //
 // The tmpfs durability check lives in EnsureDurableWorktreeHome, NOT here, on purpose:
 // a bounced item's wip/<iid> worktree must survive the rework loop in production, but
@@ -17,13 +17,13 @@ import (
 // consumer untestable. So the resolver stays pure; the fleet/harness calls the guard
 // once at startup.
 func WorktreeHome() (string, error) {
-	if path := os.Getenv("AGENTASK_WORKTREE_HOME"); path != "" {
+	if path := os.Getenv("ODONIAN_WORKTREE_HOME"); path != "" {
 		return path, nil
 	}
-	if path := os.Getenv("AGENTASK_HOME"); path != "" {
+	if path := os.Getenv("ODONIAN_HOME"); path != "" {
 		return path, nil
 	}
-	return "", fmt.Errorf("neither AGENTASK_WORKTREE_HOME nor AGENTASK_HOME is set")
+	return "", fmt.Errorf("neither ODONIAN_WORKTREE_HOME nor ODONIAN_HOME is set")
 }
 
 // EnsureDurableWorktreeHome verifies the resolved worktree home is on a durable

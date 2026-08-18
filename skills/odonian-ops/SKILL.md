@@ -1,17 +1,17 @@
 ---
-name: agentask-ops
-description: Use to diagnose and safely operate a live Agentask board — figure out why a task is
-  wedged and, only on the human's explicit instruction, remediate it via the agentask CLI
+name: odonian-ops
+description: Use to diagnose and safely operate a live Odonian board — figure out why a task is
+  wedged and, only on the human's explicit instruction, remediate it via the odonian CLI
   (transition, promote, archive). Read to diagnose freely; mutate only when told, verify the
   precondition before any irreversible action, never touch tokens. Triggers on "why is <task>
   stuck?", "unstick <task>", "sweep for zombie merge tasks", "this lease expired but didn't release",
   "anything wedged in review?", "promote <task>", "move <task> to <state>". For just *viewing* the
-  board, use agentask-board.
+  board, use odonian-board.
 ---
 
-# Agentask ops (diagnose · operate)
+# Odonian ops (diagnose · operate)
 
-The wrench for a live Agentask board: diagnose a wedged task and fix it. `agentask-board` is the
+The wrench for a live Odonian board: diagnose a wedged task and fix it. `odonian-board` is the
 dashboard (read-only); this skill is what you reach for when something on it is broken. It reads to
 diagnose, then — on the human's word — changes board state through tested CLI verbs.
 
@@ -26,11 +26,11 @@ ask — don't guess and don't act.
 
 ## Phase 0 — Configuration
 
-- `AGENTASK_URL` + `AGENTASK_TOKEN` in the environment; the CLI reads them. If missing, ask.
+- `ODONIAN_URL` + `ODONIAN_TOKEN` in the environment; the CLI reads them. If missing, ask.
 - **Never print, echo, or log a token value** — not the bearer token, not a forge token. Reference
   secrets by env var; never `cat`/`cut` a secrets file into output.
-- To *see* the board while diagnosing, use **`agentask-board`** (or its reads: `agentask projects`,
-  `agentask tasks --project <id>`, `agentask show <id>`). How to read state for diagnosis:
+- To *see* the board while diagnosing, use **`odonian-board`** (or its reads: `odonian projects`,
+  `odonian tasks --project <id>`, `odonian show <id>`). How to read state for diagnosis:
   `in_progress` + a past `lease_expires_at` = a stuck-task candidate; `review` + a climbing
   `review_round` = a possible reject loop; a non-`done` `kind=merge` task = check it didn't zombie.
 
@@ -44,7 +44,7 @@ guardrail.
 - **Symptom:** a `kind=merge` task sits `in_progress`; its parent/target task is already `done`.
 - **Check:** confirm the PR is actually merged — find the parent's `pr` link, then
   `gh pr view <pr-url> --json state,merged` must show it **MERGED**; confirm the parent is `done`.
-- **Action:** `agentask transition <merge-task-id> --to done --note "PR already merged; finalizing zombie merge task"`.
+- **Action:** `odonian transition <merge-task-id> --to done --note "PR already merged; finalizing zombie merge task"`.
 - **Guardrail:** only after the PR is confirmed merged. Never force a merge task to `done` on
   assumption — if the PR isn't merged, the merge genuinely didn't happen.
 
@@ -63,7 +63,7 @@ guardrail.
   — stranded, no agent finishing it.
 - **Check:** confirm the lease is genuinely expired and that no agent is actively working it (state
   hasn't advanced, no fresh heartbeat).
-- **Action:** `agentask transition <id> --to ready` so it becomes claimable again.
+- **Action:** `odonian transition <id> --to ready` so it becomes claimable again.
 - **Guardrail:** don't yank a task whose lease is still live — you'd race a working agent and double
   up the work.
 
@@ -82,7 +82,7 @@ guardrail.
 
 - **Symptom:** a task sits somewhere it shouldn't (e.g. `in_progress` long after its work merged, or
   `approved` that should have shipped).
-- **Check:** `agentask show <id>` — read its links, deps, and history; reconcile against reality
+- **Check:** `odonian show <id>` — read its links, deps, and history; reconcile against reality
   (the PR, the repo) before concluding it's stuck.
 - **Action:** propose the specific transition that reflects reality; execute only on instruction.
 - **Guardrail:** verify against the *real* artifact (PR/repo), not the board's stale view, before

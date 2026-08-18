@@ -1,4 +1,4 @@
-module github.com/boldfield/agentask
+module github.com/boldfield/odonian
 
 go 1.25.6
 

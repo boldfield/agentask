@@ -13,7 +13,7 @@ The crown jewel (DESIGN.md §4). `POST /tasks/{id}/claim` `{agent_id}`.
   guarded by: `state='ready'` AND lease free/expired AND no incomplete dependency
   (`NOT EXISTS` over `task_dep`).
 - `rowsAffected == 1` → 200 with the claimed task. `0` → 409.
-- Lease TTL from config (`AGENTASK_LEASE_TTL`, default e.g. 5m).
+- Lease TTL from config (`ODONIAN_LEASE_TTL`, default e.g. 5m).
 - Append a `claim` event in the same transaction (T04).
 
 ## Acceptance criteria
@@ -23,6 +23,6 @@ The crown jewel (DESIGN.md §4). `POST /tasks/{id}/claim` `{agent_id}`.
   that proves the design — it must be present and pass reliably.
 
 ## Result
-- PR URL: https://github.com/boldfield/agentask/pull/11
-- Branch: agentask/T09-atomic-claim
+- PR URL: https://github.com/boldfield/odonian/pull/11
+- Branch: odonian/T09-atomic-claim
 - Head SHA: 7dde39b

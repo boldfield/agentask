@@ -22,6 +22,6 @@ In `internal/store`:
 - Opening the same path twice (sequentially) works.
 
 ## Result
-- PR: https://github.com/boldfield/agentask/pull/3
-- Branch: agentask/T03-storage-layer
+- PR: https://github.com/boldfield/odonian/pull/3
+- Branch: odonian/T03-storage-layer
 - Head commit: 9ac3135

@@ -1,6 +1,6 @@
 # Feature spec — supersession closes the superseded attempt's pull request
 
-**Status:** board milestone (Agentask project). **Date:** 2026-08-06.
+**Status:** board milestone (Odonian project). **Date:** 2026-08-06.
 
 ## Problem
 
@@ -9,7 +9,7 @@ Escalation supersedes a task rather than reworking it in place.
 dependencies, resets `review_round` to 0, re-points dependents, and
 retires the old task as `superseded`. Because the working branch is
 derived from the task ID (`"mr/" + taskID[:8]`, see
-`cmd/agentask-tui/board.go`), every escalation generation gets a fresh
+`cmd/odonian-tui/board.go`), every escalation generation gets a fresh
 branch and therefore a fresh pull request.
 
 Nothing ever closes the previous generation's pull request.
@@ -150,7 +150,7 @@ pull requests**, all belonging to `superseded` tasks, all left OPEN:
 |---|---|
 | `opencrr/communityrapidresponse.net` | 16 |
 | `boldfield/email-triage` | 14 |
-| `boldfield/agentask` | 1 |
+| `boldfield/odonian` | 1 |
 | `boldfield/trade-log` | 1 |
 | `boldfield/reala.gent` | 1 |
 

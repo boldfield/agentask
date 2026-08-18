@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# sbx.sh — boot the WHOLE Agentask stack (server + worker/reviewer fleet) inside an `sbx` sandbox,
-# with ALL harness state under /tmp/agentask. It starts the agentask HTTP server (local SQLite DB,
+# sbx.sh — boot the WHOLE Odonian stack (server + worker/reviewer fleet) inside an `sbx` sandbox,
+# with ALL harness state under /tmp/odonian. It starts the odonian HTTP server (local SQLite DB,
 # fixed local token), then N implement workers + N reviewers via fleet.sh, draining the project you
 # point it at. Nested `claude -p` needs --allow-dangerously-skip-permissions alongside
 # --dangerously-skip-permissions inside a sandbox; it's passed via AGENT_CLAUDE_FLAGS (agent.sh).
@@ -15,7 +15,7 @@
 #   --project <uuid|all>   what the fleet drains (required unless --seed-demo). 'all' = pull_request multi.
 #   --repo <path>          local git repo the CLI commits into (required for local_commit / pull_request single).
 #   --seed-demo            create+use a throwaway local repo + project + board (no GitHub) — for a smoke test.
-#   --worktree-home <path> CLI per-task worktree root (local_commit; default /tmp/agentask/worktrees).
+#   --worktree-home <path> CLI per-task worktree root (local_commit; default /tmp/odonian/worktrees).
 #   --reviewer-model TIER  PIN reviewers to a model tier (default: empty = dynamic, i.e. review with the
 #                          task's own model — like the workers). Workers are always dynamic.
 #   common opts: --workers N (2)  --reviewers N (2)  --port P (8080)
@@ -74,23 +74,23 @@ done
 case "$DELIVERY_MODE" in pull_request|local_commit) ;; *) echo "delivery mode must be pull_request or local_commit" >&2; exit 1 ;; esac
 
 # --- fixed local config (never leaves the container) ---
-export AGENTASK_HOME=/tmp/agentask
+export ODONIAN_HOME=/tmp/odonian
 LOCAL_TOKEN="sbx-local-token"
-AGENTASK_URL="http://localhost:$PORT"
-DB_PATH="$AGENTASK_HOME/agentask.db"
-LOG_DIR="$AGENTASK_HOME/logs"
-SEED_REPO="$AGENTASK_HOME/repo"                 # the demo local repo (only with --seed-demo)
-SEED_ORIGIN="$AGENTASK_HOME/repo-origin.git"    # bare "origin" so origin/main resolves (demo only)
-WORKTREE_HOME="${WORKTREE_HOME_ARG:-$AGENTASK_HOME/worktrees}"  # CLI per-task worktrees (local_commit)
+ODONIAN_URL="http://localhost:$PORT"
+DB_PATH="$ODONIAN_HOME/odonian.db"
+LOG_DIR="$ODONIAN_HOME/logs"
+SEED_REPO="$ODONIAN_HOME/repo"                 # the demo local repo (only with --seed-demo)
+SEED_ORIGIN="$ODONIAN_HOME/repo-origin.git"    # bare "origin" so origin/main resolves (demo only)
+WORKTREE_HOME="${WORKTREE_HOME_ARG:-$ODONIAN_HOME/worktrees}"  # CLI per-task worktrees (local_commit)
 SERVER_LOG="$LOG_DIR/server.log"
 PROJECT_NAME="sbx-local"
-BIN_DIR="$AGENTASK_HOME/bin"                    # container-local build output — NEVER the mounted repo's bin/
-AGENTASK_BIN="$BIN_DIR/agentask"
+BIN_DIR="$ODONIAN_HOME/bin"                    # container-local build output — NEVER the mounted repo's bin/
+ODONIAN_BIN="$BIN_DIR/odonian"
 
-mkdir -p "$AGENTASK_HOME" "$LOG_DIR" "$BIN_DIR"
+mkdir -p "$ODONIAN_HOME" "$LOG_DIR" "$BIN_DIR"
 [ "$DELIVERY_MODE" = "local_commit" ] && mkdir -p "$WORKTREE_HOME"
 
-# Put our container-local build dir first on PATH — agent.sh/CLI call `agentask` by name. The
+# Put our container-local build dir first on PATH — agent.sh/CLI call `odonian` by name. The
 # mounted repo's bin/ is bind-mounted read-write at the same absolute path on host and container, so
 # a binary built on one side is the wrong architecture (or worse, gets clobbered) on the other; see
 # docs/features/sbx-agent-bootstrap.md gap #1. We build under the state directory instead and never
@@ -105,12 +105,12 @@ AUTH=(-H "Authorization: Bearer $LOCAL_TOKEN" -H "Content-Type: application/json
 
 # One pidfile per port records the running `sbx.sh start` PID, so `sbx.sh stop` can TERM it (which
 # fires its graceful trap: stop the fleet groups, then the server).
-PIDFILE="$AGENTASK_HOME/sbx-$PORT.pid"
+PIDFILE="$ODONIAN_HOME/sbx-$PORT.pid"
 
 # ============================== stop / status subcommands ==============================
 do_status() {
   local code
-  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$AGENTASK_URL/healthz" 2>/dev/null || echo 000)"
+  code="$(curl -s -o /dev/null -w '%{http_code}' --max-time 3 "$ODONIAN_URL/healthz" 2>/dev/null || echo 000)"
   if [ "$code" = "200" ]; then say "server: UP on :$PORT (/healthz 200)"; else say "server: DOWN on :$PORT"; fi
   if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE" 2>/dev/null)" 2>/dev/null; then
     say "sbx.sh: running (pid $(cat "$PIDFILE"))"
@@ -152,7 +152,7 @@ do_stop() {
   fi
   # Safety net: if a server we started is still answering AND nothing tracks it, leave it alone unless
   # it's clearly ours and orphaned. We only report; we never kill an untracked server blindly.
-  if curl -s -o /dev/null --max-time 3 "$AGENTASK_URL/healthz" 2>/dev/null; then
+  if curl -s -o /dev/null --max-time 3 "$ODONIAN_URL/healthz" 2>/dev/null; then
     say "note: a server still answers on :$PORT (another sbx.sh instance may be reusing it)."
   fi
 }
@@ -205,12 +205,12 @@ fi
 # but `go build` is incremental — a no-op rebuild after the first boot is a fraction of a second, not
 # a full compile — so unconditional rebuild is no slower in the common case and has no validation
 # logic of its own to get wrong.
-say "building agentask binary -> $AGENTASK_BIN…"
+say "building odonian binary -> $ODONIAN_BIN…"
 VERSION="$(cd "$REPO_ROOT" && git describe --tags --always --dirty 2>/dev/null)"
-( cd "$REPO_ROOT" && go build -ldflags "-X main.version=$VERSION" -o "$AGENTASK_BIN" ./cmd/agentask ) \
+( cd "$REPO_ROOT" && go build -ldflags "-X main.version=$VERSION" -o "$ODONIAN_BIN" ./cmd/odonian ) \
   >>"$LOG_DIR/build.log" 2>&1 || die "go build failed (see $LOG_DIR/build.log)"
-command -v agentask >/dev/null 2>&1 || die "agentask not on PATH after build"
-say "agentask: $(command -v agentask)"
+command -v odonian >/dev/null 2>&1 || die "odonian not on PATH after build"
+say "odonian: $(command -v odonian)"
 
 # --- preflight: the agent CLIs the fleet will actually dispatch ---
 # BOTH are required: the server allowlists gpt-5.5 and AGENT_CODEX_MODELS routes it through
@@ -268,8 +268,8 @@ say "codex: $(command -v codex)"
 # ============================== 2. handle a stale / bound port ==============================
 # If our server is already up on this port and healthy, reuse it; if something else holds the port, error.
 SERVER_PID=""
-if curl -fsS "$AGENTASK_URL/healthz" >/dev/null 2>&1; then
-  say "a healthy agentask already answers on :$PORT — reusing it (will NOT stop it on exit)"
+if curl -fsS "$ODONIAN_URL/healthz" >/dev/null 2>&1; then
+  say "a healthy odonian already answers on :$PORT — reusing it (will NOT stop it on exit)"
   REUSE_SERVER=1
 else
   REUSE_SERVER=0
@@ -280,18 +280,18 @@ fi
 
 # ============================== 3. start the server ==============================
 if [ "$REUSE_SERVER" -eq 0 ]; then
-  say "starting agentask server on :$PORT (db: $DB_PATH)…"
+  say "starting odonian server on :$PORT (db: $DB_PATH)…"
   # gpt-5.5 is allowlisted (review_models: ["opus","gpt-5.5"] validates) but deliberately left OUT
-  # of AGENTASK_ESCALATION_LADDER: it's a review-only model routed through codex exec (see
+  # of ODONIAN_ESCALATION_LADDER: it's a review-only model routed through codex exec (see
   # AGENT_CODEX_MODELS below), not an implementer, so it must never become an escalation target for
   # implement work. Thresholds/ladder mirror production (manifests repo) as of 2026-08-10.
-  AGENTASK_DB="$DB_PATH" \
-  AGENTASK_ADDR=":$PORT" \
-  AGENTASK_TOKEN="$LOCAL_TOKEN" \
-  AGENTASK_MODELS="haiku,sonnet,opus,fable,gpt-5.5" \
-  AGENTASK_ESCALATION_THRESHOLDS="haiku=3,sonnet=2,opus=2,fable=1" \
-  AGENTASK_ESCALATION_LADDER="haiku,sonnet,opus,fable" \
-    agentask server >>"$SERVER_LOG" 2>&1 &
+  ODONIAN_DB="$DB_PATH" \
+  ODONIAN_ADDR=":$PORT" \
+  ODONIAN_TOKEN="$LOCAL_TOKEN" \
+  ODONIAN_MODELS="haiku,sonnet,opus,fable,gpt-5.5" \
+  ODONIAN_ESCALATION_THRESHOLDS="haiku=3,sonnet=2,opus=2,fable=1" \
+  ODONIAN_ESCALATION_LADDER="haiku,sonnet,opus,fable" \
+    odonian server >>"$SERVER_LOG" 2>&1 &
   SERVER_PID=$!
 
   # Poll /healthz until 200 (or fail loudly).
@@ -301,7 +301,7 @@ if [ "$REUSE_SERVER" -eq 0 ]; then
     if ! kill -0 "$SERVER_PID" 2>/dev/null; then
       die "server process exited during startup (see $SERVER_LOG)"
     fi
-    if curl -fsS "$AGENTASK_URL/healthz" >/dev/null 2>&1; then ok=1; break; fi
+    if curl -fsS "$ODONIAN_URL/healthz" >/dev/null 2>&1; then ok=1; break; fi
     sleep 0.3
   done
   [ "$ok" -eq 1 ] || die "server did not become healthy within ~15s (see $SERVER_LOG)"
@@ -354,7 +354,7 @@ stop_all() {
   fi
   # Drop our pidfile only if it still points at us (a newer instance may have taken it over).
   [ -f "$PIDFILE" ] && [ "$(cat "$PIDFILE" 2>/dev/null)" = "$$" ] && rm -f "$PIDFILE"
-  say "done. state + logs under $AGENTASK_HOME (logs: $LOG_DIR)"
+  say "done. state + logs under $ODONIAN_HOME (logs: $LOG_DIR)"
 }
 trap 'stop_all; exit 0' INT TERM
 trap 'stop_all' EXIT
@@ -383,7 +383,7 @@ check:
 test:
 	@echo "test: ok"
 MK
-    printf '# sbx demo repo\n\nA throwaway local repo for the self-contained Agentask fleet.\n' > "$SEED_REPO/README.md"
+    printf '# sbx demo repo\n\nA throwaway local repo for the self-contained Odonian fleet.\n' > "$SEED_REPO/README.md"
     printf 'hello\n' > "$SEED_REPO/GREETINGS.md"
     git -C "$SEED_REPO" add -A
     git -C "$SEED_REPO" commit -q -m "seed: initial demo repo"
@@ -395,11 +395,11 @@ MK
   git -C "$SEED_REPO" fetch -q origin 2>/dev/null || true
 
   # 5. Ensure the demo project (idempotent by name).
-  PROJECT_ID="$(curl -fsS "${AUTH[@]}" "$AGENTASK_URL/projects" 2>/dev/null \
+  PROJECT_ID="$(curl -fsS "${AUTH[@]}" "$ODONIAN_URL/projects" 2>/dev/null \
     | jq -r --arg n "$PROJECT_NAME" '.[] | select(.name == $n) | .id' 2>/dev/null | head -1)"
   if [ -z "$PROJECT_ID" ] || [ "$PROJECT_ID" = "null" ]; then
     say "creating demo project '$PROJECT_NAME'…"
-    PROJECT_ID="$(curl -fsS "${AUTH[@]}" -X POST "$AGENTASK_URL/projects" \
+    PROJECT_ID="$(curl -fsS "${AUTH[@]}" -X POST "$ODONIAN_URL/projects" \
       -d "$(jq -n --arg name "$PROJECT_NAME" --arg repo "$SEED_REPO" '{name:$name, repo:$repo}')" \
       | jq -r '.id')"
   fi
@@ -413,7 +413,7 @@ else
   case "$PROJECT_ID" in
     all|ALL) say "fleet target: ALL projects (pull_request multi-project)" ;;
     *)
-      if curl -fsS "${AUTH[@]}" "$AGENTASK_URL/projects/$PROJECT_ID" >/dev/null 2>&1; then
+      if curl -fsS "${AUTH[@]}" "$ODONIAN_URL/projects/$PROJECT_ID" >/dev/null 2>&1; then
         say "fleet target: project $PROJECT_ID${FLEET_REPO:+  (repo: $FLEET_REPO)}"
       else
         say "WARNING: project $PROJECT_ID not found on the server yet — the fleet will idle until it exists"
@@ -422,20 +422,20 @@ else
 fi
 
 # ============================== 6. write the fleet env file ==============================
-# agent.sh reads AGENTASK_HOME from the ENVIRONMENT (before sourcing this file), so we also export it
+# agent.sh reads ODONIAN_HOME from the ENVIRONMENT (before sourcing this file), so we also export it
 # in this script and let fleet.sh/agent.sh inherit it. Everything else the fleet needs lives here.
-# AGENTASK_REPO / AGENTASK_WORKTREE_HOME are only meaningful for local_commit + pull_request single
+# ODONIAN_REPO / ODONIAN_WORKTREE_HOME are only meaningful for local_commit + pull_request single
 # mode; harmless (ignored) for pull_request multi-project.
-say "writing fleet env -> $AGENTASK_HOME/env"
-cat > "$AGENTASK_HOME/env" <<EOF
+say "writing fleet env -> $ODONIAN_HOME/env"
+cat > "$ODONIAN_HOME/env" <<EOF
 # Generated by harness/sbx.sh — sandbox fleet config. Do not commit.
-export AGENTASK_URL="$AGENTASK_URL"
-export AGENTASK_TOKEN="$LOCAL_TOKEN"
-export AGENTASK_PROJECT="$PROJECT_ID"
-export AGENTASK_HOME="$AGENTASK_HOME"
-export AGENTASK_REPO="$FLEET_REPO"
-export AGENTASK_WORKTREE_HOME="$WORKTREE_HOME"
-export AGENTASK_DELIVERY_MODE="$DELIVERY_MODE"
+export ODONIAN_URL="$ODONIAN_URL"
+export ODONIAN_TOKEN="$LOCAL_TOKEN"
+export ODONIAN_PROJECT="$PROJECT_ID"
+export ODONIAN_HOME="$ODONIAN_HOME"
+export ODONIAN_REPO="$FLEET_REPO"
+export ODONIAN_WORKTREE_HOME="$WORKTREE_HOME"
+export ODONIAN_DELIVERY_MODE="$DELIVERY_MODE"
 # Nested claude -p inside a sandbox needs this alongside --dangerously-skip-permissions:
 export AGENT_CLAUDE_FLAGS="--allow-dangerously-skip-permissions"
 # agent.sh routes any dispatch whose model is in this comma-separated list through codex exec
@@ -453,15 +453,15 @@ EOF
 # the cluster deployments use (deploy/fleet/worker-deployment.yaml, deploy/fleet/reviewer-deployment.yaml)
 # — a long-lived `claude setup-token` token, not an API key.
 if [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ]; then
-  echo "export CLAUDE_CODE_OAUTH_TOKEN=\"$CLAUDE_CODE_OAUTH_TOKEN\"" >> "$AGENTASK_HOME/env"
+  echo "export CLAUDE_CODE_OAUTH_TOKEN=\"$CLAUDE_CODE_OAUTH_TOKEN\"" >> "$ODONIAN_HOME/env"
 fi
 
 # Export for fleet.sh/agent.sh children of THIS process too (env file is the source of truth, but
-# AGENTASK_HOME in particular must be in the environment before agent.sh sources the env file).
-export AGENTASK_URL AGENTASK_TOKEN AGENTASK_WORKTREE_HOME
-export AGENTASK_REPO="$FLEET_REPO"
-export AGENTASK_PROJECT="$PROJECT_ID"
-export AGENTASK_DELIVERY_MODE="$DELIVERY_MODE"
+# ODONIAN_HOME in particular must be in the environment before agent.sh sources the env file).
+export ODONIAN_URL ODONIAN_TOKEN ODONIAN_WORKTREE_HOME
+export ODONIAN_REPO="$FLEET_REPO"
+export ODONIAN_PROJECT="$PROJECT_ID"
+export ODONIAN_DELIVERY_MODE="$DELIVERY_MODE"
 export AGENT_CLAUDE_FLAGS="--allow-dangerously-skip-permissions"
 export AGENT_CODEX_MODELS="gpt-5.5"
 [ -n "${CLAUDE_CODE_OAUTH_TOKEN:-}" ] && export CLAUDE_CODE_OAUTH_TOKEN
@@ -501,12 +501,12 @@ set +m
 
 cat <<EOF
 [sbx] ──────────────────────────────────────────────────────────────────────
-[sbx] Agentask fleet is UP.
-[sbx]   server     : $AGENTASK_URL   (token: $LOCAL_TOKEN)
+[sbx] Odonian fleet is UP.
+[sbx]   server     : $ODONIAN_URL   (token: $LOCAL_TOKEN)
 [sbx]   project    : $PROJECT_ID${FLEET_REPO:+   (repo: $FLEET_REPO)}
 [sbx]   mode       : $DELIVERY_MODE
 [sbx]   fleet      : $WORKERS worker(s) [dynamic], $REVIEWERS reviewer(s) [model: $RMODEL_LABEL]
-[sbx]   state/logs : $AGENTASK_HOME  /  $LOG_DIR
+[sbx]   state/logs : $ODONIAN_HOME  /  $LOG_DIR
 [sbx]   follow     : tail -f $LOG_DIR/workers.log $LOG_DIR/reviewers.log
 EOF
 if [ "$SEED_DEMO" -eq 1 ]; then
@@ -515,11 +515,11 @@ cat <<EOF
 [sbx] Demo board — put a task on it (a worker then claims + dispatches claude).
 [sbx] NOTE: tasks need a document_id, so create a document first:
 [sbx]   A=(-H "Authorization: Bearer $LOCAL_TOKEN" -H "Content-Type: application/json")
-[sbx]   DID=\$(curl -s "\${A[@]}" -X POST $AGENTASK_URL/projects/$PROJECT_ID/documents \\
+[sbx]   DID=\$(curl -s "\${A[@]}" -X POST $ODONIAN_URL/projects/$PROJECT_ID/documents \\
 [sbx]     -d '{"kind":"feature_spec","title":"demo","ref":"README.md"}' | jq -r '.id')
-[sbx]   TID=\$(curl -s "\${A[@]}" -X POST $AGENTASK_URL/projects/$PROJECT_ID/tasks \\
+[sbx]   TID=\$(curl -s "\${A[@]}" -X POST $ODONIAN_URL/projects/$PROJECT_ID/tasks \\
 [sbx]     -d "\$(jq -n --arg d "\$DID" '[{title:"demo",spec:"Append a line to GREETINGS.md",model:"haiku",document_id:\$d}]')" | jq -r '.[0].id')
-[sbx]   curl -s "\${A[@]}" -X POST $AGENTASK_URL/tasks/\$TID/promote
+[sbx]   curl -s "\${A[@]}" -X POST $ODONIAN_URL/tasks/\$TID/promote
 EOF
 fi
 cat <<EOF

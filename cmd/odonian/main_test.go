@@ -15,14 +15,14 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/boldfield/agentask/internal/forge"
-	"github.com/boldfield/agentask/internal/tuiclient"
+	"github.com/boldfield/odonian/internal/forge"
+	"github.com/boldfield/odonian/internal/tuiclient"
 )
 
 func TestRunNoArgs(t *testing.T) {
-	err := run([]string{"agentask"})
+	err := run([]string{"odonian"})
 	if err != nil {
-		t.Errorf("expected no error for bare agentask, got: %v", err)
+		t.Errorf("expected no error for bare odonian, got: %v", err)
 	}
 }
 
@@ -31,9 +31,9 @@ func TestRunHelp(t *testing.T) {
 		name string
 		args []string
 	}{
-		{"--help", []string{"agentask", "--help"}},
-		{"-h", []string{"agentask", "-h"}},
-		{"help", []string{"agentask", "help"}},
+		{"--help", []string{"odonian", "--help"}},
+		{"-h", []string{"odonian", "-h"}},
+		{"help", []string{"odonian", "help"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -57,7 +57,7 @@ func TestRunUnknownCommand(t *testing.T) {
 	r, w, _ := os.Pipe()
 	os.Stderr = w
 
-	err := run([]string{"agentask", "invalid"})
+	err := run([]string{"odonian", "invalid"})
 
 	w.Close()
 	os.Stderr = stderrBackup
@@ -78,7 +78,7 @@ func TestRunUnknownCommand(t *testing.T) {
 		t.Errorf("expected stderr to contain 'error: unknown command', got: %s", stderrOutput)
 	}
 
-	if !strings.Contains(stderrOutput, "usage: agentask") {
+	if !strings.Contains(stderrOutput, "usage: odonian") {
 		t.Errorf("expected stderr to contain usage, got: %s", stderrOutput)
 	}
 
@@ -183,10 +183,10 @@ func TestExecuteProjectsMissingURL(t *testing.T) {
 	buf := &bytes.Buffer{}
 	err := executeProjects(context.Background(), "", "test-token", false, []string{}, buf)
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+		t.Fatal("expected error for missing ODONIAN_URL, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_URL") {
-		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_URL") {
+		t.Errorf("expected error to mention ODONIAN_URL, got: %v", err)
 	}
 }
 
@@ -194,10 +194,10 @@ func TestExecuteProjectsMissingToken(t *testing.T) {
 	buf := &bytes.Buffer{}
 	err := executeProjects(context.Background(), "http://localhost:8080", "", false, []string{}, buf)
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+		t.Fatal("expected error for missing ODONIAN_TOKEN, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
-		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_TOKEN") {
+		t.Errorf("expected error to mention ODONIAN_TOKEN, got: %v", err)
 	}
 }
 
@@ -326,7 +326,7 @@ func TestExecuteShowTable(t *testing.T) {
 				Spec:         "Test spec",
 				TargetTaskID: nil,
 				Links: []tuiclient.TaskLink{
-					{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/102"},
+					{Kind: "pr", Value: "https://github.com/boldfield/odonian/pull/102"},
 				},
 			})
 		}
@@ -361,7 +361,7 @@ func TestExecuteShowTable(t *testing.T) {
 	if !strings.Contains(output, "Links:") {
 		t.Errorf("expected 'Links:' in output, got: %s", output)
 	}
-	if !strings.Contains(output, "pr: https://github.com/boldfield/agentask/pull/102") {
+	if !strings.Contains(output, "pr: https://github.com/boldfield/odonian/pull/102") {
 		t.Errorf("expected link in output, got: %s", output)
 	}
 }
@@ -417,10 +417,10 @@ func TestExecuteShowMissingURL(t *testing.T) {
 	buf := &bytes.Buffer{}
 	err := executeShow(context.Background(), "", "test-token", false, []string{"task-1"}, buf)
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+		t.Fatal("expected error for missing ODONIAN_URL, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_URL") {
-		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_URL") {
+		t.Errorf("expected error to mention ODONIAN_URL, got: %v", err)
 	}
 }
 
@@ -428,10 +428,10 @@ func TestExecuteShowMissingToken(t *testing.T) {
 	buf := &bytes.Buffer{}
 	err := executeShow(context.Background(), "http://localhost:8080", "", false, []string{"task-1"}, buf)
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+		t.Fatal("expected error for missing ODONIAN_TOKEN, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
-		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_TOKEN") {
+		t.Errorf("expected error to mention ODONIAN_TOKEN, got: %v", err)
 	}
 }
 
@@ -637,11 +637,11 @@ func TestExecuteClaimMissingURL(t *testing.T) {
 
 	err := executeClaim(context.Background(), "", "test-token", []string{"task123"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+		t.Fatal("expected error for missing ODONIAN_URL, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "AGENTASK_URL") {
-		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_URL") {
+		t.Errorf("expected error to mention ODONIAN_URL, got: %v", err)
 	}
 }
 
@@ -925,9 +925,9 @@ func TestExecuteSubmitMissingAgent(t *testing.T) {
 }
 
 func TestExecuteSubmitLocalCommitFirstSubmit(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+	t.Setenv("ODONIAN_WORKTREE_HOME", tmpDir)
 
 	tmpRepo := t.TempDir()
 	initGitRepo(t, tmpRepo)
@@ -1013,8 +1013,8 @@ func TestExecuteSubmitLocalCommitFirstSubmit(t *testing.T) {
 // and the reviewer can never record a verdict, wedging every implement task in `review`. Note the
 // worktree dir is deliberately never created here — that is the whole point of the regression.
 func TestExecuteSubmitLocalCommitReviewKindSkipsCommit(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
-	t.Setenv("AGENTASK_WORKTREE_HOME", t.TempDir())
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_WORKTREE_HOME", t.TempDir())
 	t.Setenv("AGENT_ID", "test-reviewer")
 
 	var gotLinks int
@@ -1065,9 +1065,9 @@ func TestExecuteSubmitLocalCommitReviewKindSkipsCommit(t *testing.T) {
 // the base with an unchanged tree. CommitAll errors on an empty commit, so local_commit mode must
 // bypass the commit and attach a no_op link, exactly as pull_request mode does.
 func TestExecuteSubmitLocalCommitNoOp(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+	t.Setenv("ODONIAN_WORKTREE_HOME", tmpDir)
 	t.Setenv("AGENT_ID", "test-agent")
 
 	// A real worktree with a CLEAN tree — there is genuinely nothing to commit.
@@ -1115,9 +1115,9 @@ func TestExecuteSubmitLocalCommitNoOp(t *testing.T) {
 }
 
 func TestExecuteSubmitLocalCommitRework(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+	t.Setenv("ODONIAN_WORKTREE_HOME", tmpDir)
 
 	tmpRepo := t.TempDir()
 	initGitRepo(t, tmpRepo)
@@ -1221,9 +1221,9 @@ func TestExecuteSubmitLocalCommitRework(t *testing.T) {
 }
 
 func TestExecuteSubmitLocalCommitWithMessageOverride(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+	t.Setenv("ODONIAN_WORKTREE_HOME", tmpDir)
 
 	tmpRepo := t.TempDir()
 	initGitRepo(t, tmpRepo)
@@ -1284,9 +1284,9 @@ func TestExecuteSubmitLocalCommitWithMessageOverride(t *testing.T) {
 func TestExecuteSubmitLocalCommitStackedItems(t *testing.T) {
 	// Test: item B stacked on item A (same document) should create NEW commit, not amend item A's commit
 	// Both items have the same slug since they're on the same document
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+	t.Setenv("ODONIAN_WORKTREE_HOME", tmpDir)
 
 	tmpRepo := t.TempDir()
 	initGitRepo(t, tmpRepo)
@@ -1545,10 +1545,10 @@ func TestExecuteTasksMissingURL(t *testing.T) {
 	buf := &bytes.Buffer{}
 	err := executeTasks(context.Background(), "", "test-token", false, []string{"--project", "proj-1"}, buf)
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+		t.Fatal("expected error for missing ODONIAN_URL, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_URL") {
-		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_URL") {
+		t.Errorf("expected error to mention ODONIAN_URL, got: %v", err)
 	}
 }
 
@@ -1556,10 +1556,10 @@ func TestExecuteTasksMissingToken(t *testing.T) {
 	buf := &bytes.Buffer{}
 	err := executeTasks(context.Background(), "http://localhost:8080", "", false, []string{"--project", "proj-1"}, buf)
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+		t.Fatal("expected error for missing ODONIAN_TOKEN, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
-		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_TOKEN") {
+		t.Errorf("expected error to mention ODONIAN_TOKEN, got: %v", err)
 	}
 }
 
@@ -1758,11 +1758,11 @@ func TestExecuteHeartbeatMissingURL(t *testing.T) {
 
 	err := executeHeartbeat(context.Background(), "", "test-token", []string{"task123"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+		t.Fatal("expected error for missing ODONIAN_URL, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "AGENTASK_URL") {
-		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_URL") {
+		t.Errorf("expected error to mention ODONIAN_URL, got: %v", err)
 	}
 }
 
@@ -1775,11 +1775,11 @@ func TestExecuteHeartbeatMissingToken(t *testing.T) {
 
 	err := executeHeartbeat(context.Background(), "http://localhost:8080", "", []string{"task123"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+		t.Fatal("expected error for missing ODONIAN_TOKEN, got nil")
 	}
 
-	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
-		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_TOKEN") {
+		t.Errorf("expected error to mention ODONIAN_TOKEN, got: %v", err)
 	}
 }
 
@@ -2071,20 +2071,20 @@ func TestExecutePromoteMissingTaskID(t *testing.T) {
 func TestExecutePromoteMissingURL(t *testing.T) {
 	err := executePromote(context.Background(), "", "test-token", []string{"task-123"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+		t.Fatal("expected error for missing ODONIAN_URL, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_URL") {
-		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_URL") {
+		t.Errorf("expected error to mention ODONIAN_URL, got: %v", err)
 	}
 }
 
 func TestExecutePromoteMissingToken(t *testing.T) {
 	err := executePromote(context.Background(), "http://localhost:8080", "", []string{"task-123"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+		t.Fatal("expected error for missing ODONIAN_TOKEN, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
-		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_TOKEN") {
+		t.Errorf("expected error to mention ODONIAN_TOKEN, got: %v", err)
 	}
 }
 
@@ -2287,11 +2287,11 @@ func TestParsePRURL(t *testing.T) {
 		wantNumber int
 		wantErr    bool
 	}{
-		{"valid github url", "https://github.com/boldfield/agentask/pull/174", "boldfield", "agentask", 174, false},
-		{"valid with trailing slash", "https://github.com/boldfield/agentask/pull/174/", "boldfield", "agentask", 174, false},
-		{"invalid not github", "https://gitlab.com/boldfield/agentask/pull/174", "", "", 0, true},
-		{"invalid path", "https://github.com/boldfield/agentask", "", "", 0, true},
-		{"invalid pr number", "https://github.com/boldfield/agentask/pull/abc", "", "", 0, true},
+		{"valid github url", "https://github.com/boldfield/odonian/pull/174", "boldfield", "odonian", 174, false},
+		{"valid with trailing slash", "https://github.com/boldfield/odonian/pull/174/", "boldfield", "odonian", 174, false},
+		{"invalid not github", "https://gitlab.com/boldfield/odonian/pull/174", "", "", 0, true},
+		{"invalid path", "https://github.com/boldfield/odonian", "", "", 0, true},
+		{"invalid pr number", "https://github.com/boldfield/odonian/pull/abc", "", "", 0, true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -2330,7 +2330,7 @@ func TestExecuteMergeSuccess(t *testing.T) {
 	forge.GitHubBaseURL = forgeServer.URL
 	t.Cleanup(func() { forge.GitHubBaseURL = oldBaseURL })
 
-	// Create a mock agentask API server
+	// Create a mock odonian API server
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/tasks/") {
 			if strings.HasSuffix(r.URL.Path, "/merge-123") {
@@ -2347,7 +2347,7 @@ func TestExecuteMergeSuccess(t *testing.T) {
 					State:      "approved",
 					AgentMerge: true,
 					Links: []tuiclient.TaskLink{
-						{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/174"},
+						{Kind: "pr", Value: "https://github.com/boldfield/odonian/pull/174"},
 					},
 				})
 			}
@@ -2379,7 +2379,7 @@ func TestExecuteMergeForgeFails(t *testing.T) {
 	forge.GitHubBaseURL = forgeServer.URL
 	t.Cleanup(func() { forge.GitHubBaseURL = oldBaseURL })
 
-	// Create a mock agentask API server
+	// Create a mock odonian API server
 	apiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/tasks/") {
 			if strings.HasSuffix(r.URL.Path, "/merge-123") {
@@ -2394,7 +2394,7 @@ func TestExecuteMergeForgeFails(t *testing.T) {
 					State:      "approved",
 					AgentMerge: true,
 					Links: []tuiclient.TaskLink{
-						{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/174"},
+						{Kind: "pr", Value: "https://github.com/boldfield/odonian/pull/174"},
 					},
 				})
 			}
@@ -2488,7 +2488,7 @@ func TestExecuteMergeFinalizesAfterPartialRun(t *testing.T) {
 				State:      "done", // prior run already merged + finalized the parent
 				AgentMerge: true,
 				Links: []tuiclient.TaskLink{
-					{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/174"},
+					{Kind: "pr", Value: "https://github.com/boldfield/odonian/pull/174"},
 				},
 			})
 		} else if r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/transition") {
@@ -2524,7 +2524,7 @@ func TestExecuteDiffWithPR(t *testing.T) {
 				ID:    "task-1",
 				State: "in_progress",
 				Links: []tuiclient.TaskLink{
-					{Kind: "pr", Value: "https://github.com/boldfield/agentask/pull/123"},
+					{Kind: "pr", Value: "https://github.com/boldfield/odonian/pull/123"},
 				},
 			})
 		}
@@ -2538,7 +2538,7 @@ func TestExecuteDiffWithPR(t *testing.T) {
 	}
 
 	output := buf.String()
-	if !strings.Contains(output, "https://github.com/boldfield/agentask/pull/123") {
+	if !strings.Contains(output, "https://github.com/boldfield/odonian/pull/123") {
 		t.Errorf("expected PR URL in output, got: %s", output)
 	}
 }
@@ -2581,10 +2581,10 @@ func TestExecuteDiffMissingURL(t *testing.T) {
 	buf := &bytes.Buffer{}
 	err := executeDiff(context.Background(), "", "test-token", []string{"task-1"}, buf)
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+		t.Fatal("expected error for missing ODONIAN_URL, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_URL") {
-		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_URL") {
+		t.Errorf("expected error to mention ODONIAN_URL, got: %v", err)
 	}
 }
 
@@ -2592,10 +2592,10 @@ func TestExecuteDiffMissingToken(t *testing.T) {
 	buf := &bytes.Buffer{}
 	err := executeDiff(context.Background(), "http://localhost:8080", "", []string{"task-1"}, buf)
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+		t.Fatal("expected error for missing ODONIAN_TOKEN, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
-		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_TOKEN") {
+		t.Errorf("expected error to mention ODONIAN_TOKEN, got: %v", err)
 	}
 }
 
@@ -2655,9 +2655,9 @@ func TestExecuteDiffLocalCommitBaseDiff(t *testing.T) {
 	defer server.Close()
 
 	// Set up environment for local_commit mode
-	oldMode := os.Getenv("AGENTASK_DELIVERY_MODE")
-	t.Cleanup(func() { os.Setenv("AGENTASK_DELIVERY_MODE", oldMode) })
-	os.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	oldMode := os.Getenv("ODONIAN_DELIVERY_MODE")
+	t.Cleanup(func() { os.Setenv("ODONIAN_DELIVERY_MODE", oldMode) })
+	os.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 
 	buf := &bytes.Buffer{}
 	err = executeDiff(context.Background(), server.URL, "test-token", []string{"--repo", tmpDir, "task-1"}, buf)
@@ -2728,9 +2728,9 @@ func TestExecuteDiffLocalCommitFull(t *testing.T) {
 	defer server.Close()
 
 	// Set up environment for local_commit mode
-	oldMode := os.Getenv("AGENTASK_DELIVERY_MODE")
-	t.Cleanup(func() { os.Setenv("AGENTASK_DELIVERY_MODE", oldMode) })
-	os.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	oldMode := os.Getenv("ODONIAN_DELIVERY_MODE")
+	t.Cleanup(func() { os.Setenv("ODONIAN_DELIVERY_MODE", oldMode) })
+	os.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 
 	buf := &bytes.Buffer{}
 	err = executeDiff(context.Background(), server.URL, "test-token", []string{"--repo", tmpDir, "--full", "task-1"}, buf)
@@ -2759,9 +2759,9 @@ func TestExecuteDiffLocalCommitMissingCommitLink(t *testing.T) {
 	defer server.Close()
 
 	// Set up environment for local_commit mode
-	oldMode := os.Getenv("AGENTASK_DELIVERY_MODE")
-	t.Cleanup(func() { os.Setenv("AGENTASK_DELIVERY_MODE", oldMode) })
-	os.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	oldMode := os.Getenv("ODONIAN_DELIVERY_MODE")
+	t.Cleanup(func() { os.Setenv("ODONIAN_DELIVERY_MODE", oldMode) })
+	os.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 
 	buf := &bytes.Buffer{}
 	err := executeDiff(context.Background(), server.URL, "test-token", []string{"--repo", "/tmp", "task-1"}, buf)
@@ -2834,20 +2834,20 @@ func TestExecuteApproveMissingTaskID(t *testing.T) {
 func TestExecuteApproveMissingURL(t *testing.T) {
 	err := executeApprove(context.Background(), "", "test-token", []string{"task-123"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+		t.Fatal("expected error for missing ODONIAN_URL, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_URL") {
-		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_URL") {
+		t.Errorf("expected error to mention ODONIAN_URL, got: %v", err)
 	}
 }
 
 func TestExecuteApproveMissingToken(t *testing.T) {
 	err := executeApprove(context.Background(), "http://localhost:8080", "", []string{"task-123"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+		t.Fatal("expected error for missing ODONIAN_TOKEN, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
-		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_TOKEN") {
+		t.Errorf("expected error to mention ODONIAN_TOKEN, got: %v", err)
 	}
 }
 
@@ -2978,20 +2978,20 @@ func TestExecuteRejectMissingTaskID(t *testing.T) {
 func TestExecuteRejectMissingURL(t *testing.T) {
 	err := executeReject(context.Background(), "", "test-token", []string{"task-123", "--note", "test"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+		t.Fatal("expected error for missing ODONIAN_URL, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_URL") {
-		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_URL") {
+		t.Errorf("expected error to mention ODONIAN_URL, got: %v", err)
 	}
 }
 
 func TestExecuteRejectMissingToken(t *testing.T) {
 	err := executeReject(context.Background(), "http://localhost:8080", "", []string{"task-123", "--note", "test"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+		t.Fatal("expected error for missing ODONIAN_TOKEN, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
-		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_TOKEN") {
+		t.Errorf("expected error to mention ODONIAN_TOKEN, got: %v", err)
 	}
 }
 
@@ -3014,10 +3014,10 @@ func TestExecuteRejectServerError(t *testing.T) {
 }
 
 func TestExecuteRejectAbandonLocalCommit(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
-	t.Setenv("AGENTASK_SKIP_PATH_VALIDATION", "1")
+	t.Setenv("ODONIAN_WORKTREE_HOME", tmpDir)
+	t.Setenv("ODONIAN_SKIP_PATH_VALIDATION", "1")
 
 	// Create a temporary git repo with worktree and branches
 	repoDir := t.TempDir()
@@ -3122,7 +3122,7 @@ func TestExecuteRejectAbandonLocalCommit(t *testing.T) {
 
 func TestExecuteRejectAbandonPullRequest(t *testing.T) {
 	// In pull_request mode, --abandon should transition to failed but skip cleanup
-	t.Setenv("AGENTASK_DELIVERY_MODE", "pull_request")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "pull_request")
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
@@ -3161,10 +3161,10 @@ func TestExecuteRejectAbandonPullRequest(t *testing.T) {
 }
 
 func TestExecuteRejectReworkPreservesWorktree(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
-	t.Setenv("AGENTASK_SKIP_PATH_VALIDATION", "1")
+	t.Setenv("ODONIAN_WORKTREE_HOME", tmpDir)
+	t.Setenv("ODONIAN_SKIP_PATH_VALIDATION", "1")
 
 	// Create a temporary git repo with worktree and branches
 	repoDir := t.TempDir()
@@ -3257,9 +3257,9 @@ func TestExecuteRejectReworkPreservesWorktree(t *testing.T) {
 }
 
 func TestExecuteApproveLocalCommitSuccess(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+	t.Setenv("ODONIAN_WORKTREE_HOME", tmpDir)
 
 	// Create main repo
 	mainRepo := t.TempDir()
@@ -3346,9 +3346,9 @@ func TestExecuteApproveLocalCommitSuccess(t *testing.T) {
 }
 
 func TestExecuteApproveLocalCommitFootgun(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+	t.Setenv("ODONIAN_WORKTREE_HOME", tmpDir)
 
 	// Create main repo
 	mainRepo := t.TempDir()
@@ -3432,9 +3432,9 @@ func TestExecuteApproveLocalCommitFootgun(t *testing.T) {
 }
 
 func TestExecuteApproveFreezeOnly(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	tmpDir := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", tmpDir)
+	t.Setenv("ODONIAN_WORKTREE_HOME", tmpDir)
 
 	// Create main repo
 	mainRepo := t.TempDir()
@@ -3547,7 +3547,7 @@ func setupRepoForWtEnsure(t *testing.T) string {
 }
 
 func TestExecuteWtEnsurePullRequestMode(t *testing.T) {
-	// Don't set AGENTASK_DELIVERY_MODE, defaults to pull_request
+	// Don't set ODONIAN_DELIVERY_MODE, defaults to pull_request
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(tuiclient.TaskDetail{ID: "task-123", Title: "Test Task"})
@@ -3564,10 +3564,10 @@ func TestExecuteWtEnsurePullRequestMode(t *testing.T) {
 }
 
 func TestExecuteWtEnsureLocalCommitMode(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	repoDir := setupRepoForWtEnsure(t)
 	wtHome := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", wtHome)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
@@ -3605,10 +3605,10 @@ func TestExecuteWtEnsureLocalCommitMode(t *testing.T) {
 }
 
 func TestExecuteWtEnsureIdempotent(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	repoDir := setupRepoForWtEnsure(t)
 	wtHome := t.TempDir()
-	t.Setenv("AGENTASK_WORKTREE_HOME", wtHome)
+	t.Setenv("ODONIAN_WORKTREE_HOME", wtHome)
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/tasks/") && r.Method == http.MethodGet {
@@ -3635,7 +3635,7 @@ func TestExecuteWtEnsureIdempotent(t *testing.T) {
 }
 
 func TestExecuteWtEnsureMissingTaskID(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	}))
@@ -3651,8 +3651,8 @@ func TestExecuteWtEnsureMissingTaskID(t *testing.T) {
 }
 
 func TestExecuteWtEnsureMissingRepo(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
-	t.Setenv("AGENTASK_REPO", "")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_REPO", "")
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		json.NewEncoder(w).Encode(tuiclient.TaskDetail{ID: "task-123", Title: "Test Task"})
@@ -3663,31 +3663,31 @@ func TestExecuteWtEnsureMissingRepo(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error for missing repo, got nil")
 	}
-	// Error should mention --repo or AGENTASK_REPO requirement
-	if !strings.Contains(err.Error(), "--repo") && !strings.Contains(err.Error(), "AGENTASK_REPO") {
-		t.Errorf("expected error to mention '--repo' or 'AGENTASK_REPO', got: %v", err)
+	// Error should mention --repo or ODONIAN_REPO requirement
+	if !strings.Contains(err.Error(), "--repo") && !strings.Contains(err.Error(), "ODONIAN_REPO") {
+		t.Errorf("expected error to mention '--repo' or 'ODONIAN_REPO', got: %v", err)
 	}
 }
 
 func TestExecuteWtEnsureMissingURL(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	err := executeWtEnsure(context.Background(), "", "test-token", []string{"task-123", "--repo", "/tmp/repo"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_URL, got nil")
+		t.Fatal("expected error for missing ODONIAN_URL, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_URL") {
-		t.Errorf("expected error to mention AGENTASK_URL, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_URL") {
+		t.Errorf("expected error to mention ODONIAN_URL, got: %v", err)
 	}
 }
 
 func TestExecuteWtEnsureMissingToken(t *testing.T) {
-	t.Setenv("AGENTASK_DELIVERY_MODE", "local_commit")
+	t.Setenv("ODONIAN_DELIVERY_MODE", "local_commit")
 	err := executeWtEnsure(context.Background(), "http://localhost:8080", "", []string{"task-123", "--repo", "/tmp/repo"})
 	if err == nil {
-		t.Fatal("expected error for missing AGENTASK_TOKEN, got nil")
+		t.Fatal("expected error for missing ODONIAN_TOKEN, got nil")
 	}
-	if !strings.Contains(err.Error(), "AGENTASK_TOKEN") {
-		t.Errorf("expected error to mention AGENTASK_TOKEN, got: %v", err)
+	if !strings.Contains(err.Error(), "ODONIAN_TOKEN") {
+		t.Errorf("expected error to mention ODONIAN_TOKEN, got: %v", err)
 	}
 }
 

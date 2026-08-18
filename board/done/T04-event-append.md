@@ -21,8 +21,8 @@ Append-only event log per DESIGN.md §2 (`Event` is the spine).
 
 ## Result
 
-PR: https://github.com/boldfield/agentask/pull/5
-Branch: agentask/T04-event-append
+PR: https://github.com/boldfield/odonian/pull/5
+Branch: odonian/T04-event-append
 Head SHA: a85d7c4
 
 ### Acceptance criteria met:

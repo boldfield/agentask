@@ -14,9 +14,9 @@ func TestLoadConfigWithEnv(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	// Set environment variables
-	t.Setenv("AGENTASK_URL", "http://localhost:8080")
-	t.Setenv("AGENTASK_TOKEN", "env-token")
-	t.Setenv("AGENTASK_ACTOR", "test-user")
+	t.Setenv("ODONIAN_URL", "http://localhost:8080")
+	t.Setenv("ODONIAN_TOKEN", "env-token")
+	t.Setenv("ODONIAN_ACTOR", "test-user")
 
 	cfg, err := LoadConfig("", "", "")
 	if err != nil {
@@ -45,8 +45,8 @@ func TestLoadConfigWithFlags(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	// Set environment variables
-	t.Setenv("AGENTASK_URL", "http://localhost:8080")
-	t.Setenv("AGENTASK_TOKEN", "env-token")
+	t.Setenv("ODONIAN_URL", "http://localhost:8080")
+	t.Setenv("ODONIAN_TOKEN", "env-token")
 
 	// Flags should override env
 	cfg, err := LoadConfig("http://flagserver:9000", "flag-token", "flag-user")
@@ -72,16 +72,16 @@ func TestLoadConfigMissingRequired(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	// Clear environment
-	t.Setenv("AGENTASK_URL", "")
-	t.Setenv("AGENTASK_TOKEN", "")
-	t.Setenv("AGENTASK_ACTOR", "")
+	t.Setenv("ODONIAN_URL", "")
+	t.Setenv("ODONIAN_TOKEN", "")
+	t.Setenv("ODONIAN_ACTOR", "")
 
 	_, err := LoadConfig("", "", "")
 	if err == nil {
 		t.Fatal("expected error for missing URL")
 	}
 
-	if err.Error() != "missing AGENTASK_URL (set via config file, AGENTASK_URL env, or --url flag)" {
+	if err.Error() != "missing ODONIAN_URL (set via config file, ODONIAN_URL env, or --url flag)" {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -91,16 +91,16 @@ func TestLoadConfigMissingToken(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	// Clear environment and set only URL
-	t.Setenv("AGENTASK_URL", "http://localhost:8080")
-	t.Setenv("AGENTASK_TOKEN", "")
-	t.Setenv("AGENTASK_ACTOR", "")
+	t.Setenv("ODONIAN_URL", "http://localhost:8080")
+	t.Setenv("ODONIAN_TOKEN", "")
+	t.Setenv("ODONIAN_ACTOR", "")
 
 	_, err := LoadConfig("", "", "")
 	if err == nil {
 		t.Fatal("expected error for missing token")
 	}
 
-	if err.Error() != "missing AGENTASK_TOKEN (set via config file, AGENTASK_TOKEN env, or --token flag)" {
+	if err.Error() != "missing ODONIAN_TOKEN (set via config file, ODONIAN_TOKEN env, or --token flag)" {
 		t.Errorf("unexpected error: %v", err)
 	}
 }
@@ -110,9 +110,9 @@ func TestActorDefaultsToUser(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
 	// Set required config without actor
-	t.Setenv("AGENTASK_URL", "http://localhost:8080")
-	t.Setenv("AGENTASK_TOKEN", "token")
-	t.Setenv("AGENTASK_ACTOR", "")
+	t.Setenv("ODONIAN_URL", "http://localhost:8080")
+	t.Setenv("ODONIAN_TOKEN", "token")
+	t.Setenv("ODONIAN_ACTOR", "")
 
 	cfg, err := LoadConfig("", "", "")
 	if err != nil {
@@ -129,12 +129,12 @@ func TestLoadConfigFromFile(t *testing.T) {
 	// Create a temp directory for config
 	tempDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tempDir)
-	t.Setenv("AGENTASK_URL", "")
-	t.Setenv("AGENTASK_TOKEN", "")
-	t.Setenv("AGENTASK_ACTOR", "")
+	t.Setenv("ODONIAN_URL", "")
+	t.Setenv("ODONIAN_TOKEN", "")
+	t.Setenv("ODONIAN_ACTOR", "")
 
 	// Create config file
-	configDir := filepath.Join(tempDir, "agentask")
+	configDir := filepath.Join(tempDir, "odonian")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatalf("failed to create config dir: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestLoadConfigFilePrecedence(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", tempDir)
 
 	// Create config file
-	configDir := filepath.Join(tempDir, "agentask")
+	configDir := filepath.Join(tempDir, "odonian")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatalf("failed to create config dir: %v", err)
 	}
@@ -194,9 +194,9 @@ actor = "file-user"
 	}
 
 	// Test env > file
-	t.Setenv("AGENTASK_URL", "http://envserver:8080")
-	t.Setenv("AGENTASK_TOKEN", "env-token")
-	t.Setenv("AGENTASK_ACTOR", "env-user")
+	t.Setenv("ODONIAN_URL", "http://envserver:8080")
+	t.Setenv("ODONIAN_TOKEN", "env-token")
+	t.Setenv("ODONIAN_ACTOR", "env-user")
 
 	cfg, err := LoadConfig("", "", "")
 	if err != nil {
@@ -226,10 +226,10 @@ func TestPollIntervalParsing(t *testing.T) {
 	// Test valid poll_interval in file
 	tempDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tempDir)
-	t.Setenv("AGENTASK_URL", "http://localhost:8080")
-	t.Setenv("AGENTASK_TOKEN", "token")
+	t.Setenv("ODONIAN_URL", "http://localhost:8080")
+	t.Setenv("ODONIAN_TOKEN", "token")
 
-	configDir := filepath.Join(tempDir, "agentask")
+	configDir := filepath.Join(tempDir, "odonian")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatalf("failed to create config dir: %v", err)
 	}
@@ -258,10 +258,10 @@ func TestPollIntervalParseErrorWarning(t *testing.T) {
 	// Test that invalid poll_interval generates a warning (not error)
 	tempDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tempDir)
-	t.Setenv("AGENTASK_URL", "http://localhost:8080")
-	t.Setenv("AGENTASK_TOKEN", "token")
+	t.Setenv("ODONIAN_URL", "http://localhost:8080")
+	t.Setenv("ODONIAN_TOKEN", "token")
 
-	configDir := filepath.Join(tempDir, "agentask")
+	configDir := filepath.Join(tempDir, "odonian")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatalf("failed to create config dir: %v", err)
 	}
@@ -308,10 +308,10 @@ func TestWorldReadableFileWarning(t *testing.T) {
 	// Test that a world-readable token file generates a warning
 	tempDir := t.TempDir()
 	t.Setenv("XDG_CONFIG_HOME", tempDir)
-	t.Setenv("AGENTASK_URL", "")
-	t.Setenv("AGENTASK_TOKEN", "")
+	t.Setenv("ODONIAN_URL", "")
+	t.Setenv("ODONIAN_TOKEN", "")
 
-	configDir := filepath.Join(tempDir, "agentask")
+	configDir := filepath.Join(tempDir, "odonian")
 	if err := os.MkdirAll(configDir, 0755); err != nil {
 		t.Fatalf("failed to create config dir: %v", err)
 	}

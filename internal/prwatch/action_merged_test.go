@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"github.com/boldfield/agentask/internal/notify"
-	"github.com/boldfield/agentask/internal/store"
+	"github.com/boldfield/odonian/internal/notify"
+	"github.com/boldfield/odonian/internal/store"
 )
 
 type fakeTaskTx struct {
@@ -88,8 +88,8 @@ func TestApplyMergedNotification(t *testing.T) {
 		t.Fatal("Publish was not called")
 	}
 
-	if notifier.notification.Event != "agentask-merged" {
-		t.Errorf("expected event 'agentask-merged', got %q", notifier.notification.Event)
+	if notifier.notification.Event != "odonian-merged" {
+		t.Errorf("expected event 'odonian-merged', got %q", notifier.notification.Event)
 	}
 
 	if notifier.notification.Title != "Merged: Test Task" {
@@ -100,8 +100,8 @@ func TestApplyMergedNotification(t *testing.T) {
 		t.Errorf("expected priority 4, got %d", notifier.notification.Priority)
 	}
 
-	if notifier.notification.DedupKey != "agentask-merged:task-123" {
-		t.Errorf("expected dedupkey 'agentask-merged:task-123', got %q", notifier.notification.DedupKey)
+	if notifier.notification.DedupKey != "odonian-merged:task-123" {
+		t.Errorf("expected dedupkey 'odonian-merged:task-123', got %q", notifier.notification.DedupKey)
 	}
 }
 

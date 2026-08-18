@@ -13,7 +13,7 @@ time**, end to end, following this loop exactly. Do not skip steps.
    only ever reflects merged state:
    ```bash
    git checkout main && git pull --ff-only
-   git checkout -b agentask/<ID>-<slug>
+   git checkout -b odonian/<ID>-<slug>
    ```
 
 3. **Claim it on the branch.** Move the file to `in_progress` and update its `state:`
@@ -41,7 +41,7 @@ time**, end to end, following this loop exactly. Do not skip steps.
 
 7. **Open a PR.**
    ```bash
-   git push -u origin agentask/<ID>-<slug>
+   git push -u origin odonian/<ID>-<slug>
    gh pr create --fill --base main
    ```
    The PR title should be `<ID>: <title>`. The body should list which acceptance criteria

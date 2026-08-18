@@ -1,17 +1,17 @@
-# Agentask API Reference
+# Odonian API Reference
 
 ## Overview
 
-The Agentask API is a RESTful coordination substrate for managing a backlog of work claimed and executed by AI agents. All endpoints (except `/healthz`) require a bearer token authentication.
+The Odonian API is a RESTful coordination substrate for managing a backlog of work claimed and executed by AI agents. All endpoints (except `/healthz`) require a bearer token authentication.
 
 ## Authentication
 
 All endpoints except `GET /healthz` require the `Authorization: Bearer <token>` header.
 
 **Server Configuration:**
-- `AGENTASK_TOKEN` (required): The bearer token to authenticate requests
-- `AGENTASK_DB` (required): SQLite database path (e.g., `/data/agentask.db`)
-- `AGENTASK_ADDR` (optional, default `:8080`): Server address and port
+- `ODONIAN_TOKEN` (required): The bearer token to authenticate requests
+- `ODONIAN_DB` (required): SQLite database path (e.g., `/data/odonian.db`)
+- `ODONIAN_ADDR` (optional, default `:8080`): Server address and port
 
 **Example:**
 ```bash

@@ -1,42 +1,42 @@
 #!/usr/bin/env bash
-# agent.sh — the unified Agentask fleet engine. One loop, parameterized:
+# agent.sh — the unified Odonian fleet engine. One loop, parameterized:
 #   --model <tier>            the model this agent claims + runs (e.g. haiku, opus)
 #   --kind  <implement|review|merge>  implement = worker, review = reviewer, merge = merger (non-LLM).
 #                                      LLM prompts resolve as prompts/<delivery_mode>/<track>/<kind>.md.
 #   [slot]                    stable slot name -> persistent agent id + dedicated worktree(s)
 #
-# PROJECT SCOPE (from $AGENTASK_PROJECT):
-#   a project uuid  -> SINGLE-project mode: pinned to that board + $AGENTASK_REPO (back-compat).
+# PROJECT SCOPE (from $ODONIAN_PROJECT):
+#   a project uuid  -> SINGLE-project mode: pinned to that board + $ODONIAN_REPO (back-compat).
 #   "all" or empty  -> MULTI-project mode: poll GET /projects?claimable=&model=&kind= (v0.4.0+),
 #                      shuffle, and drain every project that has matching work — cloning each
 #                      project's repo on demand and standing up a per-(slot,repo) worktree (a
-#                      worktree can't span repositories). Optional $AGENTASK_PROJECTS (comma-sep
+#                      worktree can't span repositories). Optional $ODONIAN_PROJECTS (comma-sep
 #                      ids) restricts which projects multi-mode will touch.
 #
 # Run it straight from the repo's harness/ dir. Code + prompts live next to this script (the dir is
 # resolved from this script's own path, and still works if invoked via a symlink); the prompt is read
-# FRESH each dispatch. STATE — env, agent ids, repo clones, worktrees — lives under $AGENTASK_HOME
-# (~/.agentask) and is NOT versioned. Ctrl-C is a GRACEFUL stop (in-flight task finishes; again = force-quit).
+# FRESH each dispatch. STATE — env, agent ids, repo clones, worktrees — lives under $ODONIAN_HOME
+# (~/.odonian) and is NOT versioned. Ctrl-C is a GRACEFUL stop (in-flight task finishes; again = force-quit).
 #
 # NOTE: assumes each repo's default branch is `main` (matches the implement prompt). master-default repos
 # need the prompt parameterized — not supported yet.
 #
-# NOTE: requires `agentask` CLI to be on PATH for board discovery and polling.
+# NOTE: requires `odonian` CLI to be on PATH for board discovery and polling.
 set -uo pipefail
 set -m
 
-# --- resolve our REAL directory, even when invoked via a symlink in ~/.agentask ---
+# --- resolve our REAL directory, even when invoked via a symlink in ~/.odonian ---
 _src="${BASH_SOURCE[0]}"
 while [ -h "$_src" ]; do
   _d="$(cd -P "$(dirname "$_src")" && pwd)"; _src="$(readlink "$_src")"; [[ $_src != /* ]] && _src="$_d/$_src"
 done
 HARNESS_DIR="$(cd -P "$(dirname "$_src")" && pwd)"
 
-AGENTASK_HOME="${AGENTASK_HOME:-$HOME/.agentask}"
+ODONIAN_HOME="${ODONIAN_HOME:-$HOME/.odonian}"
 # Source the env file if present (local fleet). In k8s the config arrives via the container env and
 # there is no file — so don't hard-fail when it's absent.
 # shellcheck source=/dev/null
-[ -f "$AGENTASK_HOME/env" ] && source "$AGENTASK_HOME/env"
+[ -f "$ODONIAN_HOME/env" ] && source "$ODONIAN_HOME/env"
 
 # --- parse args ---
 MODEL="" KIND="" SLOT=""
@@ -60,13 +60,13 @@ if [ "$KIND" = "merge" ]; then
   DEFAULT_SLOT="merger-1"
   SLOT="${SLOT:-${AGENT_SLOT:-$DEFAULT_SLOT}}"
 
-  ID_DIR="$AGENTASK_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
+  ID_DIR="$ODONIAN_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
   mkdir -p "$ID_DIR"
   [ -s "$ID_FILE" ] || echo "$SLOT-$(hostname -s)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' ')" > "$ID_FILE"
   export AGENT_ID="$(cat "$ID_FILE")"
 
   MULTI=0
-  case "${AGENTASK_PROJECT:-}" in ""|all|ALL) MULTI=1 ;; esac
+  case "${ODONIAN_PROJECT:-}" in ""|all|ALL) MULTI=1 ;; esac
 
   STOP=0
   request_stop() {
@@ -81,15 +81,15 @@ if [ "$KIND" = "merge" ]; then
 
   merge_one() {
     local task_id="$1"
-    agentask merge "$task_id"
+    odonian merge "$task_id"
   }
 
   # ---- SINGLE-PROJECT MERGE MODE ----
   if [ "$MULTI" = 0 ]; then
-    echo "[$AGENT_ID] merger (merge/SINGLE) @ project $AGENTASK_PROJECT; polling"
+    echo "[$AGENT_ID] merger (merge/SINGLE) @ project $ODONIAN_PROJECT; polling"
     while true; do
       [ "$STOP" -eq 1 ] && break
-      task_id=$(agentask next --project "$AGENTASK_PROJECT" --kind merge --claim 2>/dev/null)
+      task_id=$(odonian next --project "$ODONIAN_PROJECT" --kind merge --claim 2>/dev/null)
       if [ -n "$task_id" ]; then
         echo "[$AGENT_ID] $(date '+%H:%M:%S') merging…"
         merge_one "$task_id"
@@ -99,15 +99,15 @@ if [ "$KIND" = "merge" ]; then
     done
   else
     # ---- MULTI-PROJECT MERGE MODE ----
-    ALLOW="${AGENTASK_PROJECTS:-}"
+    ALLOW="${ODONIAN_PROJECTS:-}"
     in_allow() { [ -z "$ALLOW" ] && return 0; case ",$ALLOW," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
-    echo "[$AGENT_ID] merger (merge/MULTI) @ $AGENTASK_URL${ALLOW:+ (allow: $ALLOW)}; discovering work across projects"
+    echo "[$AGENT_ID] merger (merge/MULTI) @ $ODONIAN_URL${ALLOW:+ (allow: $ALLOW)}; discovering work across projects"
     while true; do
       [ "$STOP" -eq 1 ] && break
       # Discover projects holding claimable merge work
       rows=()
-      while IFS= read -r _row; do rows+=("$_row"); done < <(agentask projects --claimable --kind merge --json \
+      while IFS= read -r _row; do rows+=("$_row"); done < <(odonian projects --claimable --kind merge --json \
           | jq -r '.[] | .id' 2>/dev/null | sort -R)
       if [ "${#rows[@]}" -eq 0 ]; then
         echo "[$AGENT_ID] $(date '+%H:%M:%S') no claimable merge work in any project; sleeping 30s"; nap 30; continue
@@ -117,10 +117,10 @@ if [ "$KIND" = "merge" ]; then
       for pid in "${rows[@]}"; do
         [ "$STOP" -eq 1 ] && break
         in_allow "$pid" || continue
-        task_id=$(agentask next --project "$pid" --kind merge --claim 2>/dev/null)
+        task_id=$(odonian next --project "$pid" --kind merge --claim 2>/dev/null)
         if [ -n "$task_id" ]; then
           echo "[$AGENT_ID] $(date '+%H:%M:%S') merging on project [${pid:0:8}]…"
-          agentask merge "$task_id"
+          odonian merge "$task_id"
           worked=1
           break
         fi
@@ -152,7 +152,7 @@ else
 fi
 
 # Delivery mode check
-DELIVERY_MODE="${AGENTASK_DELIVERY_MODE:-pull_request}"
+DELIVERY_MODE="${ODONIAN_DELIVERY_MODE:-pull_request}"
 case "$DELIVERY_MODE" in pull_request|local_commit) ;; *) echo "delivery mode must be pull_request or local_commit" >&2; exit 1 ;; esac
 
 # The prompt is keyed on all three axes — delivery_mode, track, kind — as PATH dimensions:
@@ -166,15 +166,15 @@ get_prompt_file() {
   echo "$HARNESS_DIR/prompts/$DELIVERY_MODE/$track/$kind.md"
 }
 
-ID_DIR="$AGENTASK_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
-REPOS_DIR="$AGENTASK_HOME/repos"     # per-repo clones (multi-mode); LRU-pruned by prune_repos_cache() to stay under $AGENTASK_HOME's emptyDir cap
+ID_DIR="$ODONIAN_HOME/agents"; ID_FILE="$ID_DIR/$SLOT.id"
+REPOS_DIR="$ODONIAN_HOME/repos"     # per-repo clones (multi-mode); LRU-pruned by prune_repos_cache() to stay under $ODONIAN_HOME's emptyDir cap
 mkdir -p "$ID_DIR"
 [ -s "$ID_FILE" ] || echo "$SLOT-$(hostname -s)-$(od -An -N3 -tx1 /dev/urandom | tr -d ' ')" > "$ID_FILE"
 export AGENT_ID="$(cat "$ID_FILE")"
 
 # Mode: single (a uuid) vs multi (all/empty).
 MULTI=0
-case "${AGENTASK_PROJECT:-}" in ""|all|ALL) MULTI=1 ;; esac
+case "${ODONIAN_PROJECT:-}" in ""|all|ALL) MULTI=1 ;; esac
 
 # --- graceful stop ---
 STOP=0
@@ -196,11 +196,11 @@ norm_repo() { echo "$1" | sed -E 's#^(https://|git@)github\.com[:/]##; s#\.git$#
 repo_slug() { norm_repo "$1" | tr '/' '-'; }                                            # -> owner-repo
 
 # --- per-owner GitHub auth ---
-# ~/.agentask/forge-tokens optionally pairs a repo OWNER with a PAT (lines: "owner=token"; # comments
+# ~/.odonian/forge-tokens optionally pairs a repo OWNER with a PAT (lines: "owner=token"; # comments
 # ok). The worker uses the matching token to clone/push/gh for that owner's repos; with no entry it
-# falls back to the operator's default gh auth. Git creds stay in the worker, never in Agentask.
+# falls back to the operator's default gh auth. Git creds stay in the worker, never in Odonian.
 # (chmod 600 it — it holds tokens.)
-FORGE_TOKENS="${FORGE_TOKENS:-$AGENTASK_HOME/forge-tokens}"
+FORGE_TOKENS="${FORGE_TOKENS:-$ODONIAN_HOME/forge-tokens}"
 token_for_owner() {
   [ -f "$FORGE_TOKENS" ] || return 0
   # case-insensitive owner match — GitHub owners are case-insensitive (fAIctory == faictory), and the
@@ -232,7 +232,7 @@ ensure_clone() {
   git -C "$clone" fetch origin --quiet 2>/dev/null || true
   # LRU key for prune_repos_cache() — a dedicated marker, NOT the clone dir's own mtime, which
   # routine git operations (fetch, worktree add/prune) touch and would make the ordering meaningless.
-  touch "$clone/.agentask-last-used" 2>/dev/null || true
+  touch "$clone/.odonian-last-used" 2>/dev/null || true
   # If a per-owner token is set, tokenize the remote so the worker's git push/fetch authenticate as
   # that owner (gh commands read GH_TOKEN from the env). No token -> leave the plain remote (default auth).
   if [ -n "${GH_TOKEN:-}" ]; then
@@ -241,22 +241,22 @@ ensure_clone() {
   echo "$clone"
 }
 
-# Prune REPOS_DIR (the per-repo clone cache) so $AGENTASK_HOME stays under its emptyDir cap — the
-# cache is otherwise unbounded and multi-project reviewers (AGENTASK_PROJECT=all) accumulate a
+# Prune REPOS_DIR (the per-repo clone cache) so $ODONIAN_HOME stays under its emptyDir cap — the
+# cache is otherwise unbounded and multi-project reviewers (ODONIAN_PROJECT=all) accumulate a
 # clone of every repo they ever review, which is what filled the 20Gi emptyDir and got 37 pods
 # evicted with "Usage of EmptyDir volume home exceeds the limit" on 2026-08-07.
 #
 # Cheap in the common case: one `du -sk` and an immediate return when usage is under the high-water
-# mark. Only when over does it walk REPOS_DIR, oldest-.agentask-last-used-first, deleting clones
+# mark. Only when over does it walk REPOS_DIR, oldest-.odonian-last-used-first, deleting clones
 # one at a time (re-measuring after each) until usage is back at/under the low-water mark. $1 is
 # the clone this dispatch is about to use — it is skipped so pruning can never corrupt a running
 # task's worktree. Never raises: any failure here is logged and the dispatch proceeds regardless.
 prune_repos_cache() {
   local keep="$1" high_kib low_kib usage_kib
-  high_kib=$(( ${AGENTASK_REPOS_HIGH_GIB:-14} * 1024 * 1024 ))
-  low_kib=$(( ${AGENTASK_REPOS_LOW_GIB:-8} * 1024 * 1024 ))
+  high_kib=$(( ${ODONIAN_REPOS_HIGH_GIB:-14} * 1024 * 1024 ))
+  low_kib=$(( ${ODONIAN_REPOS_LOW_GIB:-8} * 1024 * 1024 ))
 
-  usage_kib=$(du -sk "$AGENTASK_HOME" 2>/dev/null | cut -f1)
+  usage_kib=$(du -sk "$ODONIAN_HOME" 2>/dev/null | cut -f1)
   [ -n "${usage_kib:-}" ] || return 0
   [ "$usage_kib" -le "$high_kib" ] && return 0
   [ -d "$REPOS_DIR" ] || return 0
@@ -268,7 +268,7 @@ prune_repos_cache() {
     d="${d%/}"
     [ -d "$d" ] || continue
     [ "$d" = "$keep" ] && continue
-    marker="$d/.agentask-last-used"
+    marker="$d/.odonian-last-used"
     key=""
     [ -e "$marker" ] && key=$(stat -c %Y "$marker" 2>/dev/null || stat -f %m "$marker" 2>/dev/null)
     rows="$rows${key:-0}	$d
@@ -279,7 +279,7 @@ prune_repos_cache() {
   local dir size_kib freed_mb
   while IFS=$'\t' read -r _ dir; do
     [ -n "$dir" ] || continue
-    usage_kib=$(du -sk "$AGENTASK_HOME" 2>/dev/null | cut -f1)
+    usage_kib=$(du -sk "$ODONIAN_HOME" 2>/dev/null | cut -f1)
     [ -n "${usage_kib:-}" ] || break
     [ "$usage_kib" -le "$low_kib" ] && break
     [ -d "$dir" ] || continue
@@ -294,7 +294,7 @@ prune_repos_cache() {
 # Ensure this slot's detached worktree for a given clone; echo the worktree dir.
 ensure_worktree() {
   local clone="$1" wt
-  wt="$AGENTASK_HOME/wt-$SLOT-$(basename "$clone")"
+  wt="$ODONIAN_HOME/wt-$SLOT-$(basename "$clone")"
   git -C "$clone" worktree prune 2>/dev/null || true
   [ -e "$wt" ] && { git -C "$clone" worktree remove --force "$wt" 2>/dev/null || rm -rf "$wt"; }
   git -C "$clone" worktree add --detach "$wt" origin/main --quiet 2>/dev/null \
@@ -359,7 +359,7 @@ nap() { sleep "$1" & wait $! 2>/dev/null; }
 # Check if a project has claimable tasks for THIS agent's kind (any model).
 # Returns 0 if claimable work exists, 1 if not.
 has_claimable_work() {
-  agentask next --project "$1" --kind "$KIND" >/dev/null 2>&1
+  odonian next --project "$1" --kind "$KIND" >/dev/null 2>&1
 }
 
 # Cleanup: drop ALL of this slot's worktrees (single wt-$SLOT and multi wt-$SLOT-*), prune clones.
@@ -369,10 +369,10 @@ cleanup() {
   # request_stop TERMs it on the graceful path.)
   [ -n "$CLAUDE_PID" ] && kill -KILL "-$CLAUDE_PID" 2>/dev/null || true
   echo "[$AGENT_ID] cleaning up worktrees for slot $SLOT"
-  for wt in "$AGENTASK_HOME/wt-$SLOT" "$AGENTASK_HOME"/wt-"$SLOT"-*; do
+  for wt in "$ODONIAN_HOME/wt-$SLOT" "$ODONIAN_HOME"/wt-"$SLOT"-*; do
     [ -e "$wt" ] && rm -rf "$wt"
   done
-  for clone in "$REPOS_DIR"/* "${AGENTASK_MAIN_REPO:-${AGENTASK_REPO:-/nonexistent}}"; do
+  for clone in "$REPOS_DIR"/* "${ODONIAN_MAIN_REPO:-${ODONIAN_REPO:-/nonexistent}}"; do
     [ -d "$clone/.git" ] && git -C "$clone" worktree prune 2>/dev/null || true
   done
 }
@@ -381,23 +381,23 @@ trap cleanup EXIT
 # ============================== SINGLE-PROJECT MODE ==============================
 if [ "$MULTI" = 0 ]; then
   WT=""  # Initialize WT; set only in pull_request mode
-  # local_commit mode: use AGENTASK_REPO directly (CLI-managed worktree), skip clone
+  # local_commit mode: use ODONIAN_REPO directly (CLI-managed worktree), skip clone
   if [ "$DELIVERY_MODE" = "local_commit" ]; then
-    : "${AGENTASK_WORKTREE_HOME:?AGENTASK_WORKTREE_HOME required for local_commit mode}"
-    MAIN_REPO="$AGENTASK_REPO"
-    export AGENTASK_WORKTREE_HOME
-    cd "$MAIN_REPO" || { echo "[$AGENT_ID] failed to cd to AGENTASK_REPO ($MAIN_REPO)" >&2; exit 1; }
+    : "${ODONIAN_WORKTREE_HOME:?ODONIAN_WORKTREE_HOME required for local_commit mode}"
+    MAIN_REPO="$ODONIAN_REPO"
+    export ODONIAN_WORKTREE_HOME
+    cd "$MAIN_REPO" || { echo "[$AGENT_ID] failed to cd to ODONIAN_REPO ($MAIN_REPO)" >&2; exit 1; }
     AGENT_MODEL_STR="${MODEL:+$MODEL/}$KIND"
-    echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) SINGLE (local_commit) @ project $AGENTASK_PROJECT @ $MAIN_REPO; polling"
+    echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) SINGLE (local_commit) @ project $ODONIAN_PROJECT @ $MAIN_REPO; polling"
   else
     # pull_request mode: standard clone + worktree setup
-    MAIN_REPO="${AGENTASK_MAIN_REPO:-$AGENTASK_REPO}"
-    WT="$AGENTASK_HOME/wt-$SLOT"
+    MAIN_REPO="${ODONIAN_MAIN_REPO:-$ODONIAN_REPO}"
+    WT="$ODONIAN_HOME/wt-$SLOT"
     # Guard: refuse if MAIN_REPO doesn't match the pinned project's repo.
-    _proj_repo=$(agentask project "$AGENTASK_PROJECT" --json | jq -r '.repo // ""')
+    _proj_repo=$(odonian project "$ODONIAN_PROJECT" --json | jq -r '.repo // ""')
     _origin=$(git -C "$MAIN_REPO" remote get-url origin 2>/dev/null || echo "")
     if [ -n "$_proj_repo" ] && [ "$(norm_repo "$_proj_repo")" != "$(norm_repo "$_origin")" ]; then
-      echo "[$AGENT_ID] REFUSING: project $AGENTASK_PROJECT repo is '$(norm_repo "$_proj_repo")' but AGENTASK_REPO ($MAIN_REPO) points at '$(norm_repo "$_origin")'." >&2
+      echo "[$AGENT_ID] REFUSING: project $ODONIAN_PROJECT repo is '$(norm_repo "$_proj_repo")' but ODONIAN_REPO ($MAIN_REPO) points at '$(norm_repo "$_origin")'." >&2
       exit 1
     fi
     [ -n "$_proj_repo" ] && apply_owner_token "$(norm_repo "$_proj_repo" | cut -d/ -f1)"   # gh auth for the pinned project's owner
@@ -405,19 +405,19 @@ if [ "$MULTI" = 0 ]; then
     git -C "$MAIN_REPO" worktree prune
     [ -e "$WT" ] && { git -C "$MAIN_REPO" worktree remove --force "$WT" 2>/dev/null || rm -rf "$WT"; }
     git -C "$MAIN_REPO" worktree add --detach "$WT" origin/main
-    export AGENTASK_REPO="$WT"; cd "$WT" || { echo "worktree cd failed"; exit 1; }
+    export ODONIAN_REPO="$WT"; cd "$WT" || { echo "worktree cd failed"; exit 1; }
     AGENT_MODEL_STR="${MODEL:+$MODEL/}$KIND"
-    echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) SINGLE @ project $AGENTASK_PROJECT @ $WT; polling"
+    echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) SINGLE @ project $ODONIAN_PROJECT @ $WT; polling"
   fi
   while true; do
     [ "$STOP" -eq 1 ] && break
-    if has_claimable_work "$AGENTASK_PROJECT"; then
+    if has_claimable_work "$ODONIAN_PROJECT"; then
       # Find the next claimable task (any model) and get its model
-      task_id=$(agentask next --project "$AGENTASK_PROJECT" --kind "$KIND" 2>/dev/null)
+      task_id=$(odonian next --project "$ODONIAN_PROJECT" --kind "$KIND" 2>/dev/null)
       if [ -z "$task_id" ]; then
         echo "[$AGENT_ID] $(date '+%H:%M:%S') nothing claimable ($KIND); sleeping 30s"; nap 30; continue
       fi
-      task_json=$(agentask show "$task_id" --json 2>/dev/null)
+      task_json=$(odonian show "$task_id" --json 2>/dev/null)
       task_model=$(echo "$task_json" | jq -r '.model // ""')
       if [ -z "$task_model" ]; then
         echo "[$AGENT_ID] $(date '+%H:%M:%S') failed to read task model for $task_id; sleeping 30s"; nap 30; continue
@@ -445,21 +445,21 @@ fi
 # ============================== MULTI-PROJECT MODE ==============================
 # local_commit mode requires single-project (works with a pre-set worktree); multi-project clones multiple repos.
 if [ "$DELIVERY_MODE" = "local_commit" ]; then
-  echo "[$AGENT_ID] local_commit mode requires SINGLE-project mode; AGENTASK_PROJECT must be set" >&2
+  echo "[$AGENT_ID] local_commit mode requires SINGLE-project mode; ODONIAN_PROJECT must be set" >&2
   exit 1
 fi
 
-ALLOW="${AGENTASK_PROJECTS:-}"   # optional comma-separated id allowlist
+ALLOW="${ODONIAN_PROJECTS:-}"   # optional comma-separated id allowlist
 in_allow() { [ -z "$ALLOW" ] && return 0; case ",$ALLOW," in *",$1,"*) return 0 ;; *) return 1 ;; esac; }
 
 AGENT_MODEL_STR="${MODEL:+$MODEL/}$KIND"
-echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) MULTI @ $AGENTASK_URL${ALLOW:+ (allow: $ALLOW)}; discovering work across projects"
+echo "[$AGENT_ID] $ROLE ($AGENT_MODEL_STR) MULTI @ $ODONIAN_URL${ALLOW:+ (allow: $ALLOW)}; discovering work across projects"
 while true; do
   [ "$STOP" -eq 1 ] && break
   # Discover projects holding my kind claimable work (any model) — one call (v0.4.0 filter).
   # (while-read, not mapfile: macOS ships bash 3.2.) sort -R shuffles so projects drain fairly.
   rows=()
-  while IFS= read -r _row; do rows+=("$_row"); done < <(agentask projects --claimable --kind "$KIND" --json \
+  while IFS= read -r _row; do rows+=("$_row"); done < <(odonian projects --claimable --kind "$KIND" --json \
       | jq -r '.[] | select(.repo != null and .repo != "") | "\(.id)\t\(.repo)"' 2>/dev/null \
       | sort -R)
   if [ "${#rows[@]}" -eq 0 ]; then
@@ -478,14 +478,14 @@ while true; do
     prune_repos_cache "$REPOS_DIR/$(repo_slug "$prepo")"
     clone="$(ensure_clone "$prepo")" || continue
     wt="$(ensure_worktree "$clone")" || continue
-    export AGENTASK_PROJECT="$pid" AGENTASK_REPO="$wt"
+    export ODONIAN_PROJECT="$pid" ODONIAN_REPO="$wt"
     cd "$wt" || continue
     # Find the next claimable task (any model) and get its model
-    task_id=$(agentask next --project "$pid" --kind "$KIND" 2>/dev/null)
+    task_id=$(odonian next --project "$pid" --kind "$KIND" 2>/dev/null)
     if [ -z "$task_id" ]; then
       continue   # task raced away, try next project
     fi
-    task_json=$(agentask show "$task_id" --json 2>/dev/null)
+    task_json=$(odonian show "$task_id" --json 2>/dev/null)
     task_model=$(echo "$task_json" | jq -r '.model // ""')
     if [ -z "$task_model" ]; then
       continue   # couldn't read task model, try next project

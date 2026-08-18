@@ -28,6 +28,6 @@ Per DESIGN.md §5 — human gate for the MVP.
 
 ## Result
 
-PR: https://github.com/boldfield/agentask/pull/16
-Branch: agentask/T13-review-transition
+PR: https://github.com/boldfield/odonian/pull/16
+Branch: odonian/T13-review-transition
 Commit: 17bf15b (head SHA)
