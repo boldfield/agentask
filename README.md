@@ -1,12 +1,61 @@
 # Odonian
 
-An API-only coordination substrate for a pool of AI agents draining a backlog of work.
+[![CI](https://github.com/boldfield/odonian/actions/workflows/ci.yml/badge.svg)](https://github.com/boldfield/odonian/actions/workflows/ci.yml)
+[![License: AGPL-3.0](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](./LICENSE)
 
-Odonian is the control plane that powers a fleet of AI agents: it manages a task backlog, enforces
-a state machine, ensures atomic task claiming with crash recovery, and routes submitted work to
-reviewers. Agents claim bite-size tasks from a per-project board via REST API, execute them, and
-submit for human review. It is **not a kanban UI** — there is no drag-drop or visualization. The
-board is a work queue with a precise state machine and atomic claiming primitives.
+**A task board that AI agents volunteer for — and a human gate they can't get past.**
+
+Odonian is the coordination substrate under a fleet of AI coding agents. You decompose a design
+into bite-size tasks on a per-project board; workers claim tasks **pull-model** (nothing is ever
+assigned), execute them, and submit for review; reviewer agents vote; and every merge waits for a
+human. It is the control plane only — a work queue with a precise state machine, atomic claiming,
+lease-based crash recovery, and review routing, behind a small REST API. It is **not a kanban
+UI** — there is no drag-drop or visualization; the board is a queue with claiming primitives.
+
+Two convictions shape the design:
+
+- **Work is claimed, not assigned.** Agents volunteer for tasks they can do; the substrate only
+  guarantees that claiming is atomic and that dependencies are honored. There is no scheduler
+  handing out orders.
+- **The machines labor; a human makes the living judgment.** Agents write and review every line,
+  but nothing merges without a person deciding it should. The review gate is architecture, not
+  policy.
+
+```mermaid
+flowchart LR
+    H([Human]) -->|design → tasks| B
+    subgraph B["Odonian board · Go + SQLite"]
+        Q[backlog → ready → in_progress → review → approved → done]
+    end
+    W[Worker agents] -->|claim / submit| B
+    R[Reviewer agents] -->|claim / vote| B
+    W -->|PRs| F[(Forge / GitHub)]
+    B -->|PR-watch| F
+    H -->|merge gate| F
+    B -->|notify| N[ntfy / webhook]
+```
+
+> **Why "Odonian"?** From Ursula K. Le Guin's *The Dispossessed*: the Odonians of Anarres
+> organize work through voluntary association — postings that workers claim because the work is
+> worth doing, with no boss dispatching them. That is this system's pull model, and the name is
+> the license's politics too.
+
+## Quickstart
+
+```bash
+make build
+export ODONIAN_TOKEN="your-secret-token"
+export ODONIAN_DB="./odonian.db"
+./bin/odonian server           # REST API on :8080; DB created on first run
+
+make tui && ./bin/odonian-tui  # optional terminal UI for human oversight
+```
+
+Then create a project, register a design doc, and post tasks via the [API](./docs/api.md) — or
+let the [`odonian-breakdown` skill](#skills) do it conversationally. Point the
+[worker/reviewer harness](#the-worker--reviewer-harness) at the board and the fleet starts
+draining it. Full server, fleet, and sandbox instructions are in
+[How to Run It](#how-to-run-it).
 
 ## What It Is
 
@@ -434,6 +483,14 @@ its directory; keep them executable (`chmod +x`).
 
 ## Status
 
-The MVP is in active development. Core features (projects, documents, tasks, atomic claiming,
-review, and crash recovery) are complete and tested. The system is ready for multi-agent fleets
-to drain boards in production-like scenarios.
+Odonian runs in production daily: a Kubernetes fleet of workers, reviewers, and a merger drains
+boards for a dozen-plus projects, with review-only models routed through Codex and every merge
+human-gated. Core primitives (projects, documents, tasks, atomic claiming, leases, review
+aggregation, PR-watch reconciliation, notifications) are complete and tested. It is built as a
+personal-scale substrate — single-replica, SQLite, one bearer token — and wears that honestly;
+multi-tenancy is deliberately out of scope for now.
+
+## License
+
+[AGPL-3.0](./LICENSE). Run it, fork it, host it — but if you host a modified Odonian for others,
+share your changes. The Odonians would have wanted it that way.
