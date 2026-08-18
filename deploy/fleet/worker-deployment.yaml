@@ -29,7 +29,7 @@ spec:
       containers:
         - name: worker
           # Version tag is bumped by hand on release; make fleet-image must have pushed this tag first.
-          image: docker.summercamp.eastharbor.casa:32050/odonian/fleet:v0.15.0-16-g78910a2
+          image: docker.summercamp.eastharbor.casa:32050/odonian/fleet:v0.16.0
           args: ["--kind", "implement"]
           env:
             - name: ODONIAN_URL
