@@ -4,13 +4,19 @@
 
 ## Problem
 
-The rework-feedback loop (`odonian pr-feedback list|ack`) is structurally blind in production.
-`ListUnaddressedFeedback` classifies comments as bot-authored via `Author.Login == botLogin`,
-where `botLogin` is the login of the token's authenticated user. The fleet acts on GitHub with
-the repo owner's PAT, so the human reviewer and the fleet share one login: every human comment
-is filtered out as "the bot's own", `pr-feedback list` returns empty, and workers truthfully
-report nothing outstanding. The feature's tests model distinct identities; the deployment has
-one.
+The rework-feedback loop (`odonian pr-feedback list|ack`) is partially blind in production.
+`listUnacknowledgedGlobalComments` classifies comments as bot-authored via
+`Author.Login == botLogin`, where `botLogin` is the login of the token's authenticated user.
+The fleet acts on GitHub with the repo owner's PAT, so the human reviewer and the fleet share
+one login: **global comments** from the human are filtered out as "the bot's own" and never
+surface in `pr-feedback list` (first diagnosed 2026-08-04 on a trade-log rework). Inline
+review threads are not author-filtered and do surface; they are included in this spec only so
+one uniform marker rule governs both paths. The feature's tests model distinct identities; the
+deployment has one.
+
+A second GitHub identity is a known dead end: a machine-user PAT was tried on 2026-08-05 and
+reverted after GitHub flagged the new account and throttled it to unauthenticated rate limits,
+stalling the whole fleet. The fix must work under the shared identity.
 
 ## Fix: classify by marker, not by login
 
