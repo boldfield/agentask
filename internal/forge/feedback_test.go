@@ -188,10 +188,10 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
             {
               "id": "comment-2",
               "databaseId": 2,
-              "body": "Bot response",
+              "body": "haiku-worker: Bot response",
               "createdAt": "2024-01-01T10:00:00Z",
               "author": {
-                "login": "bot"
+                "login": "human"
               },
               "reactionGroups": []
             }
@@ -215,7 +215,7 @@ func TestListUnaddressedFeedback_GlobalCommentsBotExcluded(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	items, err := ListUnaddressedFeedback(ctx, "owner", "repo", 42, "bot", "token")
+	items, err := ListUnaddressedFeedback(ctx, "owner", "repo", 42, "human", "token")
 
 	if err != nil {
 		t.Fatalf("ListUnaddressedFeedback() error = %v, want nil", err)
@@ -988,10 +988,10 @@ func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
             {
               "id": "comment-2",
               "databaseId": 2,
-              "body": "Bot reply acknowledging the feedback",
+              "body": "haiku-worker: Bot reply acknowledging the feedback",
               "createdAt": "2024-01-01T10:05:00Z",
               "author": {
-                "login": "bot"
+                "login": "human"
               },
               "reactionGroups": []
             },
@@ -1025,18 +1025,148 @@ func TestListUnaddressedFeedback_AcknowledgedByBotReply(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	items, err := ListUnaddressedFeedback(ctx, "owner", "repo", 42, "bot", "token")
+	items, err := ListUnaddressedFeedback(ctx, "owner", "repo", 42, "human", "token")
 
 	if err != nil {
 		t.Fatalf("ListUnaddressedFeedback() error = %v, want nil", err)
 	}
 
-	// Should return 1 item: comment-3 (comment-1 is acknowledged by bot reply comment-2)
+	// Should return 1 item: comment-3 (comment-1 is acknowledged by the marker-prefixed reply comment-2)
 	if len(items) != 1 {
 		t.Errorf("ListUnaddressedFeedback() returned %d items, want 1", len(items))
 	}
 
 	if items[0].ID != "comment-3" {
 		t.Errorf("items[0].ID = %q, want %q", items[0].ID, "comment-3")
+	}
+}
+
+// TestListUnaddressedFeedback_SingleIdentity models the production deployment: the fleet
+// and the human reviewer share one GitHub login, so classification must rely entirely on
+// the marker grammar rather than Author.Login equality.
+func TestListUnaddressedFeedback_SingleIdentity(t *testing.T) {
+	const sharedLogin = "human"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+
+		if strings.Contains(bodyStr, "reviewThreads") {
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": []
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		} else if strings.Contains(bodyStr, "comments") {
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR-node-id-single-identity",
+        "comments": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": [
+            {
+              "id": "comment-marker-acked",
+              "databaseId": 1,
+              "body": "This needs a nil check too",
+              "createdAt": "2024-01-01T10:00:00Z",
+              "author": {
+                "login": "human"
+              },
+              "reactionGroups": []
+            },
+            {
+              "id": "comment-marker-reply",
+              "databaseId": 2,
+              "body": "haiku-worker: addressed in abc123",
+              "createdAt": "2024-01-01T10:05:00Z",
+              "author": {
+                "login": "human"
+              },
+              "reactionGroups": []
+            },
+            {
+              "id": "comment-reaction-acked",
+              "databaseId": 3,
+              "body": "One more nit on naming",
+              "createdAt": "2024-01-01T10:10:00Z",
+              "author": {
+                "login": "human"
+              },
+              "reactionGroups": [
+                {
+                  "content": "THUMBS_UP",
+                  "users": {
+                    "nodes": [
+                      {
+                        "login": "human"
+                      }
+                    ]
+                  }
+                }
+              ]
+            },
+            {
+              "id": "comment-unmarked",
+              "databaseId": 4,
+              "body": "Please fix the off-by-one here",
+              "createdAt": "2024-01-01T10:15:00Z",
+              "author": {
+                "login": "human"
+              },
+              "reactionGroups": []
+            }
+          ]
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	items, err := ListUnaddressedFeedback(ctx, "owner", "repo", 42, sharedLogin, "token")
+
+	if err != nil {
+		t.Fatalf("ListUnaddressedFeedback() error = %v, want nil", err)
+	}
+
+	// Only comment-unmarked should survive: it has no marker and no ack of any kind.
+	// comment-marker-reply is itself agent-authored (skip-own) and also acks comment-marker-acked.
+	// comment-reaction-acked is hidden by the retained thumbs-up-by-botLogin check.
+	if len(items) != 1 {
+		t.Fatalf("ListUnaddressedFeedback() returned %d items, want 1: %+v", len(items), items)
+	}
+
+	if items[0].ID != "comment-unmarked" {
+		t.Errorf("items[0].ID = %q, want %q", items[0].ID, "comment-unmarked")
 	}
 }
