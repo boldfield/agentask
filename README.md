@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/logo-dark.svg">
+    <img src="docs/assets/logo.svg" width="132" alt="Odonian mark: an unclosed ring of small marks with a terracotta moon holding the gap">
+  </picture>
+</p>
+
 # Odonian
 
 [![CI](https://github.com/boldfield/odonian/actions/workflows/ci.yml/badge.svg)](https://github.com/boldfield/odonian/actions/workflows/ci.yml)
