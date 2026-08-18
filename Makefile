@@ -54,7 +54,7 @@ release:
 	@if [ "$$(git rev-parse --abbrev-ref HEAD)" != "main" ]; then echo "ERROR: Not on main branch"; exit 1; fi
 	docker build --platform linux/amd64 --build-arg VERSION=$(VERSION) -t ghcr.io/boldfield/odonian:$(VERSION) .
 	docker push ghcr.io/boldfield/odonian:$(VERSION)
-	git tag $(VERSION)
+	git tag -a $(VERSION) -m "$(VERSION)"
 	git push origin $(VERSION)
 	@echo "Released ghcr.io/boldfield/odonian:$(VERSION) (linux/amd64); deploy with: make deploy VERSION=$(VERSION)"
 
