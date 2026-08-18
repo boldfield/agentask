@@ -721,7 +721,7 @@ func TestAcknowledgeFeedbackItem_InlineItem(t *testing.T) {
 	}
 
 	fixingSha := "abc123def456"
-	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, fixingSha)
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, fixingSha, "")
 
 	if err != nil {
 		t.Fatalf("AcknowledgeFeedbackItem() error = %v, want nil", err)
@@ -806,7 +806,7 @@ func TestAcknowledgeFeedbackItem_GlobalItem(t *testing.T) {
 		Body:       "Global feedback",
 	}
 
-	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456", "")
 
 	if err != nil {
 		t.Fatalf("AcknowledgeFeedbackItem() error = %v, want nil", err)
@@ -851,7 +851,7 @@ func TestAcknowledgeFeedbackItem_InlineItemGraphQLError(t *testing.T) {
 		Body:   "This needs fixing",
 	}
 
-	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456", "")
 
 	if err == nil {
 		t.Fatalf("AcknowledgeFeedbackItem() error = nil, want error for GraphQL error")
@@ -904,7 +904,7 @@ func TestAcknowledgeFeedbackItem_GlobalItemReactionError(t *testing.T) {
 		Body:       "Global feedback",
 	}
 
-	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456", "")
 
 	if err == nil {
 		t.Fatalf("AcknowledgeFeedbackItem() error = nil, want error for reaction failure")
@@ -926,7 +926,7 @@ func TestAcknowledgeFeedbackItem_UnknownKind(t *testing.T) {
 		Body:   "Some feedback",
 	}
 
-	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456")
+	err := AcknowledgeFeedbackItem(ctx, "owner", "repo", 42, "token", item, "abc123def456", "")
 
 	if err == nil {
 		t.Fatalf("AcknowledgeFeedbackItem() error = nil, want error for unknown kind")

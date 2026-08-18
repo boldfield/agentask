@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -37,11 +38,15 @@ func printPRFeedbackHelp(w io.Writer) {
 
 Subcommands:
   list <pr-url>                   List unaddressed feedback items as JSON lines
-  ack <pr-url> <item-id> <sha>    Acknowledge a feedback item
+  ack [--marker PREFIX] <pr-url> <item-id> <sha>    Acknowledge a feedback item
+
+Flags (ack only):
+  --marker PREFIX                 Override worker marker prefix (e.g., 'custom-worker: ')
 
 Environment:
   GH_TOKEN                        GitHub token (fallback if not in forge-tokens)
   FORGE_TOKENS                    Path to forge tokens file (defaults to ~/.odonian/forge-tokens)
+  ODONIAN_MODEL                   Model name for default marker prefix (default: fleet)
 `)
 }
 
@@ -95,13 +100,20 @@ func executePRFeedbackList(ctx context.Context, args []string, out io.Writer) er
 }
 
 func executePRFeedbackAck(ctx context.Context, args []string) error {
-	if len(args) < 3 {
+	fs := flag.NewFlagSet("ack", flag.ContinueOnError)
+	markerFlag := fs.String("marker", "", "optional marker prefix override (e.g., 'custom-worker: ')")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("failed to parse flags: %w", err)
+	}
+
+	positional := fs.Args()
+	if len(positional) < 3 {
 		return fmt.Errorf("pr-feedback ack requires pr-url, item-id, and sha")
 	}
 
-	prURL := args[0]
-	itemID := args[1]
-	sha := args[2]
+	prURL := positional[0]
+	itemID := positional[1]
+	sha := positional[2]
 
 	owner, repo, prNumber, err := parsePRURL(prURL)
 	if err != nil {
@@ -139,7 +151,16 @@ func executePRFeedbackAck(ctx context.Context, args []string) error {
 		return fmt.Errorf("feedback item %q not found", itemID)
 	}
 
-	if err := forge.AcknowledgeFeedbackItem(ctx, owner, repo, prNumber, token, *item, sha); err != nil {
+	marker := *markerFlag
+	if marker == "" {
+		model := os.Getenv("ODONIAN_MODEL")
+		if model == "" {
+			model = "fleet"
+		}
+		marker = forge.MarkerPrefix(model, "worker")
+	}
+
+	if err := forge.AcknowledgeFeedbackItem(ctx, owner, repo, prNumber, token, *item, sha, marker); err != nil {
 		return fmt.Errorf("failed to acknowledge feedback item: %w", err)
 	}
 
