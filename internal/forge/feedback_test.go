@@ -1170,3 +1170,148 @@ func TestListUnaddressedFeedback_SingleIdentity(t *testing.T) {
 		t.Errorf("items[0].ID = %q, want %q", items[0].ID, "comment-unmarked")
 	}
 }
+
+// TestListUnaddressedFeedback_SingleIdentityThreads models the production deployment for
+// inline review threads: the fleet and the human reviewer share one GitHub login, so
+// thread-ack must rely on marker-prefixed last replies and thread resolution rather than
+// Author.Login equality.
+func TestListUnaddressedFeedback_SingleIdentityThreads(t *testing.T) {
+	const sharedLogin = "human"
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		bodyStr := string(body)
+
+		if strings.Contains(bodyStr, "reviewThreads") {
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "reviewThreads": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": [
+            {
+              "id": "thread-unresolved-human",
+              "isResolved": false,
+              "path": "main.go",
+              "line": 10,
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "comment-thread-1a",
+                    "body": "This needs fixing",
+                    "author": {
+                      "login": "human"
+                    }
+                  },
+                  {
+                    "id": "comment-thread-1b",
+                    "body": "Still not fixed",
+                    "author": {
+                      "login": "human"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "thread-marker-acked",
+              "isResolved": false,
+              "path": "main.go",
+              "line": 20,
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "comment-thread-2a",
+                    "body": "Please add a nil check",
+                    "author": {
+                      "login": "human"
+                    }
+                  },
+                  {
+                    "id": "comment-thread-2b",
+                    "body": "haiku-worker: addressed in abc123",
+                    "author": {
+                      "login": "human"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "id": "thread-resolved",
+              "isResolved": true,
+              "path": "main.go",
+              "line": 30,
+              "comments": {
+                "nodes": [
+                  {
+                    "id": "comment-thread-3a",
+                    "body": "Nit on naming",
+                    "author": {
+                      "login": "human"
+                    }
+                  }
+                ]
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		} else if strings.Contains(bodyStr, "comments") {
+			graphqlResp := `{
+  "data": {
+    "repository": {
+      "pullRequest": {
+        "id": "PR-node-id-single-identity-threads",
+        "comments": {
+          "pageInfo": {
+            "hasNextPage": false,
+            "endCursor": null
+          },
+          "nodes": []
+        }
+      }
+    }
+  }
+}`
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			w.Write([]byte(graphqlResp))
+		}
+	}))
+	defer server.Close()
+
+	oldBaseURL := GitHubBaseURL
+	GitHubBaseURL = server.URL
+	defer func() { GitHubBaseURL = oldBaseURL }()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	items, err := ListUnaddressedFeedback(ctx, "owner", "repo", 42, sharedLogin, "token")
+
+	if err != nil {
+		t.Fatalf("ListUnaddressedFeedback() error = %v, want nil", err)
+	}
+
+	// Only thread-unresolved-human should survive: thread-marker-acked's last reply is
+	// marker-prefixed, and thread-resolved is resolved. All comments share one login, so
+	// only the marker grammar and isResolved distinguish them.
+	if len(items) != 1 {
+		t.Fatalf("ListUnaddressedFeedback() returned %d items, want 1: %+v", len(items), items)
+	}
+
+	if items[0].ID != "thread-unresolved-human" {
+		t.Errorf("items[0].ID = %q, want %q", items[0].ID, "thread-unresolved-human")
+	}
+}

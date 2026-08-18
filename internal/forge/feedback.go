@@ -52,13 +52,13 @@ type comment struct {
 }
 
 // ListUnaddressedFeedback returns all unaddressed feedback on a PR.
-// It includes unresolved inline review threads and global comments not authored
-// by the bot and not yet acknowledged (no bot reply and no bot reaction).
+// It includes unaddressed inline review threads and global comments not
+// acknowledged (no marker-prefixed reply and no bot reaction).
 func ListUnaddressedFeedback(ctx context.Context, owner, repo string, prNumber int, botLogin, token string) ([]FeedbackItem, error) {
 	var items []FeedbackItem
 
-	// Fetch unresolved inline review threads
-	inlineItems, err := listUnresolvedThreads(ctx, owner, repo, prNumber, token)
+	// Fetch unaddressed inline review threads
+	inlineItems, err := listUnaddressedThreads(ctx, owner, repo, prNumber, token)
 	if err != nil {
 		return nil, err
 	}
@@ -74,9 +74,10 @@ func ListUnaddressedFeedback(ctx context.Context, owner, repo string, prNumber i
 	return items, nil
 }
 
-// listUnresolvedThreads fetches all unresolved inline review threads on a PR.
-// It handles pagination and returns only threads with isResolved==false.
-func listUnresolvedThreads(ctx context.Context, owner, repo string, prNumber int, token string) ([]FeedbackItem, error) {
+// listUnaddressedThreads fetches all unaddressed inline review threads on a PR.
+// It handles pagination and excludes threads that are resolved or whose last
+// reply is agent-authored (marker-prefixed).
+func listUnaddressedThreads(ctx context.Context, owner, repo string, prNumber int, token string) ([]FeedbackItem, error) {
 	var allItems []FeedbackItem
 	after := ""
 
@@ -202,24 +203,29 @@ func fetchReviewThreadsPage(ctx context.Context, owner, repo string, prNumber in
 
 	var items []FeedbackItem
 	for _, thread := range result.Data.Repository.PullRequest.ReviewThreads.Nodes {
-		// Only include unresolved threads
+		// A thread is addressed iff it is resolved or its last reply is agent-authored,
+		// identified by marker prefix (not login, which is indistinguishable from the
+		// human's when they share one GitHub identity).
 		if thread.IsResolved {
 			continue
 		}
-
-		// Get the first comment (or the last if we want the most recent?)
-		// Use the first comment as the feedback author
-		if len(thread.Comments.Nodes) > 0 {
-			comment := thread.Comments.Nodes[0]
-			items = append(items, FeedbackItem{
-				Kind:   "inline",
-				ID:     thread.ID,
-				Path:   thread.Path,
-				Line:   thread.Line,
-				Author: comment.Author.Login,
-				Body:   comment.Body,
-			})
+		if len(thread.Comments.Nodes) == 0 {
+			continue
 		}
+		lastComment := thread.Comments.Nodes[len(thread.Comments.Nodes)-1]
+		if IsAgentAuthoredComment(lastComment.Body) {
+			continue
+		}
+
+		firstComment := thread.Comments.Nodes[0]
+		items = append(items, FeedbackItem{
+			Kind:   "inline",
+			ID:     thread.ID,
+			Path:   thread.Path,
+			Line:   thread.Line,
+			Author: firstComment.Author.Login,
+			Body:   firstComment.Body,
+		})
 	}
 
 	hasNextPage := result.Data.Repository.PullRequest.ReviewThreads.PageInfo.HasNextPage
