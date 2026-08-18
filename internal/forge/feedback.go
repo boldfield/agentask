@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 )
 
 // FeedbackItem represents an unaddressed piece of PR feedback.
@@ -19,6 +20,16 @@ type FeedbackItem struct {
 	Line       int    // line number (inline only)
 	Author     string // login of the comment author
 	Body       string // comment text
+}
+
+// escapeGraphQLString escapes a string for use in a GraphQL query.
+func escapeGraphQLString(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	return s
 }
 
 // comment represents a global PR comment from the GraphQL API.
@@ -456,10 +467,11 @@ func fetchGlobalCommentsPageRaw(ctx context.Context, owner, repo string, prNumbe
 // AcknowledgeFeedbackItem marks a feedback item as addressed.
 // For inline items (review threads): posts a reply comment and resolves the thread via GraphQL.
 // For global items (comments): posts a reply comment and adds a thumbsup reaction.
-func AcknowledgeFeedbackItem(ctx context.Context, owner, repo string, prNumber int, token string, item FeedbackItem, fixingSha string) error {
+// markerPrefix is prepended to the reply body; if empty, no marker is added.
+func AcknowledgeFeedbackItem(ctx context.Context, owner, repo string, prNumber int, token string, item FeedbackItem, fixingSha, markerPrefix string) error {
 	if item.Kind == "inline" {
 		// For inline items: post reply and resolve thread
-		if err := postReviewThreadReply(ctx, item.ID, fixingSha, token); err != nil {
+		if err := postReviewThreadReply(ctx, item.ID, fixingSha, markerPrefix, token); err != nil {
 			return err
 		}
 		if err := resolveReviewThread(ctx, item.ID, token); err != nil {
@@ -467,7 +479,7 @@ func AcknowledgeFeedbackItem(ctx context.Context, owner, repo string, prNumber i
 		}
 	} else if item.Kind == "global" {
 		// For global items: post reply and add reaction
-		if err := postCommentReply(ctx, item.PRID, fixingSha, item.ID, token); err != nil {
+		if err := postCommentReply(ctx, item.PRID, fixingSha, item.ID, markerPrefix, token); err != nil {
 			return err
 		}
 		if err := addThumbsupReaction(ctx, owner, repo, item.DatabaseID, token); err != nil {
@@ -480,16 +492,17 @@ func AcknowledgeFeedbackItem(ctx context.Context, owner, repo string, prNumber i
 }
 
 // postReviewThreadReply posts a reply comment to a review thread via GraphQL.
-func postReviewThreadReply(ctx context.Context, threadID, fixingSha, token string) error {
+func postReviewThreadReply(ctx context.Context, threadID, fixingSha, markerPrefix, token string) error {
 	const mutationTemplate = `mutation {
-  addPullRequestReviewThreadReply(input: {threadId: "%s", body: "addressed in %s"}) {
+  addPullRequestReviewThreadReply(input: {threadId: "%s", body: "%s"}) {
     comment {
       id
     }
   }
 }`
 
-	mutation := fmt.Sprintf(mutationTemplate, threadID, fixingSha)
+	replyBody := markerPrefix + "addressed in " + fixingSha
+	mutation := fmt.Sprintf(mutationTemplate, threadID, escapeGraphQLString(replyBody))
 	payload := map[string]string{"query": mutation}
 
 	body, err := json.Marshal(payload)
@@ -604,9 +617,9 @@ func resolveReviewThread(ctx context.Context, threadID, token string) error {
 }
 
 // postCommentReply posts a reply comment to a PR global comment via GraphQL.
-func postCommentReply(ctx context.Context, prNodeID, fixingSha, originalCommentID, token string) error {
+func postCommentReply(ctx context.Context, prNodeID, fixingSha, originalCommentID, markerPrefix, token string) error {
 	const mutationTemplate = `mutation {
-  addComment(input: {subjectId: "%s", body: "addressed in %s (see comment %s)"}) {
+  addComment(input: {subjectId: "%s", body: "%s"}) {
     commentEdge {
       node {
         id
@@ -615,7 +628,8 @@ func postCommentReply(ctx context.Context, prNodeID, fixingSha, originalCommentI
   }
 }`
 
-	mutation := fmt.Sprintf(mutationTemplate, prNodeID, fixingSha, originalCommentID)
+	replyBody := markerPrefix + "addressed in " + fixingSha + " (see comment " + originalCommentID + ")"
+	mutation := fmt.Sprintf(mutationTemplate, prNodeID, escapeGraphQLString(replyBody))
 	payload := map[string]string{"query": mutation}
 
 	body, err := json.Marshal(payload)
