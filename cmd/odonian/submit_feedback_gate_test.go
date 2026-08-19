@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -166,17 +168,27 @@ func TestExecuteSubmitFeedbackGateBypassFlag(t *testing.T) {
 	odonianServer := odonianTaskServer(t, "task123", 1, prURL)
 	defer odonianServer.Close()
 
-	// No GitHub mock configured; if the gate were to check anyway, resolving GH_TOKEN
-	// would fail (unset) and the call would error out — proving the bypass genuinely
-	// skips the check rather than swallowing an error.
-	oldToken := os.Getenv("GH_TOKEN")
-	os.Unsetenv("GH_TOKEN")
-	defer func() {
-		if oldToken != "" {
-			os.Setenv("GH_TOKEN", oldToken)
-		}
-	}()
+	// A real GitHub mock with an outstanding item, and a working token: without
+	// --skip-feedback-gate this setup blocks the submit (see
+	// TestExecuteSubmitFeedbackGateBlocksWithRemainingItems). Passing here proves the flag
+	// genuinely bypasses the check rather than coincidentally hitting the
+	// check-error-proceeds path.
+	ghServer := githubFeedbackServer(t, "please fix this")
+	defer ghServer.Close()
+
+	oldBase := forge.GitHubBaseURL
+	forge.GitHubBaseURL = ghServer.URL
+	defer func() { forge.GitHubBaseURL = oldBase }()
+
+	t.Setenv("GH_TOKEN", "test-token")
 	t.Setenv("AGENT_ID", "test-agent")
+
+	r, w, pipeErr := os.Pipe()
+	if pipeErr != nil {
+		t.Fatalf("failed to create pipe: %v", pipeErr)
+	}
+	oldStderr := os.Stderr
+	os.Stderr = w
 
 	err := executeSubmit(context.Background(), odonianServer.URL, "test-token", []string{
 		"--result", "reworked",
@@ -185,8 +197,17 @@ func TestExecuteSubmitFeedbackGateBypassFlag(t *testing.T) {
 		"--skip-feedback-gate",
 		"task123",
 	})
+
+	os.Stderr = oldStderr
+	w.Close()
+	var stderr bytes.Buffer
+	io.Copy(&stderr, r)
+
 	if err != nil {
 		t.Fatalf("expected --skip-feedback-gate to bypass the check and submit to succeed, got: %v", err)
+	}
+	if !strings.Contains(stderr.String(), "WARNING") {
+		t.Errorf("expected a loud warning on bypass, got stderr: %q", stderr.String())
 	}
 }
 
