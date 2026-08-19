@@ -8,8 +8,10 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 
 	"github.com/boldfield/odonian/internal/forge"
+	"github.com/boldfield/odonian/internal/tuiclient"
 )
 
 func executePRFeedback(ctx context.Context, args []string, out io.Writer) error {
@@ -50,32 +52,37 @@ Environment:
 `)
 }
 
+// fetchUnaddressedFeedback resolves a PR URL to its unaddressed pr-feedback items,
+// reusing the same token/bot-login resolution as `pr-feedback list`.
+func fetchUnaddressedFeedback(ctx context.Context, prURL string) ([]forge.FeedbackItem, error) {
+	owner, repo, prNumber, err := parsePRURL(prURL)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse PR URL: %w", err)
+	}
+
+	token, err := resolveGitHubToken(owner)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve GitHub token: %w", err)
+	}
+
+	if token == "" {
+		return nil, fmt.Errorf("no GitHub token found (check FORGE_TOKENS file or GH_TOKEN env)")
+	}
+
+	botLogin, err := getBotLogin(ctx, token)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get bot login: %w", err)
+	}
+
+	return forge.ListUnaddressedFeedback(ctx, owner, repo, prNumber, botLogin, token)
+}
+
 func executePRFeedbackList(ctx context.Context, args []string, out io.Writer) error {
 	if len(args) < 1 {
 		return fmt.Errorf("pr-url required for pr-feedback list")
 	}
 
-	prURL := args[0]
-	owner, repo, prNumber, err := parsePRURL(prURL)
-	if err != nil {
-		return fmt.Errorf("failed to parse PR URL: %w", err)
-	}
-
-	token, err := resolveGitHubToken(owner)
-	if err != nil {
-		return fmt.Errorf("failed to resolve GitHub token: %w", err)
-	}
-
-	if token == "" {
-		return fmt.Errorf("no GitHub token found (check FORGE_TOKENS file or GH_TOKEN env)")
-	}
-
-	botLogin, err := getBotLogin(ctx, token)
-	if err != nil {
-		return fmt.Errorf("failed to get bot login: %w", err)
-	}
-
-	items, err := forge.ListUnaddressedFeedback(ctx, owner, repo, prNumber, botLogin, token)
+	items, err := fetchUnaddressedFeedback(ctx, args[0])
 	if err != nil {
 		return fmt.Errorf("failed to list feedback: %w", err)
 	}
@@ -222,4 +229,59 @@ func getBotLogin(ctx context.Context, token string) (string, error) {
 	}
 
 	return result.Login, nil
+}
+
+// enforceFeedbackGate is the mechanical rework gate: a submit for a task that already
+// carries a `pr` link and has gone through at least one review round (review_round > 0)
+// must have no unaddressed pr-feedback items outstanding. This mirrors `pr-feedback list`
+// rather than trusting the agent to have run it, since a half-followed prompt (ack one of
+// two items, submit anyway) was observed in production on PR #314.
+//
+// A check that cannot run (network/token error) warns and lets the submit proceed — a
+// GitHub outage must not wedge the fleet.
+func enforceFeedbackGate(ctx context.Context, task tuiclient.TaskDetail, skip bool, errOut io.Writer) error {
+	if skip {
+		fmt.Fprintln(errOut, "WARNING: --skip-feedback-gate set; bypassing the PR feedback gate check")
+		return nil
+	}
+
+	if task.ReviewRound <= 0 {
+		return nil
+	}
+
+	var prURL string
+	for _, link := range task.Links {
+		if link.Kind == "pr" {
+			prURL = link.Value
+			break
+		}
+	}
+	if prURL == "" {
+		return nil
+	}
+
+	items, err := fetchUnaddressedFeedback(ctx, prURL)
+	if err != nil {
+		fmt.Fprintf(errOut, "warning: could not check pr-feedback gate (%v); proceeding without it\n", err)
+		return nil
+	}
+
+	if len(items) == 0 {
+		return nil
+	}
+
+	fmt.Fprintf(errOut, "submit blocked: %d unaddressed pr-feedback item(s) remain on %s\n", len(items), prURL)
+	for _, item := range items {
+		fmt.Fprintf(errOut, "  - [%s] %s: %s\n", item.Kind, item.ID, firstLine(item.Body))
+	}
+
+	return fmt.Errorf("fix the items above and run `odonian pr-feedback ack %s <item-id> <sha>` for each, then submit again (or pass --skip-feedback-gate to bypass)", prURL)
+}
+
+// firstLine returns the first line of s, for compact display of feedback item bodies.
+func firstLine(s string) string {
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		return s[:idx]
+	}
+	return s
 }

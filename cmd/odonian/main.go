@@ -713,6 +713,7 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 	noOpFlag := fs.Bool("no-op", false, "mark as already-satisfied (no-op)")
 	messageFlag := fs.String("message", "", "commit message override (local_commit mode)")
 	agentFlag := fs.String("agent", "", "agent ID")
+	skipFeedbackGateFlag := fs.Bool("skip-feedback-gate", false, "bypass the mechanical PR-feedback rework gate (humans/emergencies only)")
 	positionals, err := parseFlagsWithPositionals(fs, args)
 	if err != nil {
 		return fmt.Errorf("failed to parse flags: %w", err)
@@ -741,14 +742,21 @@ func executeSubmit(ctx context.Context, baseURL, token string, args []string) er
 
 	client := tuiclient.NewHTTPClient(baseURL, token)
 
+	task, taskErr := client.GetTask(ctx, taskID)
+	if taskErr != nil && localcommit.IsLocalCommit() {
+		return fmt.Errorf("failed to get task: %w", taskErr)
+	}
+	if taskErr != nil {
+		// The gate is best-effort outside local_commit mode: a task-fetch failure here
+		// warns and falls through rather than blocking the submit (see enforceFeedbackGate).
+		fmt.Fprintf(os.Stderr, "warning: could not load task for pr-feedback gate check (%v); proceeding\n", taskErr)
+	} else if err := enforceFeedbackGate(ctx, task, *skipFeedbackGateFlag, os.Stderr); err != nil {
+		return err
+	}
+
 	var links []tuiclient.LinkInput
 
 	if localcommit.IsLocalCommit() {
-		task, err := client.GetTask(ctx, taskID)
-		if err != nil {
-			return fmt.Errorf("failed to get task: %w", err)
-		}
-
 		switch {
 		case task.Kind == "review" || task.Kind == "merge":
 			// review/merge-kind tasks own NO worktree, so there is nothing to commit — a review
