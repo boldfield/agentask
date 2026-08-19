@@ -316,6 +316,9 @@ dispatch() {
   # $VARS in the prompt are left for the agent's own shell to expand at runtime.
   local prompt; prompt="$(sed "s/__AGENT_MODEL__/$AGENT_MODEL/g" "$PROMPT_FILE")"
 
+  # Export ODONIAN_MODEL for the dispatched agent to use (pr-feedback ack marker default is ${ODONIAN_MODEL:-fleet}-worker:)
+  export ODONIAN_MODEL="$AGENT_MODEL"
+
   # Check if AGENT_MODEL is in AGENT_CODEX_MODELS (comma-separated list)
   local use_codex=0
   if [ -n "${AGENT_CODEX_MODELS:-}" ]; then

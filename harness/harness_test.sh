@@ -140,6 +140,14 @@ else
   test_fail "agent.sh doesn't reject multi-project with local_commit"
 fi
 
+# Test 14: Check that agent.sh exports ODONIAN_MODEL in dispatch
+echo "Test 14: agent.sh exports ODONIAN_MODEL in dispatch"
+if grep -q 'export ODONIAN_MODEL=' "$SCRIPT_TO_TEST"; then
+  test_pass "agent.sh exports ODONIAN_MODEL"
+else
+  test_fail "agent.sh doesn't export ODONIAN_MODEL"
+fi
+
 echo ""
 echo "=== Test Summary ==="
 echo "Total: $test_count | Passed: $pass_count | Failed: $fail_count"
