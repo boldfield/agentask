@@ -74,6 +74,7 @@ type TaskDetail struct {
 	LeaseExpiresAt *string    `json:"lease_expires_at"`
 	Result         *string    `json:"result"`
 	Held           bool       `json:"held"`
+	ReviewRound    int        `json:"review_round"`
 	TargetTaskID   *string    `json:"target_task_id"`
 	AgentMerge     bool       `json:"agent_merge"`
 	CreatedAt      string     `json:"created_at"`
