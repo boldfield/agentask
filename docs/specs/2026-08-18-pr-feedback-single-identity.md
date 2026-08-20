@@ -27,7 +27,7 @@ comment prefixes like `opus-reviewer:`. Extend that convention into the classifi
 matches:
 
 ```
-<token>-(worker|reviewer|merger):
+<token>-(worker|reviewer|merger|reconciler):
 ```
 
 where `<token>` is one or more of `[a-z0-9.-]` (e.g. `haiku-worker:`, `gpt-5.5-reviewer:`).

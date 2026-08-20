@@ -8,7 +8,7 @@ import (
 )
 
 func applyBounce(ctx context.Context, tx taskTx, task store.Task, owner, repo string, prNumber int, token string) error {
-	comment := "🔁 changes requested — reworking; address the review feedback on this PR"
+	comment := "odonian-reconciler: 🔁 changes requested — reworking; address the review feedback on this PR"
 	if err := forge.PostPRComment(ctx, owner, repo, prNumber, token, comment); err != nil {
 		return err
 	}
