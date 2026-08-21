@@ -27,6 +27,11 @@ func TestIsAgentAuthoredComment(t *testing.T) {
 			want: true,
 		},
 		{
+			name: "odonian-reconciler",
+			body: "odonian-reconciler: changes requested — bouncing back",
+			want: true,
+		},
+		{
 			name: "leading space",
 			body: " haiku-worker: Comment",
 			want: true,

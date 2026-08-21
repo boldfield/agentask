@@ -2,6 +2,7 @@ package prwatch
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -35,6 +36,15 @@ func TestApplyBouncePostsComment(t *testing.T) {
 		body, _ := io.ReadAll(r.Body)
 		if !strings.Contains(string(body), "changes requested") {
 			t.Errorf("expected comment body to contain 'changes requested', got %s", string(body))
+		}
+		var payload struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(body, &payload); err != nil {
+			t.Fatalf("failed to unmarshal comment payload: %v", err)
+		}
+		if !forge.IsAgentAuthoredComment(payload.Body) {
+			t.Errorf("expected bounce comment body to satisfy the marker predicate, got %q", payload.Body)
 		}
 
 		w.WriteHeader(http.StatusCreated)
